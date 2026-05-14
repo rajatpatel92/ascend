@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import YahooFinance from 'yahoo-finance2';
-import { getHoldingsAtDate } from '@/lib/portfolio-helper';
+import { calculateHoldingsFromActivities } from '@/lib/portfolio-helper';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,30 +68,72 @@ export async function POST(request: Request) {
         const allUsers = await prisma.user.findMany();
         const userMap = new Map(allUsers.map(u => [u.username, u.name]));
 
+        // Calculate date range for scanning
+        const endDate = new Date();
+        const startDate = new Date();
+
+        if (startYear) {
+            startDate.setFullYear(parseInt(startYear), 0, 1);
+            endDate.setFullYear(parseInt(startYear), 11, 31); // Dec 31st
+            endDate.setHours(23, 59, 59, 999);
+        } else {
+            // Default to current year if no year selected (though frontend sends one)
+            startDate.setFullYear(new Date().getFullYear(), 0, 1);
+        }
+
+        // Safety check: Period 1 must be before Period 2
+        if (startDate > endDate) {
+            // Should not happen with above logic, but fallback
+            startDate.setFullYear(endDate.getFullYear() - 1);
+        }
+
+        // Pre-fetch all activities for these symbols to avoid N+1 queries
+        // 1. Fetch holdings-affecting activities (all time up to end of scan period)
+        const holdingsActivities = await prisma.activity.findMany({
+            where: {
+                investment: { symbol: { in: symbolsToScan } },
+                type: { in: ['BUY', 'SELL', 'SPLIT', 'STOCK_SPLIT'] },
+                date: { lte: endDate }
+            },
+            include: { investment: { select: { symbol: true } } },
+            orderBy: { date: 'asc' }
+        });
+
+        // 2. Fetch existing dividend activities (within fuzzy buffer range)
+        const startBuffer = new Date(startDate);
+        startBuffer.setDate(startBuffer.getDate() - 10);
+        const endBuffer = new Date(endDate);
+        endBuffer.setDate(endBuffer.getDate() + 10);
+
+        const existingDividends = await prisma.activity.findMany({
+            where: {
+                investment: { symbol: { in: symbolsToScan } },
+                type: 'DIVIDEND',
+                date: { gte: startBuffer, lte: endBuffer }
+            },
+            include: { investment: { select: { symbol: true } } }
+        });
+
+        // Group activities by symbol for efficient lookup
+        const holdingsActivitiesMap = new Map<string, any[]>();
+        holdingsActivities.forEach(a => {
+            const sym = a.investment.symbol;
+            if (!holdingsActivitiesMap.has(sym)) holdingsActivitiesMap.set(sym, []);
+            holdingsActivitiesMap.get(sym)!.push(a);
+        });
+
+        const existingDividendsMap = new Map<string, any[]>();
+        existingDividends.forEach(a => {
+            const sym = a.investment.symbol;
+            if (!existingDividendsMap.has(sym)) existingDividendsMap.set(sym, []);
+            existingDividendsMap.get(sym)!.push(a);
+        });
+
         const foundDividends = [];
 
         // 2. Scan each symbol
         for (const symbol of symbolsToScan) {
             try {
-                // Fetch dividends from startYear
-                const endDate = new Date();
-                const startDate = new Date();
-
-                if (startYear) {
-                    startDate.setFullYear(parseInt(startYear), 0, 1);
-                    endDate.setFullYear(parseInt(startYear), 11, 31); // Dec 31st
-                    endDate.setHours(23, 59, 59, 999);
-                } else {
-                    // Default to current year if no year selected (though frontend sends one)
-                    startDate.setFullYear(new Date().getFullYear(), 0, 1);
-                }
-
-                // Safety check: Period 1 must be before Period 2
-                if (startDate > endDate) {
-                    // Should not happen with above logic, but fallback
-                    startDate.setFullYear(endDate.getFullYear() - 1);
-                }
-
                 const chartResult = await yahooFinance.chart(symbol, {
                     period1: startDate,
                     period2: endDate,
@@ -99,23 +141,8 @@ export async function POST(request: Request) {
                     events: 'div'
                 });
 
-                // Pre-fetch all dividend activities for this symbol to avoid N+1 queries
-                // We fetch with a 10-day buffer around the scan range to handle fuzzy matching
-                const startBuffer = new Date(startDate);
-                startBuffer.setDate(startBuffer.getDate() - 10);
-                const endBuffer = new Date(endDate);
-                endBuffer.setDate(endBuffer.getDate() + 10);
-
-                const existingDividends = await prisma.activity.findMany({
-                    where: {
-                        investment: { symbol },
-                        type: 'DIVIDEND',
-                        date: {
-                            gte: startBuffer,
-                            lte: endBuffer
-                        }
-                    }
-                });
+                const symbolHoldingsActivities = holdingsActivitiesMap.get(symbol) || [];
+                const symbolExistingDividends = existingDividendsMap.get(symbol) || [];
 
                 if (chartResult.events && chartResult.events.dividends) {
                     for (const div of chartResult.events.dividends) {
@@ -125,7 +152,7 @@ export async function POST(request: Request) {
                         const checkDate = new Date(divDate);
                         checkDate.setDate(checkDate.getDate() - 1);
 
-                        const holdingsByAccount = await getHoldingsAtDate(symbol, checkDate);
+                        const holdingsByAccount = calculateHoldingsFromActivities(symbolHoldingsActivities, checkDate);
 
                         // Find price for the dividend date
                         let price = 0;
@@ -144,7 +171,7 @@ export async function POST(request: Request) {
                             if (quantity > 0.0001) {
                                 // In-memory fuzzy match (+/- 10 days) for this account
                                 // Use epsilon for floating point comparison for the amount if needed in the future
-                                const match = existingDividends.find(d => {
+                                const match = symbolExistingDividends.find(d => {
                                     if (accountId !== 'unknown' && d.accountId !== accountId) return false;
                                     if (accountId === 'unknown' && d.accountId !== null) return false;
 
