@@ -121,21 +121,14 @@ export async function POST(req: NextRequest) {
             let account: typeof accounts[0] | undefined;
 
             if (!prospectiveAccounts || prospectiveAccounts.length === 0) {
-                console.log(`[Validation Debug] No accounts found for key: ${accountKey}`);
                 rowErrors.push(`Account/User not found: ${accountName} (${accountType})`);
             } else if (platform) {
                 // Find the account that belongs to this platform
-                console.log(`[Validation Debug] Looking for account with platformId: ${platform.id} among ${prospectiveAccounts.length} candidates for key ${accountKey}`);
-                prospectiveAccounts.forEach(a => console.log(`  - Candidate: ${a.id}, PlatformId: ${a.platformId}`));
-
                 account = prospectiveAccounts.find(a => a.platformId === platform.id);
 
                 if (!account) {
-                    console.log(`[Validation Debug] Failed to find match!`);
                     // Found accounts with this name/type, but none linked to the specified platform
                     rowErrors.push(`Account '${accountName} - ${accountType}' exists but is not linked to platform '${platform.name}'`);
-                } else {
-                    console.log(`[Validation Debug] Match found: ${account.id}`);
                 }
             }
 
