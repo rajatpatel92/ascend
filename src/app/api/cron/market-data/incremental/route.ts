@@ -10,7 +10,8 @@ export async function GET(request: Request) {
     // Basic protection
     const { searchParams } = new URL(request.url);
     const key = searchParams.get('key');
-    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET) {
+    const headerKey = request.headers.get('x-cron-secret');
+    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET && headerKey !== process.env.CRON_SECRET) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

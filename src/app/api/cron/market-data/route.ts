@@ -12,10 +12,11 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const key = searchParams.get('key');
+    const headerKey = request.headers.get('x-cron-secret');
     const streamMode = searchParams.get('stream') === 'true';
 
     // Basic protection
-    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET) {
+    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET && headerKey !== process.env.CRON_SECRET) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

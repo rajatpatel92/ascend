@@ -20,7 +20,9 @@ export async function register() {
             console.log('[Cron] Triggering Scheduled Market Data Refresh (Full)...');
             try {
                 const baseUrl = process.env.APP_URL || 'http://127.0.0.1:3000';
-                await fetch(`${baseUrl}/api/cron/market-data`);
+                await fetch(`${baseUrl}/api/cron/market-data`, {
+                    headers: { 'x-cron-secret': process.env.CRON_SECRET || '' }
+                });
             } catch (e) {
                 console.error('[Cron] Failed to trigger full market data refresh:', e);
             } finally {
@@ -40,7 +42,9 @@ export async function register() {
             console.log('[Cron] Triggering Incremental Price Refresh...');
             try {
                 const baseUrl = process.env.APP_URL || 'http://127.0.0.1:3000';
-                const res = await fetch(`${baseUrl}/api/cron/market-data/incremental`);
+                const res = await fetch(`${baseUrl}/api/cron/market-data/incremental`, {
+                    headers: { 'x-cron-secret': process.env.CRON_SECRET || '' }
+                });
                 if (!res.ok) console.error(`[Cron] Incremental failed: ${res.status}`);
             } catch (e) {
                 console.error('[Cron] Failed to trigger incremental refresh:', e);
