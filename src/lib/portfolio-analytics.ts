@@ -584,14 +584,14 @@ export class PortfolioAnalytics {
                 // causing a massive fake "inflow" equal to the entire position value.
                 if (priceMaps[symbol]?.[dateStr]) {
                     lastKnownPrices[symbol] = priceMaps[symbol][dateStr];
-                } else if (a.price > 0 && !lastKnownPrices[symbol] && a.type !== 'DIVIDEND') {
-                    // Fallback to execution price ONLY if we have no market data history
+                } else if (a.price > 0 && a.type !== 'DIVIDEND') {
+                    // Fallback to execution price ONLY if we have no market data history for TODAY
                     // and this is NOT a dividend (dividend price is not asset price)
                     lastKnownPrices[symbol] = a.price;
                 }
 
-                if (assetCurrency !== targetCurrency && fxMaps[assetCurrency]?.[dateStr]) {
-                    lastKnownFx[assetCurrency] = fxMaps[assetCurrency][dateStr];
+                if (assetCurrency !== targetCurrency) {
+                    lastKnownFx[assetCurrency] = fxRate;
                 }
             });
 
