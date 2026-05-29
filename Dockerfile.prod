@@ -8,11 +8,11 @@ ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Copy pre-built standalone app, node_modules (with prisma CLI), and static assets
-COPY public ./public
-COPY .next/standalone ./
-COPY .next/static ./.next/static
-COPY prisma ./prisma
+# Copy pre-built standalone app, node_modules (with prisma CLI), and static assets with correct permissions
+COPY --chown=nextjs:nodejs public ./public
+COPY --chown=nextjs:nodejs .next/standalone ./
+COPY --chown=nextjs:nodejs .next/static ./.next/static
+COPY --chown=nextjs:nodejs prisma ./prisma
 
 USER nextjs
 
