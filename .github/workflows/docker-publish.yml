@@ -31,7 +31,11 @@ jobs:
         run: npx tsc prisma/seed.ts --outDir prisma --module commonjs --target es2017 --skipLibCheck --esModuleInterop
 
       - name: Build Next.js application
-        run: npm run build
+        run: |
+          npm run build
+          # Copy Prisma CLI and engines to standalone folder for production database migrations
+          cp -r node_modules/prisma .next/standalone/node_modules/
+          cp -r node_modules/@prisma/. .next/standalone/node_modules/@prisma/
         env:
           NEXT_TELEMETRY_DISABLED: 1
           NODE_OPTIONS: --max-old-space-size=4096
