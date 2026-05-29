@@ -33,9 +33,10 @@ jobs:
       - name: Build Next.js application
         run: |
           npm run build
-          # Copy Prisma CLI and engines to standalone folder for production database migrations
+          # Copy Prisma CLI, engines, and bcryptjs to standalone folder for production migrations & seeding
           cp -r node_modules/prisma .next/standalone/node_modules/
           cp -r node_modules/@prisma/. .next/standalone/node_modules/@prisma/
+          cp -r node_modules/bcryptjs .next/standalone/node_modules/
         env:
           NEXT_TELEMETRY_DISABLED: 1
           NODE_OPTIONS: --max-old-space-size=4096
