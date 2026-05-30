@@ -135,6 +135,34 @@ export default function PortfolioChart({
         }
     }
 
+    const vals = chartData.map(d => d.value);
+    const maxVal = vals.length > 0 ? Math.max(...vals) : 0;
+    const minVal = vals.length > 0 ? Math.min(...vals) : 0;
+    const rangeVal = maxVal - minVal;
+
+    const formatYAxisTick = (value: number) => {
+        // If range of movement is very small, increase precision
+        if (rangeVal < 10) {
+            if (value >= 1000000) return `${(value / 1000000).toFixed(4)}M`;
+            if (value >= 1000) return `${(value / 1000).toFixed(3)}K`;
+            return value.toFixed(2);
+        }
+        if (rangeVal < 100) {
+            if (value >= 1000000) return `${(value / 1000000).toFixed(3)}M`;
+            if (value >= 1000) return `${(value / 1000).toFixed(2)}K`;
+            return value.toFixed(1);
+        }
+        if (rangeVal < 1000) {
+            if (value >= 1000000) return `${(value / 1000000).toFixed(2)}M`;
+            if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+            return value.toFixed(0);
+        }
+        // Default compact formatting
+        if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+        if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
+        return String(value);
+    };
+
     return (
         <div className={styles.container}>
             <div className={styles.header}>
@@ -243,11 +271,7 @@ export default function PortfolioChart({
                             axisLine={false}
                         />
                         <YAxis
-                            tickFormatter={(value) => {
-                                if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-                                if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
-                                return String(value);
-                            }}
+                            tickFormatter={formatYAxisTick}
                             stroke="#9ca3af"
                             fontSize={10}
                             tickMargin={5}
