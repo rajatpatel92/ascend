@@ -53,3 +53,5 @@ public/workbox-*.js.map
 # research
 .research/
 ascend.code-workspace
+.agent/
+*.log
