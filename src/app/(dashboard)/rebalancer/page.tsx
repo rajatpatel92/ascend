@@ -37,9 +37,13 @@ export default function RebalancerPage() {
     const [isSaving, setIsSaving] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isConfigOpen, setIsConfigOpen] = useState(false);
+    const [searchResults, setSearchResults] = useState<any[]>([]);
+    const [activeSearchIndex, setActiveSearchIndex] = useState<number | null>(null);
+    const [searchQuery, setSearchQuery] = useState('');
 
     // Filters
     const [globalFilters, setGlobalFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('rebalancer_filters', null);
+    const [excludeSymbols, setExcludeSymbols] = usePersistentState<string>('rebalancer_exclude_symbols', '');
 
     const fetchData = async () => {
         setIsLoading(true);
@@ -52,6 +56,9 @@ export default function RebalancerPage() {
                 if (globalFilters.accountTypes.length > 0) {
                     url += `&accountTypes=${globalFilters.accountTypes.join(',')}`;
                 }
+            }
+            if (excludeSymbols.trim()) {
+                url += `&excludeSymbols=${encodeURIComponent(excludeSymbols.trim())}`;
             }
 
             const [dataRes, targetRes] = await Promise.all([
@@ -84,7 +91,37 @@ export default function RebalancerPage() {
             fetchData();
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currency, globalFilters, isFiltersLoaded]);
+    }, [currency, globalFilters, excludeSymbols, isFiltersLoaded]);
+
+    useEffect(() => {
+        if (searchQuery.length > 1) {
+            const delayDebounceFn = setTimeout(async () => {
+                try {
+                    const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
+                    const data = await res.json();
+                    if (Array.isArray(data)) {
+                        setSearchResults(data.slice(0, 5));
+                    }
+                } catch (e) {
+                    console.error('Search failed', e);
+                }
+            }, 300);
+            return () => clearTimeout(delayDebounceFn);
+        } else {
+            setSearchResults([]);
+        }
+    }, [searchQuery]);
+
+    const selectSymbol = (index: number, symbol: string) => {
+        handleTargetChange(index, 'symbol', symbol);
+        setActiveSearchIndex(null);
+    };
+
+    const getFilteredPortfolioSymbols = (query: string) => {
+        const portfolioSymbols = rebalanceData ? Array.from(new Set(rebalanceData.map(d => d.symbol))) : [];
+        if (!query) return portfolioSymbols;
+        return portfolioSymbols.filter(sym => sym.toLowerCase().includes(query.toLowerCase()));
+    };
 
     const handleTargetChange = (index: number, field: keyof TargetConfig, value: string) => {
         const newTargets = [...targets];
@@ -178,8 +215,21 @@ export default function RebalancerPage() {
                 )}
             </header>
 
-            <div className={styles.flexBetween} style={{ marginBottom: '1.5rem' }}>
-                <div></div>
+            <div className={styles.flexBetween} style={{ marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, minWidth: '280px' }}>
+                    <label htmlFor="excludeSymbols" style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                        Exclude Symbols:
+                    </label>
+                    <input
+                        type="text"
+                        id="excludeSymbols"
+                        placeholder="e.g. VFV, AAPL"
+                        value={excludeSymbols}
+                        onChange={(e) => setExcludeSymbols(e.target.value)}
+                        className={styles.input}
+                        style={{ maxWidth: '300px', margin: 0 }}
+                    />
+                </div>
                 <button className={`${styles.button} ${styles.buttonSecondary}`} onClick={() => setIsConfigOpen(!isConfigOpen)}>
                     <MdSettings size={18} />
                     {isConfigOpen ? 'Hide Configuration' : 'Configure Targets & Glide Path'}
@@ -216,13 +266,90 @@ export default function RebalancerPage() {
                     <tbody>
                         {targets.map((t, i) => (
                             <tr key={i}>
-                                <td>
+                                <td style={{ position: 'relative' }}>
                                     <input 
                                         className={styles.input} 
                                         value={t.symbol} 
                                         placeholder="e.g. VFV"
-                                        onChange={e => handleTargetChange(i, 'symbol', e.target.value)} 
+                                        onChange={e => {
+                                            handleTargetChange(i, 'symbol', e.target.value);
+                                            setSearchQuery(e.target.value);
+                                        }}
+                                        onFocus={() => {
+                                            setActiveSearchIndex(i);
+                                            setSearchQuery(t.symbol);
+                                        }}
+                                        onBlur={() => {
+                                            setTimeout(() => {
+                                                if (activeSearchIndex === i) {
+                                                    setActiveSearchIndex(null);
+                                                }
+                                            }, 200);
+                                        }}
                                     />
+                                    {activeSearchIndex === i && (
+                                        <div style={{
+                                            position: 'absolute',
+                                            top: '100%',
+                                            left: 0,
+                                            right: 0,
+                                            backgroundColor: 'var(--card-bg)',
+                                            border: '1px solid var(--card-border)',
+                                            borderRadius: '0.375rem',
+                                            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                                            zIndex: 50,
+                                            maxHeight: '200px',
+                                            overflowY: 'auto',
+                                            marginTop: '0.25rem'
+                                        }}>
+                                            {/* Render Portfolio Symbols */}
+                                            {getFilteredPortfolioSymbols(t.symbol).length > 0 && (
+                                                <div>
+                                                    <div style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', color: 'var(--text-secondary)', borderBottom: '1px solid var(--card-border)', fontWeight: 600 }}>
+                                                        Portfolio Symbols
+                                                    </div>
+                                                    {getFilteredPortfolioSymbols(t.symbol).map(sym => (
+                                                        <div 
+                                                            key={sym} 
+                                                            onClick={() => selectSymbol(i, sym)}
+                                                            style={{ padding: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-primary)' }}
+                                                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'}
+                                                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                                                        >
+                                                            {sym}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {/* Render Global Search Suggestions */}
+                                            {searchResults.length > 0 && (
+                                                <div>
+                                                    <div style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', color: 'var(--text-secondary)', borderBottom: '1px solid var(--card-border)', borderTop: '1px solid var(--card-border)', fontWeight: 600 }}>
+                                                        Global Search
+                                                    </div>
+                                                    {searchResults.map(res => (
+                                                        <div 
+                                                            key={res.symbol} 
+                                                            onClick={() => selectSymbol(i, res.symbol)}
+                                                            style={{ padding: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', color: 'var(--text-primary)' }}
+                                                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'}
+                                                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                                                        >
+                                                            <span style={{ fontWeight: 600 }}>{res.symbol}</span>
+                                                            <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden', maxWidth: '150px' }}>{res.name}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {getFilteredPortfolioSymbols(t.symbol).length === 0 && searchResults.length === 0 && (
+                                                <div style={{ padding: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                                                    No matches found
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </td>
                                 <td>
                                     <input 

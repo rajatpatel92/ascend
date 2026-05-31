@@ -11,9 +11,13 @@ export async function GET(request: NextRequest) {
         const targetCurrency = searchParams.get('currency') || 'USD';
         const investmentTypes = searchParams.get('investmentTypes')?.split(',') || [];
         const accountTypes = searchParams.get('accountTypes')?.split(',') || [];
+        const excludeSymbols = searchParams.get('excludeSymbols')?.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) || [];
 
         // 1. Fetch Targets
-        const targets = await prisma.targetAllocation.findMany();
+        let targets = await prisma.targetAllocation.findMany();
+        if (excludeSymbols.length > 0) {
+            targets = targets.filter(t => !excludeSymbols.includes(t.symbol.toUpperCase()));
+        }
         const targetMap = new Map(targets.map(t => [t.symbol, t]));
 
         // 2. Fetch Holdings
@@ -26,6 +30,9 @@ export async function GET(request: NextRequest) {
         }
         if (accountTypes.length > 0) {
             activities = activities.filter(a => a.account && accountTypes.includes(a.account.type));
+        }
+        if (excludeSymbols.length > 0) {
+            activities = activities.filter(a => !excludeSymbols.includes(a.investment.symbol.toUpperCase()));
         }
 
         const holdings = PortfolioAnalytics.computeHoldingsState(activities);
