@@ -76,7 +76,7 @@ export default function ActivitiesPage() {
     const [customStart, setCustomStart] = useState('');
     const [customEnd, setCustomEnd] = useState('');
     const RANGES = ['1W', '1M', '3M', '6M', 'YTD', '1Y', '2Y', '3Y', 'ALL'];
-    const [scanYear, setScanYear] = useState('2023');
+    const [scanYear, setScanYear] = useState(new Date().getFullYear().toString());
 
     const [filterAccount, setFilterAccount] = useState('');
     const [filterAccountType, setFilterAccountType] = useState('');
