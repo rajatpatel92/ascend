@@ -183,6 +183,9 @@ export async function GET(request: NextRequest) {
 
         // Global Cash Flows for Portfolio XIRR
         const portfolioCashFlows: Transaction[] = [];
+        let globalFirstBuyDate: Date | null = null;
+        const nowGlobal = new Date();
+        const date1YGlobal = new Date(nowGlobal); date1YGlobal.setFullYear(nowGlobal.getFullYear() - 1);
 
         // ... (Market Data Fetching Loop) ...
         // Process Assets (Batched)
@@ -420,7 +423,8 @@ export async function GET(request: NextRequest) {
                                 })
                         )
                     } : null,
-                    upcomingDividend
+                    upcomingDividend,
+                    firstBuyDate
                 };
 
             } catch (error) {
@@ -459,7 +463,8 @@ export async function GET(request: NextRequest) {
                 upcomingDividend,
                 price,
                 rateToUSD,
-                marketData // Assuming I can access this if I return it from processHolding
+                marketData, // Assuming I can access this if I return it from processHolding
+                firstBuyDate
             } = result;
 
             // Update timestamp tracking
@@ -475,7 +480,12 @@ export async function GET(request: NextRequest) {
             }
 
             // Merge Cash Flows
-            portfolioCashFlows.push(...symbolCashFlows);
+            if (firstBuyDate && firstBuyDate <= date1YGlobal) {
+                portfolioCashFlows.push(...symbolCashFlows);
+            }
+            if (firstBuyDate && (!globalFirstBuyDate || firstBuyDate < globalFirstBuyDate)) {
+                globalFirstBuyDate = firstBuyDate;
+            }
 
             // Sum Dividends
             dividendsYTD += localDividendsYTD;
@@ -543,6 +553,7 @@ export async function GET(request: NextRequest) {
 
         // Calculate Portfolio XIRR
         const portfolioXIRR = calculateXIRR(portfolioCashFlows);
+        const isPortfolioYoungerThan1Y = globalFirstBuyDate ? globalFirstBuyDate > date1YGlobal : true;
 
         // Sort constituents by value (USD) desc
         constituents.sort((a, b) => (b.value * b.rateToUSD) - (a.value * a.rateToUSD));
@@ -661,6 +672,7 @@ export async function GET(request: NextRequest) {
             totalGrowth,
             totalGrowthPercent,
             xirr: portfolioXIRR,
+            isPortfolioYoungerThan1Y,
             lastUpdated: latestDataTimestamp,
             allocationByType: allocationByTypeArray,
             allocationByPlatform: allocationByPlatformArray,
