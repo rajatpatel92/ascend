@@ -87,10 +87,28 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
         setSelectedInvTypes(prev => availableInvTypes.filter(t => !prev.includes(t)));
     };
 
+    const isFilterActive = 
+        (availableAccTypes.length > 0 && selectedAccTypes.length < availableAccTypes.length) ||
+        (availableInvTypes.length > 0 && selectedInvTypes.length < availableInvTypes.length);
+
     return (
         <div className={styles.container}>
             <button className={styles.filterBtn} onClick={() => setIsOpen(!isOpen)}>
-                <MdFilterList size={20} />
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                    <MdFilterList size={20} />
+                    {isFilterActive && (
+                        <span style={{
+                            position: 'absolute',
+                            top: '-2px',
+                            right: '-2px',
+                            width: '8px',
+                            height: '8px',
+                            backgroundColor: '#3b82f6', // primary blue
+                            borderRadius: '50%',
+                            border: '1px solid var(--card-bg)'
+                        }} />
+                    )}
+                </div>
                 <span>Filters</span>
             </button>
 
