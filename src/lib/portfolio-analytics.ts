@@ -715,31 +715,75 @@ export class PortfolioAnalytics {
             benchmarkReturn = ((end - start) / start) * 100;
         }
 
-        // Calculate Top/Bottom Performers (Simple approach: Price change over period)
-        // We need price history for ALL assets in the portfolio for the period.
-        // We already have `priceMaps` populated for looked up assets.
+        // Calculate Top/Bottom Performers (Personal ROI Impact over period)
         const performanceMap: { symbol: string, return: number }[] = [];
+        const endIso = endDate.toISOString().split('T')[0];
+        const startHoldings = this.computeHoldingsState(initialActivities);
 
-        // Only consider assets currently held or held during period?
-        // Let's look at all symbols involved.
+        const getClosestValue = (map: Record<string, number>, targetDate: string) => {
+            if (!map) return 0;
+            const dates = Object.keys(map).sort();
+            let closest = 0;
+            for (const d of dates) {
+                if (d <= targetDate) closest = map[d];
+                else break;
+            }
+            return closest;
+        };
+
         for (const sym of symbols) {
             if (sym === benchmarkSymbol) continue;
 
             const priceMap = priceMaps[sym];
             if (!priceMap) continue;
 
-            const dates = Object.keys(priceMap).sort();
-            // Filter dates within range
-            const relevantDates = dates.filter(d => d >= startIso);
+            const assetCurrency = symbolCurrencyMap[sym] || 'USD';
+            const fxMap = fxMaps[assetCurrency];
 
-            if (relevantDates.length < 2) continue;
+            const startQty = startHoldings[sym] || 0;
+            const startPrice = getClosestValue(priceMap, startIso);
+            const startFx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, startIso) || 1);
+            const startValue = startQty * startPrice * startFx;
 
-            const startPrice = priceMap[relevantDates[0]];
-            const endPrice = priceMap[relevantDates[relevantDates.length - 1]];
+            const endQty = holdings[sym] || 0;
+            const endPrice = getClosestValue(priceMap, endIso);
+            const endFx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, endIso) || 1);
+            const endValue = endQty * endPrice * endFx;
 
-            if (startPrice > 0) {
-                const ret = ((endPrice - startPrice) / startPrice) * 100;
+            const periodActivities = activities.filter(a => {
+                const d = new Date(a.date).getTime();
+                return d >= startDate.getTime() && d <= endDate.getTime() && a.investment.symbol === sym;
+            });
+
+            let totalBuys = 0;
+            let netInflows = 0; 
+            let totalDividends = 0;
+
+            periodActivities.forEach(a => {
+                const aIso = new Date(a.date).toISOString().split('T')[0];
+                const fx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, aIso) || 1);
+                
+                if (a.type === 'BUY' || a.type === 'DEPOSIT') {
+                    const val = ((a.quantity * a.price) + (a.fee || 0)) * fx;
+                    netInflows += val;
+                    totalBuys += val;
+                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL') {
+                    const val = ((Math.abs(a.quantity) * a.price) - (a.fee || 0)) * fx;
+                    netInflows -= val;
+                } else if (a.type === 'DIVIDEND') {
+                    const val = (a.quantity * a.price) * fx;
+                    totalDividends += val;
+                }
+            });
+
+            const profit = endValue - startValue - netInflows + totalDividends;
+            const investedBasis = startValue + totalBuys;
+
+            if (investedBasis > 0.01) {
+                const ret = (profit / investedBasis) * 100;
                 performanceMap.push({ symbol: sym, return: ret });
+            } else if (startQty > 0 || totalBuys > 0) {
+                performanceMap.push({ symbol: sym, return: 0 });
             }
         }
 
