@@ -21,6 +21,17 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'targets must be an array' }, { status: 400 });
         }
 
+        const inputSymbols = targets.map((t: any) => t.symbol);
+
+        // Delete targets that are no longer in the payload
+        await prisma.targetAllocation.deleteMany({
+            where: {
+                symbol: {
+                    notIn: inputSymbols
+                }
+            }
+        });
+
         // Upsert each target
         const results = await Promise.all(targets.map(async (t: any) => {
             return prisma.targetAllocation.upsert({
