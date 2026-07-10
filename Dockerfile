@@ -1,5 +1,5 @@
 
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 RUN apt-get update -y && apt-get install -y openssl
 
 # Install dependencies only when needed
