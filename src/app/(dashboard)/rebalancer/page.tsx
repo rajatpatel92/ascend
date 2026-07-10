@@ -254,7 +254,8 @@ export default function RebalancerPage() {
                         </button>
                     </div>
                     
-                    <table className={styles.table}>
+                    <div className={styles.tableResponsive}>
+                        <table className={styles.table}>
                     <thead>
                         <tr>
                             <th>Symbol</th>
@@ -377,6 +378,7 @@ export default function RebalancerPage() {
                         ))}
                     </tbody>
                 </table>
+            </div>
                 <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <button className={`${styles.button} ${styles.buttonSecondary}`} onClick={addTargetRow}>+ Add Asset</button>
                     <small style={{ color: 'var(--text-secondary)' }}>*Glide path automatically adjusts your target percentage by this amount annually.</small>
@@ -423,7 +425,8 @@ export default function RebalancerPage() {
 
                     <div className={styles.card}>
                         <h2 className={styles.cardTitle}>Execution Checklist</h2>
-                        <table className={styles.table}>
+                        <div className={styles.tableResponsive}>
+                            <table className={styles.table}>
                             <thead>
                                 <tr>
                                     <th style={{ width: '40px' }}>Done</th>
@@ -475,6 +478,7 @@ export default function RebalancerPage() {
                                 ))}
                             </tbody>
                         </table>
+                    </div>
                     </div>
                 </>
             )}

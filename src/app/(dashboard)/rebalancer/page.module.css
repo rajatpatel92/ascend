@@ -214,3 +214,49 @@
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
 }
+
+.tableResponsive {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 768px) {
+    .container {
+        padding: 1rem;
+    }
+    
+    .header {
+        flex-direction: column;
+        gap: 1rem;
+    }
+    
+    .header h1 {
+        font-size: 1.5rem;
+    }
+    
+    .flexBetween {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 1rem;
+    }
+
+    .flexBetween button {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .table th, .table td {
+        padding: 0.75rem 0.5rem;
+        font-size: 0.8rem;
+    }
+    
+    .input {
+        padding: 0.4rem 0.5rem;
+    }
+    
+    .actionTag {
+        font-size: 0.75rem;
+        padding: 3px 6px;
+    }
+}
