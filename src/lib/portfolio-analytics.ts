@@ -103,11 +103,11 @@ export class PortfolioAnalytics {
             weekStart.setDate(diff);
             const wKey = weekStart.toISOString().split('T')[0];
 
-            if (a.type === 'BUY' || a.type === 'DEPOSIT') {
+            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
                 processMap(flows.week, wKey, wKey, amount, 0);
                 processMap(flows.month, mKey, `${mKey}-01`, amount, 0);
                 processMap(flows.year, yKey, `${yKey}-01-01`, amount, 0);
-            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL') {
+            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
                 processMap(flows.week, wKey, wKey, 0, Math.abs(amount));
                 processMap(flows.month, mKey, `${mKey}-01`, 0, Math.abs(amount));
                 processMap(flows.year, yKey, `${yKey}-01-01`, 0, Math.abs(amount));
@@ -549,7 +549,7 @@ export class PortfolioAnalytics {
                     // Note: If we have NO rate ever, we might assume 1 or 0. Data gaps in FX are bad.
                 }
 
-                if (a.type === 'BUY' || a.type === 'DEPOSIT') {
+                if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
                     // Cost = (Qty * Price) + Fee
                     // All in Asset Currency? Usually Price is Asset Currency. Fee might be Account Currency?
                     // Complex. For now, assume uniform currency for simplicity or map Fee separately if needed.
@@ -561,7 +561,7 @@ export class PortfolioAnalytics {
 
                     // Negative Holdings Protection
                     if (holdings[a.investment.symbol] < 0) holdings[a.investment.symbol] = 0;
-                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL') {
+                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
                     const flowVal = (Math.abs(a.quantity) * a.price) - (a.fee || 0); // Proceeds - Fee
                     netFlow -= flowVal * fxRate; // Outflow is negative
 
@@ -763,11 +763,11 @@ export class PortfolioAnalytics {
                 const aIso = new Date(a.date).toISOString().split('T')[0];
                 const fx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, aIso) || 1);
                 
-                if (a.type === 'BUY' || a.type === 'DEPOSIT') {
+                if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
                     const val = ((a.quantity * a.price) + (a.fee || 0)) * fx;
                     netInflows += val;
                     totalBuys += val;
-                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL') {
+                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
                     const val = ((Math.abs(a.quantity) * a.price) - (a.fee || 0)) * fx;
                     netInflows -= val;
                 } else if (a.type === 'DIVIDEND') {
@@ -810,8 +810,8 @@ export class PortfolioAnalytics {
         const h: Record<string, number> = {};
         activities.forEach(a => {
             const s = (a as Activity & { investment: { symbol: string } }).investment.symbol;
-            if (a.type === 'BUY' || a.type === 'DEPOSIT') h[s] = (h[s] || 0) + a.quantity;
-            if (a.type === 'SELL' || a.type === 'WITHDRAWAL') h[s] = (h[s] || 0) - Math.abs(a.quantity);
+            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') h[s] = (h[s] || 0) + a.quantity;
+            if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') h[s] = (h[s] || 0) - Math.abs(a.quantity);
             if (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') h[s] = (h[s] || 0) * a.quantity;
 
             // Negative Holdings Protection: prevent negative balances due to missing history
