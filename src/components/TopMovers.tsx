@@ -20,8 +20,8 @@ export default function TopMovers({ constituents, portfolioTotalValue, portfolio
     // Calculate previous portfolio value to determine impact
     const prevValueUSD = portfolioTotalValue - portfolioDayChange;
 
-    // Filter out sold assets (quantity 0)
-    const heldConstituents = constituents.filter(c => c.quantity > 0);
+    // Filter out sold assets (quantity effectively 0)
+    const heldConstituents = constituents.filter(c => c.quantity > 0.00001);
 
     // Enrich constituents with impact data
     const constituentsWithImpact = heldConstituents.map(c => {
