@@ -590,9 +590,9 @@ export class PortfolioAnalytics {
                 // causing a massive fake "inflow" equal to the entire position value.
                 if (priceMaps[symbol]?.[dateStr]) {
                     lastKnownPrices[symbol] = priceMaps[symbol][dateStr];
-                } else if (a.price > 0 && a.type !== 'DIVIDEND') {
+                } else if (a.price > 0 && !['DIVIDEND', 'TRANSFER_IN', 'TRANSFER_OUT'].includes(a.type)) {
                     // Fallback to execution price ONLY if we have no market data history for TODAY
-                    // and this is NOT a dividend (dividend price is not asset price)
+                    // and this is NOT a dividend or transfer (which use historical costs/rates)
                     lastKnownPrices[symbol] = a.price;
                 }
 
