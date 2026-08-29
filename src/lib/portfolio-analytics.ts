@@ -250,7 +250,6 @@ export class PortfolioAnalytics {
 
         const debug: string[] = [];
         const log = (msg: string) => {
-            // console.log(msg); // Output to server console
             debug.push(msg);
         };
 
@@ -986,7 +985,6 @@ export class PortfolioAnalytics {
 
                 if (seedPrice > 0) {
                     lastKnownPrices[sym] = seedPrice;
-                    // console.log(`[Intraday Seed] ${sym} seeded at ${seedPrice} (Pre-${sessionDate})`);
                 }
             } catch (e) {
                 // Ignore seed errors, fallback to 0 is default behavior
