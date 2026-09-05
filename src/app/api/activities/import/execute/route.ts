@@ -75,23 +75,26 @@ export async function POST(req: NextRequest) {
             })
         );
 
-        // Create missing investments
+        // Ensure currencies exist and bulk create missing investments
         if (newInvestments.length > 0) {
-            await Promise.all(newInvestments.map(inv =>
-                prisma.investment.create({
-                    data: {
-                        symbol: inv.symbol,
-                        name: inv.name,
-                        type: inv.type,
-                        currency: {
-                            connectOrCreate: {
-                                where: { code: inv.currencyCode },
-                                create: { code: inv.currencyCode, rateToBase: 1.0 }
-                            }
-                        }
-                    }
-                })
-            ));
+            const uniqueCurrencies = Array.from(new Set(newInvestments.map(inv => inv.currencyCode)));
+            await prisma.currency.createMany({
+                data: uniqueCurrencies.map(code => ({
+                    code,
+                    rateToBase: 1.0
+                })),
+                skipDuplicates: true
+            });
+
+            await prisma.investment.createMany({
+                data: newInvestments.map(inv => ({
+                    symbol: inv.symbol,
+                    name: inv.name,
+                    type: inv.type,
+                    currencyCode: inv.currencyCode
+                })),
+                skipDuplicates: true
+            });
         }
 
         // Re-fetch all investments to get IDs
