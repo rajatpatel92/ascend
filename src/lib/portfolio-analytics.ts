@@ -390,13 +390,22 @@ export class PortfolioAnalytics {
                 let fx = 1;
 
                 if (sym !== targetCurrency) {
-                    if (fxMap && fxMap[d]) fx = fxMap[d];
-                    else {
-                        // Find closest previous FX? 
-                        // For simplicity, use 1 if missing (or lastKnownFx logic?)
-                        // We haven't started limits yet.
-                        // Let's rely on map. If missing, maybe try to find closest in map?
-                        // Using 1 is safe fallback for now.
+                    if (fxMap && fxMap[d]) {
+                        fx = fxMap[d];
+                    } else if (fxMap) {
+                        // Find closest previous FX
+                        const dateKeys = Object.keys(fxMap).sort();
+                        let closestDate = null;
+                        for (const dateKey of dateKeys) {
+                            if (dateKey <= d) closestDate = dateKey;
+                            else break;
+                        }
+                        if (closestDate) {
+                            fx = fxMap[closestDate];
+                        } else if (dateKeys.length > 0) {
+                            // If no prior history, use the EARLIEST history available
+                            fx = fxMap[dateKeys[0]];
+                        }
                     }
                 }
                 initialDividends += (a.quantity * a.price) * fx;
