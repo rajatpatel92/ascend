@@ -71,7 +71,7 @@ export async function POST(req: Request) {
                 password: hashedPassword,
                 role,
                 name,
-                aiEnabled: (req as any).aiEnabled ?? true // Default to true if not provided (though handled by schema default too)
+                aiEnabled: aiEnabled ?? true // Default to true if not provided (though handled by schema default too)
             }
         });
 
