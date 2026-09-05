@@ -1,4 +1,4 @@
-import { LLMProvider, LLMRequest, LLMResponse } from './types';
+import type { LLMProvider, LLMRequest, LLMResponse } from './types.ts';
 
 // Gemini Provider
 export class GeminiProvider implements LLMProvider {
@@ -46,16 +46,21 @@ export class GeminiProvider implements LLMProvider {
             }
 
             // Try to list available models to help debug
+            let modelsListMessage = '';
             try {
                 const listUrl = `${this.baseUrl}?key=${apiKey}`;
                 const listRes = await fetch(listUrl);
                 if (listRes.ok) {
                     const listData = await listRes.json();
                     const models = listData.models?.map((m: any) => m.name) || [];
-                    throw new Error(`Gemini API Error: ${response.status} ${response.statusText}. Available models: ${models.join(', ')}`);
+                    modelsListMessage = `. Available models: ${models.join(', ')}`;
                 }
             } catch (listErr) {
                 // Ignore list error and throw original
+            }
+
+            if (modelsListMessage) {
+                throw new Error(`Gemini API Error: ${response.status} ${response.statusText}${modelsListMessage}`);
             }
 
             throw new Error(`Gemini API Error: ${response.status} ${response.statusText} - ${errText}`);
