@@ -417,11 +417,31 @@ export class PortfolioAnalytics {
             if (map[startIso]) lastKnownPrices[sym] = map[startIso];
         });
 
-        // Seed FX
+        // [FIX] Initialize FX Rates for the loop
+        // Ensure we start with a valid FX rate (e.g. from START_DATE or closest available)
+        // rather than defaulting to 1.0 inside the loop, which causes massive drops.
         relevantCurrencies.forEach(c => {
-            const map = fxMaps[c];
-            if (map && map[startIso]) lastKnownFx[c] = map[startIso];
-            else lastKnownFx[c] = 1; // Default to 1 if missing start (risky but better than 0)
+            if (fxMaps[c]) {
+                const dateKeys = Object.keys(fxMaps[c]).sort();
+                // Find closest date <= startDate
+                // Since dateKeys are ISO strings, string comparison works for YYYY-MM-DD
+                const startStr = startDate.toISOString().split('T')[0];
+                let closestDate = null;
+                for (const d of dateKeys) {
+                    if (d <= startStr) closestDate = d;
+                    else break;
+                }
+                // If found, seed it. Any later dates will update it in the loop.
+                // If not found (startDate is before any history?), we rely on the first available? 
+                // Or fallback to 1.0 (unavoidable if no history).
+                if (closestDate) {
+                    lastKnownFx[c] = fxMaps[c][closestDate];
+                } else if (dateKeys.length > 0) {
+                    // If no prior history, use the EARLIEST history available as the best guess
+                    // This prevents 1.0 default if logic starts before data
+                    lastKnownFx[c] = fxMaps[c][dateKeys[0]];
+                }
+            }
         });
 
         // Seed Dividend Accumulator
@@ -443,34 +463,6 @@ export class PortfolioAnalytics {
             targetCurrency,
             symbolCurrencyMap
         ).mv;
-
-        // [FIX] Initialize FX Rates for the loop
-        // Ensure we start with a valid FX rate (e.g. from START_DATE or closest available)
-        // rather than defaulting to 1.0 inside the loop, which causes massive drops.
-        relevantCurrencies.forEach(c => {
-            if (fxMaps[c]) {
-                const dateKeys = Object.keys(fxMaps[c]).sort();
-                // Find closest date <= startDate
-                // Since dateKeys are ISO strings, string comparison works for YYYY-MM-DD
-                const startStr = currentDate.toISOString().split('T')[0];
-                let closestDate = null;
-                for (const d of dateKeys) {
-                    if (d <= startStr) closestDate = d;
-                    else break;
-                }
-                // If found, seed it. Any later dates will update it in the loop.
-                // If not found (startDate is before any history?), we rely on the first available? 
-                // Or fallback to 1.0 (unavoidable if no history).
-                if (closestDate) {
-                    lastKnownFx[c] = fxMaps[c][closestDate];
-                } else if (dateKeys.length > 0) {
-                    // If no prior history, use the EARLIEST history available as the best guess
-                    // This prevents 1.0 default if logic starts before data
-                    lastKnownFx[c] = fxMaps[c][dateKeys[0]];
-                }
-                log(`[Init FX] ${c}: ${lastKnownFx[c]}`);
-            }
-        });
 
         // Initial Units
         if (prevMarketValue > 0) units = prevMarketValue / nav;
