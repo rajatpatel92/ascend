@@ -31,9 +31,11 @@ export async function POST(req: NextRequest) {
         const existingSymbolMap = new Map(existingInvestments.map(i => [i.symbol, i]));
 
         // Prepare new investments in parallel
-        const newInvestments = await Promise.all(Array.from(uniqueSymbols)
-            .filter(symbol => !existingSymbolMap.has(symbol))
-            .map(async (symbol) => {
+        const newInvestmentPromises = [];
+        for (const symbol of uniqueSymbols) {
+            if (existingSymbolMap.has(symbol)) continue;
+
+            newInvestmentPromises.push((async () => {
                 // Find the first activity with this symbol to get metadata
                 const activity = activities.find((a: any) => a.Symbol === symbol);
 
@@ -72,26 +74,31 @@ export async function POST(req: NextRequest) {
                     type: type || 'EQUITY', // Default
                     currencyCode: currency || 'USD' // Default
                 };
-            })
-        );
+            })());
+        }
 
-        // Create missing investments
+        const newInvestments = await Promise.all(newInvestmentPromises);
+
+        // Ensure currencies exist and bulk create missing investments
         if (newInvestments.length > 0) {
-            await Promise.all(newInvestments.map(inv =>
-                prisma.investment.create({
-                    data: {
-                        symbol: inv.symbol,
-                        name: inv.name,
-                        type: inv.type,
-                        currency: {
-                            connectOrCreate: {
-                                where: { code: inv.currencyCode },
-                                create: { code: inv.currencyCode, rateToBase: 1.0 }
-                            }
-                        }
-                    }
-                })
-            ));
+            const uniqueCurrencies = Array.from(new Set(newInvestments.map(inv => inv.currencyCode)));
+            await prisma.currency.createMany({
+                data: uniqueCurrencies.map(code => ({
+                    code,
+                    rateToBase: 1.0
+                })),
+                skipDuplicates: true
+            });
+
+            await prisma.investment.createMany({
+                data: newInvestments.map(inv => ({
+                    symbol: inv.symbol,
+                    name: inv.name,
+                    type: inv.type,
+                    currencyCode: inv.currencyCode
+                })),
+                skipDuplicates: true
+            });
         }
 
         // Re-fetch all investments to get IDs

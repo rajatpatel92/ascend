@@ -49,8 +49,6 @@ export async function getExchangeRate(from: string, to: string): Promise<number 
         }
 
         return rateToCache;
-
-        return rateToCache;
     } catch (error) {
         console.error(`Failed to fetch rate for ${from} -> ${to}`, error);
         return null;
