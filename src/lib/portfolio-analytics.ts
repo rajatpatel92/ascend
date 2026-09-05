@@ -621,11 +621,9 @@ export class PortfolioAnalytics {
             }
 
             // 4. Update Structure
-            // [FIX] Recalculate Final MV based on End-of-Day Holdings & Prices
-            // Previously: const finalMV = passiveMV + netFlow; 
-            // We use MTM (recalculated) to prevent Day 2 drops.
-            // But we must fallback to Cost (passive + netFlow) if MTM is 0 (Data Missing),
-            // otherwise we get massive downspikes.
+            // Recalculate Final MV based on End-of-Day Holdings & Prices (MTM)
+            // We use MTM to prevent Day 2 drops, but fallback to Cost (passive + netFlow)
+            // if MTM is 0 despite having holdings (due to missing data).
             const { mv: recalculatedMV } = this.calculateMarketValue(
                 holdings,
                 priceMaps,
@@ -638,12 +636,8 @@ export class PortfolioAnalytics {
             );
 
             const costBasisMV = passiveMV + netFlow;
-            const finalMV = recalculatedMV > 0 ? recalculatedMV : costBasisMV;
-
-            // Debug decision
-            if (dateStr === '2023-10-15' || dateStr === '2023-10-16') {
-                log(`[mv-debug] ${dateStr}: RecalcMV=${recalculatedMV}, CostBasis=${costBasisMV}, NetFlow=${netFlow}. Selected=${finalMV}`);
-            }
+            const hasHoldings = Object.values(holdings).some(qty => qty > 0);
+            const finalMV = (recalculatedMV === 0 && hasHoldings) ? costBasisMV : recalculatedMV;
 
             // Log final day summary
             if (isLastDay) {
