@@ -158,6 +158,7 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
             let currentTotalQty = 0;
             let currentTotalCost = 0;
             let activityIndex = 0;
+            let currentCumSplit = 1;
 
             for (const dateStr of historicalDates) {
                 const date = new Date(dateStr);
@@ -187,14 +188,7 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                         const multiplier = absQty;
                         if (multiplier > 0) {
                             currentTotalQty *= multiplier;
-                            // Total Cost remains same
-
-                            // Retroactively adjust all previously calculated average prices
-                            // because the historical chart is likely split-adjusted, 
-                            // so we must express past average costs in "current share" equivalents.
-                            for (const prevDate in avgPriceHistory) {
-                                avgPriceHistory[prevDate] = avgPriceHistory[prevDate] / multiplier;
-                            }
+                            currentCumSplit *= multiplier;
                         }
                     }
 
@@ -202,9 +196,16 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                 }
 
                 if (currentTotalQty > 0) {
-                    avgPriceHistory[dateStr] = currentTotalCost / currentTotalQty;
+                    avgPriceHistory[dateStr] = (currentTotalCost / currentTotalQty) * currentCumSplit;
                 } else {
                     avgPriceHistory[dateStr] = 0;
+                }
+            }
+
+            // Retroactively adjust all calculated average prices to present share equivalents
+            if (currentCumSplit !== 1) {
+                for (const dateStr in avgPriceHistory) {
+                    avgPriceHistory[dateStr] /= currentCumSplit;
                 }
             }
         }
