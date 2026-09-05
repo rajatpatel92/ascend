@@ -31,9 +31,11 @@ export async function POST(req: NextRequest) {
         const existingSymbolMap = new Map(existingInvestments.map(i => [i.symbol, i]));
 
         // Prepare new investments in parallel
-        const newInvestments = await Promise.all(Array.from(uniqueSymbols)
-            .filter(symbol => !existingSymbolMap.has(symbol))
-            .map(async (symbol) => {
+        const newInvestmentPromises = [];
+        for (const symbol of uniqueSymbols) {
+            if (existingSymbolMap.has(symbol)) continue;
+
+            newInvestmentPromises.push((async () => {
                 // Find the first activity with this symbol to get metadata
                 const activity = activities.find((a: any) => a.Symbol === symbol);
 
@@ -72,8 +74,10 @@ export async function POST(req: NextRequest) {
                     type: type || 'EQUITY', // Default
                     currencyCode: currency || 'USD' // Default
                 };
-            })
-        );
+            })());
+        }
+
+        const newInvestments = await Promise.all(newInvestmentPromises);
 
         // Create missing investments
         if (newInvestments.length > 0) {
