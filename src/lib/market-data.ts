@@ -702,7 +702,6 @@ export class MarketDataService {
             const splitMap: Record<string, number> = {};
             if (splits && typeof splits === 'object') {
                 const keys = Object.keys(splits);
-                // const keys = Object.keys(splits);
                 Object.values(splits).forEach((s: any) => {
                     // Parse Ratio assuming "Num:Den" or usage of numerator/denominator
                     let ratio = 1;
