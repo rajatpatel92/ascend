@@ -1,19 +1,83 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import fs from 'node:fs';
-import path from 'node:path';
+import { GET, dynamic } from './route.ts';
+import { setAuthImpl } from '@/auth';
+import { setMarketDataServiceImpl } from '@/lib/market-data';
 
-test('src/app/api/market-data/intraday/route.ts security check', async (t) => {
-  await t.test('GET handler includes authentication check', () => {
-    const filePath = path.join(process.cwd(), 'src/app/api/market-data/intraday/route.ts');
-    const content = fs.readFileSync(filePath, 'utf8');
+test('GET /api/market-data/intraday endpoint', async (t) => {
+  const originalConsoleError = console.error;
 
-    // Check for auth import
-    assert.ok(content.includes("import { auth } from '@/auth'"), 'Should import auth');
+  t.afterEach(() => {
+    console.error = originalConsoleError;
+  });
 
-    // Check for auth call and 401 response
-    assert.ok(content.includes('const session = await auth()'), 'Should call auth()');
-    assert.ok(content.includes('status: 401'), 'Should return 401 status code if unauthorized');
-    assert.ok(content.includes("error: 'Unauthorized'"), 'Should return Unauthorized error message');
+  await t.test('exports dynamic configuration set to force-dynamic', () => {
+    assert.strictEqual(dynamic, 'force-dynamic', 'dynamic export should be force-dynamic');
+  });
+
+  await t.test('returns 401 Unauthorized if user is not authenticated', async () => {
+    setAuthImpl(async () => null);
+
+    const request = new Request('http://localhost/api/market-data/intraday?symbol=AAPL');
+    const response = await GET(request);
+
+    assert.strictEqual(response.status, 401);
+    const body = await response.json();
+    assert.deepStrictEqual(body, { error: 'Unauthorized' });
+  });
+
+  await t.test('returns 400 Bad Request if symbol query parameter is missing', async () => {
+    setAuthImpl(async () => ({ user: { id: 'user-123' } }));
+
+    const request = new Request('http://localhost/api/market-data/intraday');
+    const response = await GET(request);
+
+    assert.strictEqual(response.status, 400);
+    const body = await response.json();
+    assert.deepStrictEqual(body, { error: 'Symbol is required' });
+  });
+
+  await t.test('returns 200 OK and intraday prices when authorized and symbol is provided', async () => {
+    setAuthImpl(async () => ({ user: { id: 'user-123' } }));
+
+    let passedSymbol = '';
+    const mockData = [
+      { timestamp: 1700000000, price: 150.25 },
+      { timestamp: 1700003600, price: 152.50 },
+    ];
+
+    setMarketDataServiceImpl({
+      getIntradayPrices: async (symbol: string) => {
+        passedSymbol = symbol;
+        return mockData;
+      },
+    });
+
+    const request = new Request('http://localhost/api/market-data/intraday?symbol=AAPL');
+    const response = await GET(request);
+
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(passedSymbol, 'AAPL', 'Should pass correct symbol to MarketDataService');
+    const body = await response.json();
+    assert.deepStrictEqual(body, mockData);
+  });
+
+  await t.test('returns 500 Internal Server Error when MarketDataService throws', async () => {
+    setAuthImpl(async () => ({ user: { id: 'user-123' } }));
+
+    setMarketDataServiceImpl({
+      getIntradayPrices: async () => {
+        throw new Error('Market data fetch error');
+      },
+    });
+
+    console.error = () => {};
+
+    const request = new Request('http://localhost/api/market-data/intraday?symbol=FAIL');
+    const response = await GET(request);
+
+    assert.strictEqual(response.status, 500);
+    const body = await response.json();
+    assert.deepStrictEqual(body, { error: 'Internal Server Error' });
   });
 });
