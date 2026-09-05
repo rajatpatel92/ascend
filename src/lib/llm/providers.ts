@@ -1,4 +1,4 @@
-import type { LLMProvider, LLMRequest, LLMResponse } from './types.ts';
+import type { LLMProvider, LLMRequest, LLMResponse } from './types';
 
 // Gemini Provider
 export class GeminiProvider implements LLMProvider {
