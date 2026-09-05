@@ -1,4 +1,4 @@
-import { LLMProvider, LLMRequest, LLMResponse } from './types';
+import type { LLMProvider, LLMRequest, LLMResponse } from './types';
 
 // Gemini Provider
 export class GeminiProvider implements LLMProvider {

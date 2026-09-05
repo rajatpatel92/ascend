@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { GeminiProvider, OpenAIProvider, ClaudeProvider } from './providers';
-import { LLMProvider, LLMRequest, LLMResponse, LLMModel } from './types';
+import type { LLMProvider, LLMRequest, LLMResponse, LLMModel } from './types';
 
 export class LLMService {
     private static getProvider(model: LLMModel): LLMProvider {
