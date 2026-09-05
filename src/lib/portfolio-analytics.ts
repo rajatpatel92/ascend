@@ -588,10 +588,28 @@ export class PortfolioAnalytics {
                 // If we don't, and this is a new asset, the NEXT day's calculateMarketValue loop
                 // will see it as a "New Discovery" because lastKnownPrices[symbol] would be 0 or undefined,
                 // causing a massive fake "inflow" equal to the entire position value.
-                if (priceMaps[symbol]?.[dateStr]) {
-                    lastKnownPrices[symbol] = priceMaps[symbol][dateStr];
-                } else if (a.price > 0 && !['DIVIDEND', 'TRANSFER_IN', 'TRANSFER_OUT'].includes(a.type)) {
-                    // Fallback to execution price ONLY if we have no market data history for TODAY
+                let priceUpdated = false;
+                if (priceMaps[symbol]) {
+                    if (priceMaps[symbol][dateStr] !== undefined) {
+                        lastKnownPrices[symbol] = priceMaps[symbol][dateStr];
+                        priceUpdated = true;
+                    } else {
+                        // Find closest previous price if today's is missing
+                        const dateKeys = Object.keys(priceMaps[symbol]).sort();
+                        let closestDate = null;
+                        for (const d of dateKeys) {
+                            if (d <= dateStr) closestDate = d;
+                            else break;
+                        }
+                        if (closestDate) {
+                            lastKnownPrices[symbol] = priceMaps[symbol][closestDate];
+                            priceUpdated = true;
+                        }
+                    }
+                }
+
+                if (!priceUpdated && a.price > 0 && !['DIVIDEND', 'TRANSFER_IN', 'TRANSFER_OUT'].includes(a.type)) {
+                    // Fallback to execution price ONLY if we have no market data history
                     // and this is NOT a dividend or transfer (which use historical costs/rates)
                     lastKnownPrices[symbol] = a.price;
                 }
