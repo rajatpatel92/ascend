@@ -22,6 +22,7 @@ export default function TransferAccountsModal({ onClose, onSuccess }: TransferAc
     const [accounts, setAccounts] = useState<Account[]>([]);
     const [sourceAccountId, setSourceAccountId] = useState('');
     const [destinationAccountId, setDestinationAccountId] = useState('');
+    const [deactivateSourceAccount, setDeactivateSourceAccount] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -52,7 +53,7 @@ export default function TransferAccountsModal({ onClose, onSuccess }: TransferAc
             const res = await fetch('/api/accounts/transfer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sourceAccountId, destinationAccountId })
+                body: JSON.stringify({ sourceAccountId, destinationAccountId, deactivateSourceAccount })
             });
 
             const data = await res.json();
@@ -120,6 +121,18 @@ export default function TransferAccountsModal({ onClose, onSuccess }: TransferAc
                             ))}
                         </select>
                         <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>The holdings will be transferred into this account and their average cost will be preserved.</p>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+                        <input
+                            type="checkbox"
+                            id="deactivateSourceAccount"
+                            checked={deactivateSourceAccount}
+                            onChange={(e) => setDeactivateSourceAccount(e.target.checked)}
+                        />
+                        <label htmlFor="deactivateSourceAccount" style={{ fontSize: '0.9rem', userSelect: 'none', color: 'var(--text-primary)', fontWeight: 500 }}>
+                            Deactivate source account after transfer
+                        </label>
                     </div>
 
                     <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>

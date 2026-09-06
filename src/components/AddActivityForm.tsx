@@ -18,8 +18,25 @@ interface AddActivityFormProps {
     onCancel?: () => void;
 }
 
-function toLocalDateString(d: Date): string {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function toLocalDateString(d: Date | string): string {
+    if (!d) return '';
+    if (typeof d === 'string') {
+        const trimmed = d.trim();
+        if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+            return trimmed.split('T')[0];
+        }
+        const parsed = new Date(trimmed);
+        if (!isNaN(parsed.getTime())) {
+            const pad = (n: number) => n.toString().padStart(2, '0');
+            return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
+        }
+        return '';
+    }
+    if (d instanceof Date && !isNaN(d.getTime())) {
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+    return '';
 }
 
 export default function AddActivityForm({ onSuccess, initialData, onCancel }: AddActivityFormProps) {
@@ -43,7 +60,7 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
     const [currency, setCurrency] = useState('CAD');
 
     const [platforms, setPlatforms] = useState<{ id: string, name: string }[]>([]);
-    const [accounts, setAccounts] = useState<{ id: string, name: string, type: string, platformId: string, currency: string }[]>([]);
+    const [accounts, setAccounts] = useState<{ id: string, name: string, type: string, platformId: string, currency: string, isActive?: boolean }[]>([]);
     // ... inside component ...
     interface InvestmentType {
         id: string;
@@ -94,7 +111,7 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
             setCurrency(initialData.investment.currencyCode || 'CAD');
 
             setType(initialData.type);
-            setDate(toLocalDateString(new Date(initialData.date)));
+            setDate(toLocalDateString(initialData.date));
             setQuantity(initialData.quantity.toString());
             setPrice(initialData.price.toString());
             setFee(initialData.fee ? initialData.fee.toString() : '');
@@ -402,12 +419,15 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
                     >
                         <option value="">Select Account</option>
                         {accounts
-                            .filter(a => a.currency === currency)
+                            .filter(a => a.currency === currency && (a.isActive !== false || a.id === accountId))
                             .map(a => {
                                 const user = users.find(u => u.username === a.name);
                                 const displayName = user?.name || a.name;
+                                const platform = platforms.find(p => p.id === a.platformId);
+                                const platformName = platform?.name || '';
+                                const label = platformName ? `${displayName} - ${a.type} - ${platformName}` : `${displayName} - ${a.type}`;
                                 return (
-                                    <option key={a.id} value={a.id}>{displayName} - {a.type}</option>
+                                    <option key={a.id} value={a.id}>{label}</option>
                                 );
                             })}
                     </select>

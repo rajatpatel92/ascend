@@ -4,6 +4,11 @@ import { prisma } from '@/lib/prisma';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
+    const apiKey = request.headers.get('x-api-key');
+    // Allow MCP API Key
+    if (apiKey !== process.env.MCP_API_KEY) {
+        // Continue to normal execution
+    }
     try {
         const { searchParams } = new URL(request.url);
         const symbol = searchParams.get('symbol');

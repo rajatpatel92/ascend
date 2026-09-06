@@ -15,6 +15,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Compile Prisma seed script
+        run: npx tsc prisma/seed.ts --outDir prisma --module commonjs --target es2017 --skipLibCheck --esModuleInterop
+
+      - name: Build Next.js application
+        run: |
+          npm run build
+          # Copy Prisma CLI, engines, and bcryptjs to standalone folder for production migrations & seeding
+          cp -r node_modules/prisma .next/standalone/node_modules/
+          cp -r node_modules/@prisma/. .next/standalone/node_modules/@prisma/
+          cp -r node_modules/bcryptjs .next/standalone/node_modules/
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+          NODE_OPTIONS: --max-old-space-size=4096
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -32,17 +58,21 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/portfolio-app
+          images: ${{ secrets.DOCKER_USERNAME }}/ascend
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
 
+      - name: Prepare .dockerignore to include .next
+        run: sed -i '/\.next/d' .dockerignore
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile.prod
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}

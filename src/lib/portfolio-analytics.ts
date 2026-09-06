@@ -103,11 +103,11 @@ export class PortfolioAnalytics {
             weekStart.setDate(diff);
             const wKey = weekStart.toISOString().split('T')[0];
 
-            if (a.type === 'BUY' || a.type === 'DEPOSIT') {
+            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
                 processMap(flows.week, wKey, wKey, amount, 0);
                 processMap(flows.month, mKey, `${mKey}-01`, amount, 0);
                 processMap(flows.year, yKey, `${yKey}-01-01`, amount, 0);
-            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL') {
+            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
                 processMap(flows.week, wKey, wKey, 0, Math.abs(amount));
                 processMap(flows.month, mKey, `${mKey}-01`, 0, Math.abs(amount));
                 processMap(flows.year, yKey, `${yKey}-01-01`, 0, Math.abs(amount));
@@ -250,7 +250,6 @@ export class PortfolioAnalytics {
 
         const debug: string[] = [];
         const log = (msg: string) => {
-            // console.log(msg); // Output to server console
             debug.push(msg);
         };
 
@@ -391,13 +390,22 @@ export class PortfolioAnalytics {
                 let fx = 1;
 
                 if (sym !== targetCurrency) {
-                    if (fxMap && fxMap[d]) fx = fxMap[d];
-                    else {
-                        // Find closest previous FX? 
-                        // For simplicity, use 1 if missing (or lastKnownFx logic?)
-                        // We haven't started limits yet.
-                        // Let's rely on map. If missing, maybe try to find closest in map?
-                        // Using 1 is safe fallback for now.
+                    if (fxMap && fxMap[d]) {
+                        fx = fxMap[d];
+                    } else if (fxMap) {
+                        // Find closest previous FX
+                        const dateKeys = Object.keys(fxMap).sort();
+                        let closestDate = null;
+                        for (const dateKey of dateKeys) {
+                            if (dateKey <= d) closestDate = dateKey;
+                            else break;
+                        }
+                        if (closestDate) {
+                            fx = fxMap[closestDate];
+                        } else if (dateKeys.length > 0) {
+                            // If no prior history, use the EARLIEST history available
+                            fx = fxMap[dateKeys[0]];
+                        }
                     }
                 }
                 initialDividends += (a.quantity * a.price) * fx;
@@ -418,11 +426,31 @@ export class PortfolioAnalytics {
             if (map[startIso]) lastKnownPrices[sym] = map[startIso];
         });
 
-        // Seed FX
+        // [FIX] Initialize FX Rates for the loop
+        // Ensure we start with a valid FX rate (e.g. from START_DATE or closest available)
+        // rather than defaulting to 1.0 inside the loop, which causes massive drops.
         relevantCurrencies.forEach(c => {
-            const map = fxMaps[c];
-            if (map && map[startIso]) lastKnownFx[c] = map[startIso];
-            else lastKnownFx[c] = 1; // Default to 1 if missing start (risky but better than 0)
+            if (fxMaps[c]) {
+                const dateKeys = Object.keys(fxMaps[c]).sort();
+                // Find closest date <= startDate
+                // Since dateKeys are ISO strings, string comparison works for YYYY-MM-DD
+                const startStr = startDate.toISOString().split('T')[0];
+                let closestDate = null;
+                for (const d of dateKeys) {
+                    if (d <= startStr) closestDate = d;
+                    else break;
+                }
+                // If found, seed it. Any later dates will update it in the loop.
+                // If not found (startDate is before any history?), we rely on the first available? 
+                // Or fallback to 1.0 (unavoidable if no history).
+                if (closestDate) {
+                    lastKnownFx[c] = fxMaps[c][closestDate];
+                } else if (dateKeys.length > 0) {
+                    // If no prior history, use the EARLIEST history available as the best guess
+                    // This prevents 1.0 default if logic starts before data
+                    lastKnownFx[c] = fxMaps[c][dateKeys[0]];
+                }
+            }
         });
 
         // Seed Dividend Accumulator
@@ -444,34 +472,6 @@ export class PortfolioAnalytics {
             targetCurrency,
             symbolCurrencyMap
         ).mv;
-
-        // [FIX] Initialize FX Rates for the loop
-        // Ensure we start with a valid FX rate (e.g. from START_DATE or closest available)
-        // rather than defaulting to 1.0 inside the loop, which causes massive drops.
-        relevantCurrencies.forEach(c => {
-            if (fxMaps[c]) {
-                const dateKeys = Object.keys(fxMaps[c]).sort();
-                // Find closest date <= startDate
-                // Since dateKeys are ISO strings, string comparison works for YYYY-MM-DD
-                const startStr = currentDate.toISOString().split('T')[0];
-                let closestDate = null;
-                for (const d of dateKeys) {
-                    if (d <= startStr) closestDate = d;
-                    else break;
-                }
-                // If found, seed it. Any later dates will update it in the loop.
-                // If not found (startDate is before any history?), we rely on the first available? 
-                // Or fallback to 1.0 (unavoidable if no history).
-                if (closestDate) {
-                    lastKnownFx[c] = fxMaps[c][closestDate];
-                } else if (dateKeys.length > 0) {
-                    // If no prior history, use the EARLIEST history available as the best guess
-                    // This prevents 1.0 default if logic starts before data
-                    lastKnownFx[c] = fxMaps[c][dateKeys[0]];
-                }
-                log(`[Init FX] ${c}: ${lastKnownFx[c]}`);
-            }
-        });
 
         // Initial Units
         if (prevMarketValue > 0) units = prevMarketValue / nav;
@@ -549,7 +549,7 @@ export class PortfolioAnalytics {
                     // Note: If we have NO rate ever, we might assume 1 or 0. Data gaps in FX are bad.
                 }
 
-                if (a.type === 'BUY' || a.type === 'DEPOSIT') {
+                if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
                     // Cost = (Qty * Price) + Fee
                     // All in Asset Currency? Usually Price is Asset Currency. Fee might be Account Currency?
                     // Complex. For now, assume uniform currency for simplicity or map Fee separately if needed.
@@ -561,7 +561,7 @@ export class PortfolioAnalytics {
 
                     // Negative Holdings Protection
                     if (holdings[a.investment.symbol] < 0) holdings[a.investment.symbol] = 0;
-                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL') {
+                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
                     const flowVal = (Math.abs(a.quantity) * a.price) - (a.fee || 0); // Proceeds - Fee
                     netFlow -= flowVal * fxRate; // Outflow is negative
 
@@ -588,11 +588,29 @@ export class PortfolioAnalytics {
                 // If we don't, and this is a new asset, the NEXT day's calculateMarketValue loop
                 // will see it as a "New Discovery" because lastKnownPrices[symbol] would be 0 or undefined,
                 // causing a massive fake "inflow" equal to the entire position value.
-                if (priceMaps[symbol]?.[dateStr]) {
-                    lastKnownPrices[symbol] = priceMaps[symbol][dateStr];
-                } else if (a.price > 0 && a.type !== 'DIVIDEND') {
-                    // Fallback to execution price ONLY if we have no market data history for TODAY
-                    // and this is NOT a dividend (dividend price is not asset price)
+                let priceUpdated = false;
+                if (priceMaps[symbol]) {
+                    if (priceMaps[symbol][dateStr] !== undefined) {
+                        lastKnownPrices[symbol] = priceMaps[symbol][dateStr];
+                        priceUpdated = true;
+                    } else {
+                        // Find closest previous price if today's is missing
+                        const dateKeys = Object.keys(priceMaps[symbol]).sort();
+                        let closestDate = null;
+                        for (const d of dateKeys) {
+                            if (d <= dateStr) closestDate = d;
+                            else break;
+                        }
+                        if (closestDate) {
+                            lastKnownPrices[symbol] = priceMaps[symbol][closestDate];
+                            priceUpdated = true;
+                        }
+                    }
+                }
+
+                if (!priceUpdated && a.price > 0 && !['DIVIDEND', 'TRANSFER_IN', 'TRANSFER_OUT'].includes(a.type)) {
+                    // Fallback to execution price ONLY if we have no market data history
+                    // and this is NOT a dividend or transfer (which use historical costs/rates)
                     lastKnownPrices[symbol] = a.price;
                 }
 
@@ -621,11 +639,9 @@ export class PortfolioAnalytics {
             }
 
             // 4. Update Structure
-            // [FIX] Recalculate Final MV based on End-of-Day Holdings & Prices
-            // Previously: const finalMV = passiveMV + netFlow; 
-            // We use MTM (recalculated) to prevent Day 2 drops.
-            // But we must fallback to Cost (passive + netFlow) if MTM is 0 (Data Missing),
-            // otherwise we get massive downspikes.
+            // Recalculate Final MV based on End-of-Day Holdings & Prices (MTM)
+            // We use MTM to prevent Day 2 drops, but fallback to Cost (passive + netFlow)
+            // if MTM is 0 despite having holdings (due to missing data).
             const { mv: recalculatedMV } = this.calculateMarketValue(
                 holdings,
                 priceMaps,
@@ -638,12 +654,8 @@ export class PortfolioAnalytics {
             );
 
             const costBasisMV = passiveMV + netFlow;
-            const finalMV = recalculatedMV > 0 ? recalculatedMV : costBasisMV;
-
-            // Debug decision
-            if (dateStr === '2023-10-15' || dateStr === '2023-10-16') {
-                log(`[mv-debug] ${dateStr}: RecalcMV=${recalculatedMV}, CostBasis=${costBasisMV}, NetFlow=${netFlow}. Selected=${finalMV}`);
-            }
+            const hasHoldings = Object.values(holdings).some(qty => qty > 0);
+            const finalMV = (recalculatedMV === 0 && hasHoldings) ? costBasisMV : recalculatedMV;
 
             // Log final day summary
             if (isLastDay) {
@@ -715,31 +727,75 @@ export class PortfolioAnalytics {
             benchmarkReturn = ((end - start) / start) * 100;
         }
 
-        // Calculate Top/Bottom Performers (Simple approach: Price change over period)
-        // We need price history for ALL assets in the portfolio for the period.
-        // We already have `priceMaps` populated for looked up assets.
+        // Calculate Top/Bottom Performers (Personal ROI Impact over period)
         const performanceMap: { symbol: string, return: number }[] = [];
+        const endIso = endDate.toISOString().split('T')[0];
+        const startHoldings = this.computeHoldingsState(initialActivities);
 
-        // Only consider assets currently held or held during period?
-        // Let's look at all symbols involved.
+        const getClosestValue = (map: Record<string, number>, targetDate: string) => {
+            if (!map) return 0;
+            const dates = Object.keys(map).sort();
+            let closest = 0;
+            for (const d of dates) {
+                if (d <= targetDate) closest = map[d];
+                else break;
+            }
+            return closest;
+        };
+
         for (const sym of symbols) {
             if (sym === benchmarkSymbol) continue;
 
             const priceMap = priceMaps[sym];
             if (!priceMap) continue;
 
-            const dates = Object.keys(priceMap).sort();
-            // Filter dates within range
-            const relevantDates = dates.filter(d => d >= startIso);
+            const assetCurrency = symbolCurrencyMap[sym] || 'USD';
+            const fxMap = fxMaps[assetCurrency];
 
-            if (relevantDates.length < 2) continue;
+            const startQty = startHoldings[sym] || 0;
+            const startPrice = getClosestValue(priceMap, startIso);
+            const startFx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, startIso) || 1);
+            const startValue = startQty * startPrice * startFx;
 
-            const startPrice = priceMap[relevantDates[0]];
-            const endPrice = priceMap[relevantDates[relevantDates.length - 1]];
+            const endQty = holdings[sym] || 0;
+            const endPrice = getClosestValue(priceMap, endIso);
+            const endFx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, endIso) || 1);
+            const endValue = endQty * endPrice * endFx;
 
-            if (startPrice > 0) {
-                const ret = ((endPrice - startPrice) / startPrice) * 100;
+            const periodActivities = activities.filter(a => {
+                const d = new Date(a.date).getTime();
+                return d >= startDate.getTime() && d <= endDate.getTime() && a.investment.symbol === sym;
+            });
+
+            let totalBuys = 0;
+            let netInflows = 0; 
+            let totalDividends = 0;
+
+            periodActivities.forEach(a => {
+                const aIso = new Date(a.date).toISOString().split('T')[0];
+                const fx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, aIso) || 1);
+                
+                if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
+                    const val = ((a.quantity * a.price) + (a.fee || 0)) * fx;
+                    netInflows += val;
+                    totalBuys += val;
+                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
+                    const val = ((Math.abs(a.quantity) * a.price) - (a.fee || 0)) * fx;
+                    netInflows -= val;
+                } else if (a.type === 'DIVIDEND') {
+                    const val = (a.quantity * a.price) * fx;
+                    totalDividends += val;
+                }
+            });
+
+            const profit = endValue - startValue - netInflows + totalDividends;
+            const investedBasis = startValue + totalBuys;
+
+            if (investedBasis > 0.01) {
+                const ret = (profit / investedBasis) * 100;
                 performanceMap.push({ symbol: sym, return: ret });
+            } else if (startQty > 0 || totalBuys > 0) {
+                performanceMap.push({ symbol: sym, return: 0 });
             }
         }
 
@@ -766,8 +822,8 @@ export class PortfolioAnalytics {
         const h: Record<string, number> = {};
         activities.forEach(a => {
             const s = (a as Activity & { investment: { symbol: string } }).investment.symbol;
-            if (a.type === 'BUY' || a.type === 'DEPOSIT') h[s] = (h[s] || 0) + a.quantity;
-            if (a.type === 'SELL' || a.type === 'WITHDRAWAL') h[s] = (h[s] || 0) - Math.abs(a.quantity);
+            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') h[s] = (h[s] || 0) + a.quantity;
+            if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') h[s] = (h[s] || 0) - Math.abs(a.quantity);
             if (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') h[s] = (h[s] || 0) * a.quantity;
 
             // Negative Holdings Protection: prevent negative balances due to missing history
@@ -942,7 +998,6 @@ export class PortfolioAnalytics {
 
                 if (seedPrice > 0) {
                     lastKnownPrices[sym] = seedPrice;
-                    // console.log(`[Intraday Seed] ${sym} seeded at ${seedPrice} (Pre-${sessionDate})`);
                 }
             } catch (e) {
                 // Ignore seed errors, fallback to 0 is default behavior

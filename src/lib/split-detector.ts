@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { prisma } from '@/lib/prisma';
+import { prisma } from './prisma.ts';
 import YahooFinance from 'yahoo-finance2';
 
 const yahooFinance = new YahooFinance({

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: portfolio-app
+    container_name: ascend
     restart: always
     ports:
       - "3000:3000"

@@ -13,7 +13,7 @@ interface User {
 }
 
 export default function AccountsSettingsPage() {
-    const [accounts, setAccounts] = useState<{ id: string, name: string, type: string, currency: string, platform: { name: string } }[]>([]);
+    const [accounts, setAccounts] = useState<{ id: string, name: string, type: string, currency: string, platform: { name: string }, isActive?: boolean }[]>([]);
     const [platforms, setPlatforms] = useState<{ id: string, name: string, slug: string, currency: string }[]>([]);
     const [accountTypes, setAccountTypes] = useState<{ id: string, name: string, currency: string }[]>([]);
     const [users, setUsers] = useState<User[]>([]);
@@ -36,7 +36,7 @@ export default function AccountsSettingsPage() {
     const role = (session?.user as any)?.role || 'VIEWER';
 
     async function fetchAccounts() {
-        const res = await fetch('/api/accounts');
+        const res = await fetch('/api/accounts?includeInactive=true');
         const data = await res.json();
         if (Array.isArray(data)) setAccounts(data);
     }
@@ -183,7 +183,8 @@ export default function AccountsSettingsPage() {
                     name: editFormData.name,
                     type: editFormData.type,
                     platformId: editFormData.platformId || editFormData.platform?.id,
-                    currency: editFormData.currency
+                    currency: editFormData.currency,
+                    isActive: editFormData.isActive
                 }),
             });
             if (res.ok) {
@@ -376,7 +377,11 @@ export default function AccountsSettingsPage() {
                 </form>
 
                 {renderGroupedList(accounts, (account) => (
-                    <li key={account.id} className={styles.item}>
+                    <li 
+                        key={account.id} 
+                        className={styles.item}
+                        style={account.isActive === false ? { opacity: 0.6 } : undefined}
+                    >
                         {editingId === account.id ? (
                             <div className={styles.editForm}>
                                 <div style={{ flex: 2 }}>
@@ -428,6 +433,15 @@ export default function AccountsSettingsPage() {
                                         <option key={type.id} value={type.name}>{type.name}</option>
                                     ))}
                                 </select>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: '80px' }}>
+                                    <input
+                                        type="checkbox"
+                                        id={`isActive-${account.id}`}
+                                        checked={editFormData.isActive !== false}
+                                        onChange={(e) => setEditFormData({ ...editFormData, isActive: e.target.checked })}
+                                    />
+                                    <label htmlFor={`isActive-${account.id}`} style={{ fontSize: '0.8rem', userSelect: 'none', color: 'var(--text-primary)' }}>Active</label>
+                                </div>
                                 <div className={styles.editActions}>
                                     <button onClick={handleUpdateAccount} className={styles.saveButton}>Save</button>
                                     <button onClick={cancelEditing} className={styles.cancelButton}>Cancel</button>
@@ -438,6 +452,20 @@ export default function AccountsSettingsPage() {
                                 <div className={styles.accountInfo}>
                                     <span className={styles.accountName}>
                                         {(users.find(u => u.username === account.name)?.name || account.name)} - {account.type}
+                                        {account.isActive === false && (
+                                            <span style={{ 
+                                                marginLeft: '0.5rem', 
+                                                fontSize: '0.7rem', 
+                                                backgroundColor: 'var(--text-error)', 
+                                                color: '#fff', 
+                                                padding: '0.15rem 0.35rem', 
+                                                borderRadius: '0.25rem',
+                                                fontWeight: 'bold',
+                                                verticalAlign: 'middle'
+                                            }}>
+                                                Inactive
+                                            </span>
+                                        )}
                                     </span>
                                     <span className={styles.accountMeta}>{account.platform.name}</span>
                                 </div>

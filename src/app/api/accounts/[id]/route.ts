@@ -7,7 +7,7 @@ export async function PUT(
 ) {
     try {
         const { id } = await params;
-        const { name, type, platformId, currency } = await request.json();
+        const { name, type, platformId, currency, isActive } = await request.json();
 
         if (!name || !type || !platformId) {
             return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -15,7 +15,13 @@ export async function PUT(
 
         const updated = await prisma.account.update({
             where: { id },
-            data: { name, type, platformId, currency }
+            data: { 
+                name, 
+                type, 
+                platformId, 
+                currency,
+                isActive: isActive !== undefined ? isActive : undefined
+            }
         });
 
         return NextResponse.json(updated);

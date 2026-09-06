@@ -1,10 +1,12 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model Platform {
@@ -24,6 +26,7 @@ model Account {
   platformId String
   platform   Platform   @relation(fields: [platformId], references: [id])
   activities Activity[]
+  isActive   Boolean    @default(true)
 }
 
 

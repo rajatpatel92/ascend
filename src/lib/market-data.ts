@@ -1,19 +1,31 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import YahooFinance from 'yahoo-finance2';
-import { prisma } from '@/lib/prisma';
+import { prisma } from './prisma.ts';
 
-const yahooFinance = new YahooFinance({
+export const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey'],
 });
 
 // Throttler to prevent 429 Errors
-class Throttler {
+export class Throttler {
     private queue: Array<{ fn: () => Promise<any>, resolve: (v: any) => void, reject: (e: any) => void }> = [];
     private activeCount = 0;
     private isRateLimited = false;
     private resetTime: Date | null = null;
+    private maxConcurrent: number;
+    private delayMs: number;
 
-    constructor(private maxConcurrent: number, private delayMs: number) { }
+    constructor(maxConcurrent: number, delayMs: number) {
+        this.maxConcurrent = maxConcurrent;
+        this.delayMs = delayMs;
+    }
+
+    reset() {
+        this.queue = [];
+        this.activeCount = 0;
+        this.isRateLimited = false;
+        this.resetTime = null;
+    }
 
     add<T>(fn: () => Promise<T>): Promise<T> {
         if (this.isRateLimited) {
@@ -76,20 +88,21 @@ class Throttler {
             item?.reject(new Error('Circuit Breaker: Rate limit exceeded. Request cancelled.'));
         }
 
-        setTimeout(() => {
+        const timer = setTimeout(() => {
             console.log(' [THROTTLER] Circuit Breaker Reset. Resuming requests.');
             this.isRateLimited = false;
             this.resetTime = null;
             this.process();
         }, 60000);
+        if (timer.unref) timer.unref();
     }
 }
 
 // Global instance: 2 concurrent requests, 300ms delay between completions
-const apiThrottler = new Throttler(5, 300); // Adjust concurrency
+export const apiThrottler = new Throttler(5, 300); // Adjust concurrency
 
 // Helper to estimate next dividend
-async function estimateNextDividend(symbol: string): Promise<{ date: Date, amount: number } | undefined> {
+export async function estimateNextDividend(symbol: string): Promise<{ date: Date, amount: number } | undefined> {
     try {
         const endDate = new Date();
         const startDate = new Date();
@@ -702,7 +715,6 @@ export class MarketDataService {
             const splitMap: Record<string, number> = {};
             if (splits && typeof splits === 'object') {
                 const keys = Object.keys(splits);
-                // const keys = Object.keys(splits);
                 Object.values(splits).forEach((s: any) => {
                     // Parse Ratio assuming "Num:Den" or usage of numerator/denominator
                     let ratio = 1;

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-WIKI_URL="https://github.com/rajatpatel92/portfolio-app.wiki.git"
+WIKI_URL="https://github.com/rajatpatel92/ascend.wiki.git"
 SOURCE_DIR="docs/wiki"
 TEMP_DIR="tmp_wiki_deploy"
 

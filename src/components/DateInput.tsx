@@ -32,33 +32,54 @@ export default function DateInput({ value, onChange, label, id, required, classN
         if (!input) return null;
 
         let day, month, year;
-        const parts = input.split(/[\/\-\.\s,]+/);
+        const trimmed = input.trim();
 
-        if (format === 'DD/MM/YYYY') {
-            if (parts.length < 3) return null;
-            day = parseInt(parts[0]);
-            month = parseInt(parts[1]);
-            year = parseInt(parts[2]);
-        } else if (format === 'MM/DD/YYYY') {
-            if (parts.length < 3) return null;
-            month = parseInt(parts[0]);
-            day = parseInt(parts[1]);
-            year = parseInt(parts[2]);
-        } else if (format === 'YYYY-MM-DD') {
-            if (parts.length < 3) return null;
-            year = parseInt(parts[0]);
-            month = parseInt(parts[1]);
-            day = parseInt(parts[2]);
-        } else {
-            // Fallback for MMM DD, YYYY or others - try native parser
-            const d = new Date(input);
-            if (!isNaN(d.getTime())) {
-                return d.toISOString().split('T')[0];
+        if (format === 'MMM DD, YYYY') {
+            const parts = trimmed.split(/[\/\-\.\s,]+/).filter(Boolean);
+            if (parts.length >= 3) {
+                const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+                const mIdx = monthNames.findIndex(m => parts[0].toLowerCase().startsWith(m));
+                if (mIdx !== -1) {
+                    month = mIdx + 1;
+                    day = parseInt(parts[1], 10);
+                    year = parseInt(parts[2], 10);
+                }
             }
-            return null;
+        }
+
+        if (!day || !month || !year) {
+            const parts = trimmed.split(/[\/\-\.\s,]+/);
+
+            if (format === 'DD/MM/YYYY') {
+                if (parts.length < 3) return null;
+                day = parseInt(parts[0], 10);
+                month = parseInt(parts[1], 10);
+                year = parseInt(parts[2], 10);
+            } else if (format === 'MM/DD/YYYY') {
+                if (parts.length < 3) return null;
+                month = parseInt(parts[0], 10);
+                day = parseInt(parts[1], 10);
+                year = parseInt(parts[2], 10);
+            } else if (format === 'YYYY-MM-DD') {
+                if (parts.length < 3) return null;
+                year = parseInt(parts[0], 10);
+                month = parseInt(parts[1], 10);
+                day = parseInt(parts[2], 10);
+            } else {
+                // Fallback for native parser
+                const d = new Date(trimmed);
+                if (!isNaN(d.getTime())) {
+                    year = d.getFullYear();
+                    month = d.getMonth() + 1;
+                    day = d.getDate();
+                } else {
+                    return null;
+                }
+            }
         }
 
         if (!day || !month || !year) return null;
+        if (isNaN(day) || isNaN(month) || isNaN(year)) return null;
 
         // Basic validation
         if (month < 1 || month > 12) return null;

@@ -4,9 +4,17 @@ import { prisma } from '@/lib/prisma';
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const platformId = searchParams.get('platformId');
+    const includeInactive = searchParams.get('includeInactive') === 'true';
 
     try {
-        const where = platformId ? { platformId } : {};
+        const where: any = {};
+        if (platformId) {
+            where.platformId = platformId;
+        }
+        if (!includeInactive) {
+            where.isActive = true;
+        }
+
         const accounts = await prisma.account.findMany({
             where,
             include: { platform: true },

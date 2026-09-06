@@ -3,7 +3,6 @@
 
 import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import Link from 'next/link';
 import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import usePersistentState from '@/hooks/usePersistentState';
@@ -22,6 +21,7 @@ interface PortfolioSummary {
   totalGrowth: number;
   totalGrowthPercent: number;
   xirr: number | null;
+  isPortfolioYoungerThan1Y?: boolean;
   allocationByType: { name: string; value: number }[];
   allocationByAsset: { name: string; value: number }[];
   allocationByPlatform: { name: string; value: number }[];
@@ -143,8 +143,12 @@ export default function Dashboard() {
         <div className={styles.statsGrid}>
           <div className={styles.statCard}>
             <div className={styles.statLabel}>Portfolio XIRR</div>
-            <div className={`${styles.statValue} ${activeSummary.xirr && activeSummary.xirr >= 0 ? styles.positive : styles.negative}`}>
-              {activeSummary.xirr ? `${(activeSummary.xirr * 100).toFixed(2)}%` : 'N/A'}
+            <div className={`${styles.statValue} ${activeSummary.isPortfolioYoungerThan1Y ? '' : (activeSummary.xirr && activeSummary.xirr >= 0 ? styles.positive : styles.negative)}`}>
+              {activeSummary.isPortfolioYoungerThan1Y
+                ? 'N/A (<1Y)'
+                : activeSummary.xirr !== null
+                  ? `${(activeSummary.xirr * 100).toFixed(2)}%`
+                  : 'N/A'}
             </div>
           </div>
           <div className={styles.statCard}>

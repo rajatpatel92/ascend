@@ -4,8 +4,9 @@ import { MarketDataService } from '@/lib/market-data';
 import { auth } from '@/auth';
 
 export async function POST(request: Request) {
+    const apiKey = request.headers.get('x-api-key');
     const session = await auth();
-    if (!session) {
+    if (apiKey !== process.env.MCP_API_KEY && !session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -81,9 +82,10 @@ export async function POST(request: Request) {
     }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+    const apiKey = request.headers.get('x-api-key');
     const session = await auth();
-    if (!session) {
+    if (apiKey !== process.env.MCP_API_KEY && !session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -94,9 +96,11 @@ export async function GET() {
                 platform: true,
                 account: true,
             },
-            orderBy: {
-                date: 'desc',
-            },
+            orderBy: [
+                { date: 'desc' },
+                { createdAt: 'desc' },
+                { id: 'desc' }
+            ],
         });
         return NextResponse.json(activities);
     } catch (error) {

@@ -49,3 +49,9 @@ public/workbox-*.js
 public/workbox-*.js.map
 .convert/
 .convert/
+
+# research
+.research/
+ascend.code-workspace
+.agent/
+*.log

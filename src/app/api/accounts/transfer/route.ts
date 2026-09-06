@@ -87,7 +87,7 @@ export async function POST(request: Request) {
         }
 
         // 4. Generate TRANSFER_IN and TRANSFER_OUT activities for positive holdings
-        const transferActivitiesToCreate = [];
+        const transferActivitiesToCreate: any[] = [];
         const now = new Date();
 
         for (const [symbol, holding] of Array.from(holdingsMap.entries())) {
@@ -128,8 +128,17 @@ export async function POST(request: Request) {
         }
 
         // 5. Save all new activities in a transaction
-        await prisma.activity.createMany({
-            data: transferActivitiesToCreate
+        await prisma.$transaction(async (tx) => {
+            await tx.activity.createMany({
+                data: transferActivitiesToCreate
+            });
+
+            if (body.deactivateSourceAccount === true) {
+                await tx.account.update({
+                    where: { id: sourceAccountId },
+                    data: { isActive: false }
+                });
+            }
         });
 
         return NextResponse.json({ success: true, transferredHoldingsCount: transferActivitiesToCreate.length / 2 });

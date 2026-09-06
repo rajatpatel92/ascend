@@ -32,9 +32,9 @@ export async function getHoldingsAtDate(symbol: string, date: Date): Promise<Rec
         const accId = activity.accountId || 'unknown';
         if (!holdings[accId]) holdings[accId] = 0;
 
-        if (activity.type === 'BUY') {
+        if (activity.type === 'BUY' || activity.type === 'TRANSFER_IN') {
             holdings[accId] += activity.quantity;
-        } else if (activity.type === 'SELL') {
+        } else if (activity.type === 'SELL' || activity.type === 'TRANSFER_OUT') {
             holdings[accId] -= Math.abs(activity.quantity);
         } else if (activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') {
             holdings[accId] *= activity.quantity;
@@ -71,9 +71,9 @@ export function calculateHoldingsFromActivities(activities: any[], date: Date): 
         const accId = activity.accountId || 'unknown';
         if (!holdings[accId]) holdings[accId] = 0;
 
-        if (activity.type === 'BUY') {
+        if (activity.type === 'BUY' || activity.type === 'TRANSFER_IN') {
             holdings[accId] += activity.quantity;
-        } else if (activity.type === 'SELL') {
+        } else if (activity.type === 'SELL' || activity.type === 'TRANSFER_OUT') {
             holdings[accId] -= Math.abs(activity.quantity);
         } else if (activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') {
             holdings[accId] *= activity.quantity;

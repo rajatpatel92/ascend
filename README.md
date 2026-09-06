@@ -44,7 +44,7 @@ The fastest way to get started using the official pre-built image (supports `amd
 
 1.  **Create a directory** for the project and enter it:
     ```bash
-    mkdir portfolio-app && cd portfolio-app
+    mkdir ascend && cd ascend
     ```
 
 2.  **Configure Environment:**
@@ -69,8 +69,8 @@ The fastest way to get started using the official pre-built image (supports `amd
     ```yaml
     services:
       app:
-        image: rajatpatel7/portfolio-app:latest
-        container_name: portfolio-app
+        image: rajatpatel7/ascend:latest
+        container_name: ascend
         restart: always
         ports:
           - "3000:3000"
@@ -124,7 +124,7 @@ If you want to modify the code or build the image yourself.
 1.  **Clone the repository:**
     ```bash
     git clone <your-repo-url>
-    cd portfolio-app
+    cd ascend
     ```
 
 2.  **Configure Environment:**
@@ -153,7 +153,7 @@ For development or running without Docker.
 1.  **Clone and Install Dependencies:**
     ```bash
     git clone <your-repo-url>
-    cd portfolio-app
+    cd ascend
     npm install
     ```
 

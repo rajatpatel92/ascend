@@ -1,6 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { calculateXIRR, Transaction } from '@/lib/xirr';
@@ -170,6 +169,7 @@ export async function GET(request: NextRequest) {
         let totalValue = 0;
         let totalCostBasis = 0; // Track total cost basis
         let totalDayChange = 0;
+        let totalRealizedGain = 0;
         const allocationByType: Record<string, number> = {};
         const allocationByPlatform: Record<string, number> = {};
         const allocationByAccount: Record<string, { value: number, platformName: string }> = {};
@@ -183,6 +183,9 @@ export async function GET(request: NextRequest) {
 
         // Global Cash Flows for Portfolio XIRR
         const portfolioCashFlows: Transaction[] = [];
+        let globalFirstBuyDate: Date | null = null;
+        const nowGlobal = new Date();
+        const date1YGlobal = new Date(nowGlobal); date1YGlobal.setFullYear(nowGlobal.getFullYear() - 1);
 
         // ... (Market Data Fetching Loop) ...
         // Process Assets (Batched)
@@ -220,16 +223,11 @@ export async function GET(request: NextRequest) {
                 }
 
                 // 2. Calculate Cost Basis & Cash Flows
-                let totalBuyCost = 0;
-                let totalSellProceeds = 0;
-                let totalBuyQty = 0;
-                let localDividendsYTD = 0;
-                let localLifetimeDividends = 0;
                 const symbolCashFlows: Transaction[] = [];
 
                 const symbolActivities = activities.filter((a: any) => a.investment.symbol === symbol);
 
-                // Process Activities
+                // Process Activities for Cash Flows
                 for (const activity of symbolActivities) {
                     const absQty = Math.abs(activity.quantity);
                     const amount = absQty * activity.price;
@@ -237,40 +235,31 @@ export async function GET(request: NextRequest) {
                     const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
 
                     if (behavior === 'ADD') {
-                        totalBuyCost += amount;
-                        totalBuyQty += absQty;
                         symbolCashFlows.push({ amount: -(amount + fee), date: activity.date });
                     } else if (behavior === 'REMOVE') {
                         symbolCashFlows.push({ amount: (amount - fee), date: activity.date });
-                        totalSellProceeds += (amount - fee);
                     } else if (activity.type === 'DIVIDEND') {
                         const netAmount = amount - fee;
                         symbolCashFlows.push({ amount: netAmount, date: activity.date });
-
-                        // Lifetime Dividends (for Total Return)
-                        localLifetimeDividends += netAmount;
-
-                        const activityYear = new Date(activity.date).getFullYear();
-                        if (activityYear === new Date().getFullYear()) {
-                            localDividendsYTD += netAmount;
-                        }
-                    } else if (behavior === 'SPLIT') {
-                        const multiplier = absQty;
-                        if (multiplier > 0) {
-                            totalBuyQty *= multiplier;
-                        }
                     }
                 }
 
-                const avgBuyPrice = totalBuyQty > 0 ? totalBuyCost / totalBuyQty : 0;
-                const costBasis = avgBuyPrice * data.quantity;
+                // Calculate accurate Cost Basis, Realized Gains, and Dividends from Accounts map
+                let costBasis = 0;
+                let realizedGainNative = 0;
+                let localDividendsYTD = 0;
+                let localLifetimeDividends = 0;
+                
+                for (const acc of data.accounts.values()) {
+                    costBasis += acc.costBasis;
+                    realizedGainNative += acc.realizedGain;
+                    localDividendsYTD += acc.dividendsYTD;
+                    localLifetimeDividends += acc.lifetimeDividends;
+                }
+
+                const avgBuyPrice = data.quantity > 0 ? costBasis / data.quantity : 0;
                 const value = data.quantity * price;
                 const dayChange = data.quantity * regularMarketChange;
-
-                // Calculate Realized Gain (Proceeds - Cost of Sold Shares)
-                // Cost of Sold = Total Buy Cost - Remaining Cost Basis
-                const costOfSold = totalBuyCost - costBasis;
-                const realizedGainNative = totalSellProceeds - costOfSold;
 
                 // Add Current Value as "Inflow" for XIRR
                 if (data.quantity > 0) {
@@ -420,7 +409,8 @@ export async function GET(request: NextRequest) {
                                 })
                         )
                     } : null,
-                    upcomingDividend
+                    upcomingDividend,
+                    firstBuyDate
                 };
 
             } catch (error) {
@@ -459,7 +449,8 @@ export async function GET(request: NextRequest) {
                 upcomingDividend,
                 price,
                 rateToUSD,
-                marketData // Assuming I can access this if I return it from processHolding
+                marketData, // Assuming I can access this if I return it from processHolding
+                firstBuyDate
             } = result;
 
             // Update timestamp tracking
@@ -475,12 +466,18 @@ export async function GET(request: NextRequest) {
             }
 
             // Merge Cash Flows
-            portfolioCashFlows.push(...symbolCashFlows);
+            if (firstBuyDate && firstBuyDate <= date1YGlobal) {
+                portfolioCashFlows.push(...symbolCashFlows);
+            }
+            if (firstBuyDate && (!globalFirstBuyDate || firstBuyDate < globalFirstBuyDate)) {
+                globalFirstBuyDate = firstBuyDate;
+            }
 
             // Sum Dividends
             dividendsYTD += localDividendsYTD;
             totalLifetimeDividends += localLifetimeDividends;
             projectedDividends += localProjected;
+            totalRealizedGain += (constituent?.realizedGain || 0);
 
             if (data.quantity > 0) {
                 totalValue += valueUSD;
@@ -543,6 +540,7 @@ export async function GET(request: NextRequest) {
 
         // Calculate Portfolio XIRR
         const portfolioXIRR = calculateXIRR(portfolioCashFlows);
+        const isPortfolioYoungerThan1Y = globalFirstBuyDate ? globalFirstBuyDate > date1YGlobal : true;
 
         // Sort constituents by value (USD) desc
         constituents.sort((a, b) => (b.value * b.rateToUSD) - (a.value * a.rateToUSD));
@@ -569,7 +567,7 @@ export async function GET(request: NextRequest) {
         })).sort((a, b) => b.value - a.value);
 
         // Calculate Total Growth Percent
-        let totalGrowth = (totalValue - totalCostBasis) + totalLifetimeDividends;
+        let totalGrowth = (totalValue - totalCostBasis) + totalLifetimeDividends + totalRealizedGain;
         const totalGrowthPercent = totalCostBasis > 0 ? (totalGrowth / totalCostBasis) * 100 : 0;
 
         // Convert to Target Currency
@@ -585,6 +583,7 @@ export async function GET(request: NextRequest) {
             totalDayChange *= finalRate;
             totalGrowth *= finalRate;
             totalLifetimeDividends *= finalRate;
+            totalRealizedGain *= finalRate;
             dividendsYTD *= finalRate;
             projectedDividends *= finalRate;
 
@@ -661,6 +660,7 @@ export async function GET(request: NextRequest) {
             totalGrowth,
             totalGrowthPercent,
             xirr: portfolioXIRR,
+            isPortfolioYoungerThan1Y,
             lastUpdated: latestDataTimestamp,
             allocationByType: allocationByTypeArray,
             allocationByPlatform: allocationByPlatformArray,

@@ -36,12 +36,43 @@ export function DateProvider({ children }: { children: React.ReactNode }) {
     }, [dateFormat, mounted]);
 
     const formatDate = (date: Date | string | number): string => {
-        const d = new Date(date);
-        if (isNaN(d.getTime())) return 'Invalid Date';
+        if (date === undefined || date === null || date === '') return '';
 
-        const day = d.getDate();
-        const month = d.getMonth() + 1;
-        const year = d.getFullYear();
+        let year: number;
+        let month: number;
+        let day: number;
+
+        if (typeof date === 'string') {
+            const trimmed = date.trim();
+            if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+                const datePart = trimmed.split('T')[0];
+                const parts = datePart.split('-');
+                year = parseInt(parts[0], 10);
+                month = parseInt(parts[1], 10);
+                day = parseInt(parts[2], 10);
+            } else {
+                const d = new Date(trimmed);
+                if (isNaN(d.getTime())) return 'Invalid Date';
+                year = d.getFullYear();
+                month = d.getMonth() + 1;
+                day = d.getDate();
+            }
+        } else if (date instanceof Date) {
+            if (isNaN(date.getTime())) return 'Invalid Date';
+            year = date.getFullYear();
+            month = date.getMonth() + 1;
+            day = date.getDate();
+        } else if (typeof date === 'number') {
+            const d = new Date(date);
+            if (isNaN(d.getTime())) return 'Invalid Date';
+            year = d.getFullYear();
+            month = d.getMonth() + 1;
+            day = d.getDate();
+        } else {
+            return 'Invalid Date';
+        }
+
+        if (isNaN(year) || isNaN(month) || isNaN(day)) return 'Invalid Date';
 
         const pad = (n: number) => n.toString().padStart(2, '0');
         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

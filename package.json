@@ -1,5 +1,5 @@
 {
-  "name": "portfolio-app",
+  "name": "ascend",
   "version": "1.2.3",
   "private": true,
   "license": "MIT",
@@ -28,18 +28,18 @@
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.3",
     "react-icons": "^5.5.0",
+    "prisma": "^5.22.0",
     "recharts": "^3.5.1",
     "yahoo-finance2": "^3.13.2"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^22",
+    "@types/node": "^24",
     "@types/papaparse": "^5.5.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "^16.1.1",
-    "prisma": "^5.22.0",
     "typescript": "^5"
   },
   "prisma": {

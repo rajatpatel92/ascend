@@ -21,9 +21,11 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'targets must be an array' }, { status: 400 });
         }
 
-        // Upsert each target
-        const results = await Promise.all(targets.map(async (t: any) => {
-            return prisma.targetAllocation.upsert({
+        const inputSymbols = targets.map((t: any) => t.symbol);
+
+        // Delete targets that are no longer in payload and upsert remaining targets in a single transaction
+        const upsertOperations = targets.map((t: any) =>
+            prisma.targetAllocation.upsert({
                 where: { symbol: t.symbol },
                 create: {
                     symbol: t.symbol,
@@ -35,8 +37,19 @@ export async function POST(request: Request) {
                     targetPercentage: Number(t.targetPercentage),
                     yearlyDriftAdjustment: t.yearlyDriftAdjustment !== undefined ? (t.yearlyDriftAdjustment ? Number(t.yearlyDriftAdjustment) : null) : undefined
                 }
-            });
-        }));
+            })
+        );
+
+        const [_, ...results] = await prisma.$transaction([
+            prisma.targetAllocation.deleteMany({
+                where: {
+                    symbol: {
+                        notIn: inputSymbols
+                    }
+                }
+            }),
+            ...upsertOperations
+        ]);
 
         return NextResponse.json({ success: true, targets: results });
     } catch (error: any) {

@@ -205,6 +205,31 @@ export default function PerformanceChart({
 
     const off = gradientOffset();
 
+    const formatYAxisTick = (val: number) => {
+        const maxVal = chartData.length > 0 ? Math.max(...chartData.map(d => Math.abs(d.value))) : 0;
+        if (maxVal < 0.1) {
+            return `${val.toFixed(3)}%`;
+        }
+        if (maxVal < 1) {
+            return `${val.toFixed(2)}%`;
+        }
+        if (maxVal < 10) {
+            return `${val.toFixed(1)}%`;
+        }
+        return `${val.toFixed(0)}%`;
+    };
+
+    const formatTooltipValue = (val: number) => {
+        const maxVal = chartData.length > 0 ? Math.max(...chartData.map(d => Math.abs(d.value))) : 0;
+        if (maxVal < 0.01) {
+            return [`${val.toFixed(4)}%`, 'Time-Weighted Return'];
+        }
+        if (maxVal < 0.1) {
+            return [`${val.toFixed(3)}%`, 'Time-Weighted Return'];
+        }
+        return [`${val.toFixed(2)}%`, 'Time-Weighted Return'];
+    };
+
     return (
         <div className={styles.container}>
             <div className={styles.header}>
@@ -320,18 +345,18 @@ export default function PerformanceChart({
                             axisLine={false}
                         />
                         <YAxis
-                            tickFormatter={(val) => `${val.toFixed(0)}%`}
+                            tickFormatter={formatYAxisTick}
                             stroke="#9ca3af"
                             fontSize={10}
                             tickMargin={5}
                             domain={['auto', 'auto']}
-                            width={35}
+                            width={45}
                             tickCount={4}
                             tickLine={false}
                             axisLine={false}
                         />
                         <Tooltip
-                            formatter={(val: number) => [`${val.toFixed(2)}%`, 'Time-Weighted Return']}
+                            formatter={formatTooltipValue}
                             labelFormatter={(label) => {
                                 if (range === '1D') {
                                     return new Date(label).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });

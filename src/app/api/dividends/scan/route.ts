@@ -92,7 +92,7 @@ export async function POST(request: Request) {
         const holdingsActivities = await prisma.activity.findMany({
             where: {
                 investment: { symbol: { in: symbolsToScan } },
-                type: { in: ['BUY', 'SELL', 'SPLIT', 'STOCK_SPLIT'] },
+                type: { in: ['BUY', 'SELL', 'SPLIT', 'STOCK_SPLIT', 'TRANSFER_IN', 'TRANSFER_OUT'] },
                 date: { lte: endDate }
             },
             include: { investment: { select: { symbol: true } } },
