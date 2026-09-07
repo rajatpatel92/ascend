@@ -999,25 +999,43 @@ export class MarketDataService {
 
     /**
      * Efficiently updates ONLY current price and change data.
+     * Supports single symbol or bulk array of symbols to avoid N+1 queries.
      * Skips history, profiles, dividends.
      * Used for frequent (e.g. 2 min) cron updates.
      */
-    static async refreshPriceOnly(symbol: string): Promise<void> {
+    static async refreshPriceOnly(symbols: string | string[]): Promise<number> {
+        const symbolList = Array.isArray(symbols) ? symbols : [symbols];
+        if (symbolList.length === 0) return 0;
+
         try {
-            const quote = await apiThrottler.add(() => yahooFinance.quote(symbol));
-            if (!quote) return;
+            // Bulk fetch quote for all symbols in batch or single symbol
+            const result = await apiThrottler.add(() => yahooFinance.quote(symbols as any));
+            if (!result) return 0;
 
-            const priceData = {
-                price: quote.regularMarketPrice || 0,
-                change: quote.regularMarketChange || 0,
-                changePercent: quote.regularMarketChangePercent || 0,
-                lastUpdated: new Date()
-            };
+            const quotes: any[] = Array.isArray(result) ? result : [result];
+            if (quotes.length === 0) return 0;
 
-            await prisma.marketDataCache.updateMany({
-                where: { symbol },
-                data: priceData
-            });
+            const now = new Date();
+            const updates = quotes
+                .filter(q => q && q.symbol)
+                .map(q => {
+                    const priceData = {
+                        price: q.regularMarketPrice || 0,
+                        change: q.regularMarketChange || 0,
+                        changePercent: q.regularMarketChangePercent || 0,
+                        lastUpdated: now
+                    };
+                    return prisma.marketDataCache.updateMany({
+                        where: { symbol: q.symbol },
+                        data: priceData
+                    });
+                });
+
+            if (updates.length > 0) {
+                await prisma.$transaction(updates);
+            }
+
+            return updates.length;
         } catch (error) {
             throw error;
         }

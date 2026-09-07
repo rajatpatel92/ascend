@@ -34,22 +34,21 @@ export async function GET(request: Request) {
             if (!uniqueSymbols.includes(pair)) uniqueSymbols.push(pair);
         });
 
-        // 2. Process in Batches (Concurrency: 5)
-        const BATCH_SIZE = 5;
+        // 2. Process in Batches (Batch size: 10 symbols per request)
+        const BATCH_SIZE = 10;
         const results = { total: uniqueSymbols.length, success: 0, failed: 0 };
 
         for (let i = 0; i < uniqueSymbols.length; i += BATCH_SIZE) {
             const batch = uniqueSymbols.slice(i, i + BATCH_SIZE);
 
-            await Promise.all(batch.map(async (symbol) => {
-                try {
-                    await MarketDataService.refreshPriceOnly(symbol);
-                    results.success++;
-                } catch (e) {
-                    // Silent fail for incremental to avoid log spam, or minimal log
-                    results.failed++;
-                }
-            }));
+            try {
+                const count = await MarketDataService.refreshPriceOnly(batch);
+                results.success += count;
+                results.failed += (batch.length - count);
+            } catch (e) {
+                // Silent fail for incremental batch to avoid log spam
+                results.failed += batch.length;
+            }
 
             // Minimal pause between batches to be nice to API
             if (i + BATCH_SIZE < uniqueSymbols.length) {

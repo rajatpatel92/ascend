@@ -1,7 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { prisma } from './prisma.ts';
-import { Throttler, apiThrottler, estimateNextDividend, MarketDataService, yahooFinance } from './market-data.ts';
+import { register } from 'node:module';
+
+register("data:text/javascript," + encodeURIComponent(`
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "@prisma/client") {
+    return {
+      shortCircuit: true,
+      url: "data:text/javascript," + encodeURIComponent("export class PrismaClient { constructor() { this.marketDataCache = { findUnique() {}, upsert() {}, updateMany() {} }; this.$transaction = async () => {}; } }")
+    };
+  }
+  if (specifier === "yahoo-finance2") {
+    return {
+      shortCircuit: true,
+      url: "data:text/javascript," + encodeURIComponent("export default class YahooFinance { constructor() {} quote() {} quoteSummary() {} chart() {} search() {} historical() {} }")
+    };
+  }
+  return nextResolve(specifier, context);
+}
+`));
+
+const { prisma } = await import('./prisma.ts');
+const { Throttler, apiThrottler, estimateNextDividend, MarketDataService, yahooFinance } = await import('./market-data.ts');
 
 test('Throttler', async (t) => {
     t.beforeEach(() => {
@@ -402,6 +422,58 @@ test('MarketDataService.getHistoricalExchangeRate', async (t) => {
         const targetDate = new Date('2023-01-02T12:00:00.000Z');
         const rate = await MarketDataService.getHistoricalExchangeRate('EUR', 'USD', targetDate);
         assert.strictEqual(rate, 1.06);
+    });
+});
+
+test('MarketDataService.refreshPriceOnly', async (t) => {
+    t.beforeEach(() => {
+        apiThrottler.reset();
+    });
+
+    await t.test('returns 0 for empty array of symbols', async () => {
+        const count = await MarketDataService.refreshPriceOnly([]);
+        assert.strictEqual(count, 0);
+    });
+
+    await t.test('refreshes price for a single symbol string', async (subT) => {
+        subT.mock.method(yahooFinance, 'quote', async (symbol: any) => {
+            return {
+                symbol,
+                regularMarketPrice: 150.25,
+                regularMarketChange: 1.5,
+                regularMarketChangePercent: 1.01
+            };
+        });
+
+        let transactionCalled = false;
+        subT.mock.method(prisma, '$transaction', async (updates: any) => {
+            transactionCalled = true;
+            assert.strictEqual(updates.length, 1);
+            return updates;
+        });
+
+        const count = await MarketDataService.refreshPriceOnly('AAPL');
+        assert.strictEqual(count, 1);
+        assert.ok(transactionCalled);
+    });
+
+    await t.test('refreshes prices in bulk for an array of symbols', async (subT) => {
+        subT.mock.method(yahooFinance, 'quote', async (symbols: any) => {
+            return [
+                { symbol: 'AAPL', regularMarketPrice: 150, regularMarketChange: 1, regularMarketChangePercent: 0.67 },
+                { symbol: 'MSFT', regularMarketPrice: 300, regularMarketChange: 2, regularMarketChangePercent: 0.67 }
+            ];
+        });
+
+        let transactionCount = 0;
+        subT.mock.method(prisma, '$transaction', async (updates: any) => {
+            transactionCount = updates.length;
+            return updates;
+        });
+
+        const count = await MarketDataService.refreshPriceOnly(['AAPL', 'MSFT']);
+        assert.strictEqual(count, 2);
+        assert.strictEqual(transactionCount, 2);
     });
 });
 
