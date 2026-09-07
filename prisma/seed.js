@@ -5,34 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
-
-const WEAK_OR_DEFAULT_PASSWORDS = new Set([
-    'admin',
-    'admin123',
-    'administrator',
-    'password',
-    'password123',
-    'changeme',
-    'change_me',
-    '12345678',
-    'root',
-    'your_secure_admin_password_here',
-    'your_secure_password_here',
-]);
-
-function validateAdminPassword(password) {
-    if (!password || password.trim() === '') {
-        throw new Error('ADMIN_PASSWORD environment variable is required for initial seeding of the admin user.');
-    }
-    if (password.length < 8) {
-        throw new Error('ADMIN_PASSWORD must be at least 8 characters long.');
-    }
-    if (WEAK_OR_DEFAULT_PASSWORDS.has(password.toLowerCase())) {
-        throw new Error('ADMIN_PASSWORD cannot be set to a weak or default placeholder password.');
-    }
-    return password;
-}
-
 const prisma = new client_1.PrismaClient();
 async function main() {
     const adminUsername = 'admin';
@@ -41,8 +13,10 @@ async function main() {
         where: { username: adminUsername },
     });
     if (!existingAdmin) {
-        const validatedPassword = validateAdminPassword(adminPassword);
-        const hashedPassword = await bcryptjs_1.default.hash(validatedPassword, 10);
+        if (!adminPassword) {
+            throw new Error('ADMIN_PASSWORD environment variable is required for initial seeding of the admin user.');
+        }
+        const hashedPassword = await bcryptjs_1.default.hash(adminPassword, 10);
         await prisma.user.create({
             data: {
                 username: adminUsername,
