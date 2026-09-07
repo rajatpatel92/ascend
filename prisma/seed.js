@@ -5,6 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const seed_validation_1 = require("./seed-validation");
+
 const prisma = new client_1.PrismaClient();
 async function main() {
     const adminUsername = 'admin';
@@ -13,10 +15,8 @@ async function main() {
         where: { username: adminUsername },
     });
     if (!existingAdmin) {
-        if (!adminPassword) {
-            throw new Error('ADMIN_PASSWORD environment variable is required for initial seeding of the admin user.');
-        }
-        const hashedPassword = await bcryptjs_1.default.hash(adminPassword, 10);
+        const validatedPassword = (0, seed_validation_1.validateAdminPassword)(adminPassword);
+        const hashedPassword = await bcryptjs_1.default.hash(validatedPassword, 10);
         await prisma.user.create({
             data: {
                 username: adminUsername,
