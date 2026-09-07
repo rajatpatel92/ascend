@@ -79,6 +79,16 @@ test('Rebalancer Targets API Route - Static Code Verification', async (t) => {
 });
 
 test('Rebalancer Targets API Route - GET Handler', async (t) => {
+    await t.test('returns empty targets list when no allocations exist', async () => {
+        prismaMock.targetAllocation.findMany = async () => [];
+
+        const response = await GET();
+        assert.strictEqual(response.status, 200);
+
+        const data = await response.json();
+        assert.deepStrictEqual(data, { targets: [] });
+    });
+
     await t.test('returns target allocations sorted by symbol', async () => {
         const mockTargets = [
             { id: '1', symbol: 'AAPL', targetPercentage: 60, yearlyDriftAdjustment: null },
@@ -196,6 +206,36 @@ test('Rebalancer Targets API Route - POST Handler', async (t) => {
         assert.strictEqual(upsert2.args.update.yearlyDriftAdjustment, undefined);
     });
 
+    await t.test('handles empty targets array payload by deleting all existing targets', async () => {
+        let transactionOps: any[] = [];
+        prismaMock.$transaction = async (ops: any[]) => {
+            transactionOps = ops;
+            return [{ count: 5 }];
+        };
+
+        const req = new Request('http://localhost/api/rebalancer/targets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targets: [] })
+        });
+
+        const response = await POST(req);
+        assert.strictEqual(response.status, 200);
+
+        const data = await response.json();
+        assert.strictEqual(data.success, true);
+        assert.deepStrictEqual(data.targets, []);
+
+        assert.strictEqual(transactionOps.length, 1);
+        assert.deepStrictEqual(transactionOps[0].args, {
+            where: {
+                symbol: {
+                    notIn: []
+                }
+            }
+        });
+    });
+
     await t.test('correctly handles explicit falsy yearlyDriftAdjustment', async () => {
         let transactionOps: any[] = [];
         prismaMock.$transaction = async (ops: any[]) => {
@@ -219,6 +259,20 @@ test('Rebalancer Targets API Route - POST Handler', async (t) => {
         const [_, upsertOp] = transactionOps;
         assert.strictEqual(upsertOp.args.create.yearlyDriftAdjustment, null);
         assert.strictEqual(upsertOp.args.update.yearlyDriftAdjustment, null);
+    });
+
+    await t.test('returns 500 when JSON body parsing fails', async () => {
+        const req = new Request('http://localhost/api/rebalancer/targets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: 'invalid-json'
+        });
+
+        const response = await POST(req);
+        assert.strictEqual(response.status, 500);
+
+        const data = await response.json();
+        assert.ok(data.error);
     });
 
     await t.test('returns 500 when transaction fails', async () => {
