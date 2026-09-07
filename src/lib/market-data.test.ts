@@ -425,6 +425,56 @@ test('MarketDataService.getHistoricalExchangeRate', async (t) => {
     });
 });
 
+test('MarketDataService.refreshMarketData', async (t) => {
+    t.beforeEach(() => {
+        apiThrottler.reset();
+    });
+
+    await t.test('refreshes market data for a single symbol and updates cache via transaction', async (subT) => {
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            price: { regularMarketPrice: 180, regularMarketChange: 2, regularMarketChangePercent: 1.1, currency: 'USD' },
+            summaryProfile: { sector: 'Technology', country: 'United States' },
+            summaryDetail: { dividendRate: 1.0, dividendYield: 0.005 },
+            topHoldings: { sectorWeightings: [] },
+            calendarEvents: {}
+        }));
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            quotes: [{ date: '2023-01-01T00:00:00.000Z', close: 178 }]
+        }));
+
+        let transactionUpdatesLength = 0;
+        subT.mock.method(prisma, '$transaction', async (updates: any) => {
+            transactionUpdatesLength = updates.length;
+            return updates;
+        });
+
+        await MarketDataService.refreshMarketData('AAPL');
+        assert.strictEqual(transactionUpdatesLength, 1);
+    });
+
+    await t.test('refreshes market data for multiple symbols in batch using a single transaction', async (subT) => {
+        subT.mock.method(yahooFinance, 'quoteSummary', async (symbol: string) => ({
+            price: { regularMarketPrice: symbol === 'AAPL' ? 180 : 350, regularMarketChange: 1, regularMarketChangePercent: 0.5, currency: 'USD' },
+            summaryProfile: { sector: 'Technology', country: 'United States' },
+            summaryDetail: {},
+            topHoldings: {},
+            calendarEvents: {}
+        }));
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            quotes: [{ date: '2023-01-01T00:00:00.000Z', close: 100 }]
+        }));
+
+        let transactionUpdatesLength = 0;
+        subT.mock.method(prisma, '$transaction', async (updates: any) => {
+            transactionUpdatesLength = updates.length;
+            return updates;
+        });
+
+        await MarketDataService.refreshMarketData(['AAPL', 'MSFT']);
+        assert.strictEqual(transactionUpdatesLength, 2);
+    });
+});
+
 test('MarketDataService.refreshPriceOnly', async (t) => {
     t.beforeEach(() => {
         apiThrottler.reset();
