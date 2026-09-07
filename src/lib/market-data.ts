@@ -850,151 +850,167 @@ export class MarketDataService {
 
 
     /**
-     * Refresh all market data for a symbol (Price, Profile, History)
-     * This is intended to be called in the background
+     * Refresh all market data for symbols (Price, Profile, History)
+     * Supports single symbol string or array of symbols to batch database operations via transaction.
+     * This is intended to be called in the background.
      */
-    static async refreshMarketData(symbol: string): Promise<void> {
+    static async refreshMarketData(symbols: string | string[]): Promise<void> {
+        const symbolList = Array.isArray(symbols) ? Array.from(new Set(symbols)) : [symbols];
+        if (symbolList.length === 0) return;
+
         try {
-            // Force rebuild
-            console.log(`Refreshing market data for ${symbol}...`);
+            console.log(`Refreshing market data for ${symbolList.length} symbol(s)...`);
             const now = new Date();
 
-            // 1. Fetch Quote (Price, Profile, Top Holdings for ETF)
-            const quote = await apiThrottler.add(() => yahooFinance.quoteSummary(symbol, { modules: ['price', 'summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] })) as any;
-
-            let priceData = {
-                price: 0,
-                change: 0,
-                changePercent: 0,
-                currency: 'USD',
-                sector: undefined as string | undefined,
-                country: undefined as string | undefined,
-                sectorAllocations: undefined as any,
-                countryAllocations: undefined as any,
-                dividendRate: undefined as number | undefined,
-                dividendYield: undefined as number | undefined,
-                exDividendDate: undefined as Date | undefined
-            };
-
-
-            if (quote && quote.price) {
-                const p = quote.price;
-                const profile = quote.summaryProfile || {};
-                const holdings = quote.topHoldings || {};
-                const calendar = quote.calendarEvents || {};
-
-                priceData = {
-                    price: p.regularMarketPrice || 0,
-                    change: p.regularMarketChange || 0,
-                    changePercent: p.regularMarketChangePercent || 0,
-                    currency: p.currency || 'USD',
-                    sector: profile.sector,
-                    country: profile.country,
-                    sectorAllocations: holdings.sectorWeightings || [],
-                    countryAllocations: [], // Yahoo doesn't provide country breakdown easily in this module, leaving empty for now
-
-                    dividendRate: quote.summaryDetail?.dividendRate,
-                    dividendYield: quote.summaryDetail?.dividendYield,
-                    exDividendDate: calendar.exDividendDate ? new Date(calendar.exDividendDate) : undefined
+            const processSymbol = async (symbol: string) => {
+                let priceData = {
+                    price: 0,
+                    change: 0,
+                    changePercent: 0,
+                    currency: 'USD',
+                    sector: undefined as string | undefined,
+                    country: undefined as string | undefined,
+                    sectorAllocations: undefined as any,
+                    countryAllocations: undefined as any,
+                    dividendRate: undefined as number | undefined,
+                    dividendYield: undefined as number | undefined,
+                    exDividendDate: undefined as Date | undefined
                 };
 
-                const detail = quote.summaryDetail || {};
-                const keyStats = quote.defaultKeyStatistics || {};
+                try {
+                    // 1. Fetch Quote (Price, Profile, Top Holdings for ETF)
+                    const quote = await apiThrottler.add(() => yahooFinance.quoteSummary(symbol, { modules: ['price', 'summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] })) as any;
 
-                let dividendRate = detail.dividendRate;
-                let dividendYield = detail.dividendYield;
+                    if (quote && quote.price) {
+                        const p = quote.price;
+                        const profile = quote.summaryProfile || {};
+                        const holdings = quote.topHoldings || {};
+                        const calendar = quote.calendarEvents || {};
 
-                // Fallback for Dividend Rate/Yield
-                if (!dividendYield) {
-                    if (detail.yield) {
-                        dividendYield = detail.yield;
-                    } else if (detail.trailingAnnualDividendYield) {
-                        dividendYield = detail.trailingAnnualDividendYield;
-                    } else if (keyStats.yield) {
-                        dividendYield = keyStats.yield;
+                        priceData = {
+                            price: p.regularMarketPrice || 0,
+                            change: p.regularMarketChange || 0,
+                            changePercent: p.regularMarketChangePercent || 0,
+                            currency: p.currency || 'USD',
+                            sector: profile.sector,
+                            country: profile.country,
+                            sectorAllocations: holdings.sectorWeightings || [],
+                            countryAllocations: [],
+
+                            dividendRate: quote.summaryDetail?.dividendRate,
+                            dividendYield: quote.summaryDetail?.dividendYield,
+                            exDividendDate: calendar.exDividendDate ? new Date(calendar.exDividendDate) : undefined
+                        };
+
+                        const detail = quote.summaryDetail || {};
+                        const keyStats = quote.defaultKeyStatistics || {};
+
+                        let dividendRate = detail.dividendRate;
+                        let dividendYield = detail.dividendYield;
+
+                        if (!dividendYield) {
+                            if (detail.yield) {
+                                dividendYield = detail.yield;
+                            } else if (detail.trailingAnnualDividendYield) {
+                                dividendYield = detail.trailingAnnualDividendYield;
+                            } else if (keyStats.yield) {
+                                dividendYield = keyStats.yield;
+                            }
+                        }
+
+                        if (!dividendRate) {
+                            if (detail.trailingAnnualDividendRate) {
+                                dividendRate = detail.trailingAnnualDividendRate;
+                            }
+                        }
+
+                        if (!dividendRate && dividendYield && priceData.price) {
+                            dividendRate = priceData.price * dividendYield;
+                        }
+
+                        if (!dividendYield && dividendRate && priceData.price) {
+                            dividendYield = dividendRate / priceData.price;
+                        }
+
+                        priceData.dividendRate = dividendRate;
+                        priceData.dividendYield = dividendYield;
                     }
+
+                    // 2. Fetch History (Chart)
+                    const endDate = new Date();
+                    const startDate = new Date();
+                    startDate.setFullYear(startDate.getFullYear() - 20);
+                    startDate.setDate(startDate.getDate() - 7);
+
+                    const queryOptions = {
+                        period1: startDate,
+                        period2: endDate,
+                        interval: '1d' as const,
+                    };
+
+                    const chartResult = await yahooFinance.chart(symbol, queryOptions) as any;
+                    const quotes = chartResult?.quotes || [];
+
+                    const history = this.processHistory(quotes);
+
+                    return {
+                        symbol,
+                        priceData,
+                        history
+                    };
+                } catch (error) {
+                    console.error(`Error processing market data for ${symbol}:`, error);
+                    return null;
                 }
-
-                if (!dividendRate) {
-                    if (detail.trailingAnnualDividendRate) {
-                        dividendRate = detail.trailingAnnualDividendRate;
-                    }
-                }
-
-                // Calculate Rate if missing but Yield exists
-                if (!dividendRate && dividendYield && priceData.price) {
-                    dividendRate = priceData.price * dividendYield;
-                }
-
-                // Calculate Yield if missing but Rate exists
-                if (!dividendYield && dividendRate && priceData.price) {
-                    dividendYield = dividendRate / priceData.price;
-                }
-
-                priceData.dividendRate = dividendRate;
-                priceData.dividendYield = dividendYield;
-            }
-
-            // 2. Fetch History (Chart)
-            const endDate = new Date();
-            const startDate = new Date();
-            startDate.setFullYear(startDate.getFullYear() - 20); // Support up to 20y for ALL/10Y
-            startDate.setDate(startDate.getDate() - 7);
-
-            const queryOptions = {
-                period1: startDate,
-                period2: endDate,
-                interval: '1d' as const,
             };
 
-            const chartResult = await yahooFinance.chart(symbol, queryOptions) as any;
-            const quotes = chartResult?.quotes || [];
+            const results = await Promise.all(symbolList.map(symbol => processSymbol(symbol)));
+            const validResults = results.filter((r): r is NonNullable<typeof r> => r !== null);
 
-            const history = this.processHistory(quotes);
+            if (validResults.length > 0) {
+                const upserts = validResults.map(({ symbol, priceData, history }) =>
+                    prisma.marketDataCache.upsert({
+                        where: { symbol },
+                        update: {
+                            price: priceData.price,
+                            change: priceData.change,
+                            changePercent: priceData.changePercent,
+                            currency: priceData.currency,
+                            sector: priceData.sector,
+                            country: priceData.country,
+                            sectorAllocations: priceData.sectorAllocations,
+                            countryAllocations: priceData.countryAllocations,
+                            dividendRate: priceData.dividendRate,
+                            dividendYield: priceData.dividendYield,
+                            exDividendDate: priceData.exDividendDate,
+                            history: history,
+                            lastUpdated: now
+                        },
+                        create: {
+                            symbol,
+                            price: priceData.price,
+                            change: priceData.change,
+                            changePercent: priceData.changePercent,
+                            currency: priceData.currency,
+                            sector: priceData.sector,
+                            country: priceData.country,
+                            sectorAllocations: priceData.sectorAllocations,
+                            countryAllocations: priceData.countryAllocations,
+                            dividendRate: priceData.dividendRate,
+                            dividendYield: priceData.dividendYield,
+                            exDividendDate: priceData.exDividendDate,
+                            history: history,
+                            lastUpdated: now
+                        }
+                    })
+                );
 
-            // 3. Update Cache (Upsert)
-            await prisma.marketDataCache.upsert({
-                where: { symbol },
-                update: {
-                    price: priceData.price,
-                    change: priceData.change,
-                    changePercent: priceData.changePercent,
-                    currency: priceData.currency,
-                    sector: priceData.sector,
-                    country: priceData.country,
-                    sectorAllocations: priceData.sectorAllocations,
-                    countryAllocations: priceData.countryAllocations,
-                    dividendRate: priceData.dividendRate,
-                    dividendYield: priceData.dividendYield,
-                    exDividendDate: priceData.exDividendDate,
-                    history: history,
-                    lastUpdated: now
-                },
-                create: {
-                    symbol,
-                    price: priceData.price,
-                    change: priceData.change,
-                    changePercent: priceData.changePercent,
-                    currency: priceData.currency,
-                    sector: priceData.sector,
-                    country: priceData.country,
-                    sectorAllocations: priceData.sectorAllocations,
-                    countryAllocations: priceData.countryAllocations,
-                    dividendRate: priceData.dividendRate,
-                    dividendYield: priceData.dividendYield,
-                    exDividendDate: priceData.exDividendDate,
-                    history: history,
-                    lastUpdated: now
-                }
-            });
-
-            console.log(`Market data refreshed for ${symbol}`);
-
+                await prisma.$transaction(upserts);
+                console.log(`Market data refreshed for ${validResults.length} symbol(s)`);
+            }
         } catch (error) {
-            console.error(`Error refreshing market data for ${symbol}:`, error);
-            // We don't throw here to avoid crashing the background process
+            console.error(`Error refreshing market data for symbols:`, error);
         }
-
     }
 
     /**
