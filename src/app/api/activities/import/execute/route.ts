@@ -172,9 +172,7 @@ export async function POST(req: NextRequest) {
         // Prefetch data so the UI is snappy when the user navigates away
         try {
             console.log(`Prefetching market data for ${uniqueSymbols.size} symbols...`);
-            await Promise.all(Array.from(uniqueSymbols).map(symbol =>
-                MarketDataService.refreshMarketData(symbol)
-            ));
+            await MarketDataService.refreshMarketData(Array.from(uniqueSymbols));
 
             // 4. Auto-Detect Splits
             // We check only the imported symbols to save time
