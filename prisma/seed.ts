@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { validateAdminPassword } from './seed-validation';
 
 const prisma = new PrismaClient();
 
@@ -12,10 +13,8 @@ async function main() {
     });
 
     if (!existingAdmin) {
-        if (!adminPassword) {
-            throw new Error('ADMIN_PASSWORD environment variable is required for initial seeding of the admin user.');
-        }
-        const hashedPassword = await bcrypt.hash(adminPassword, 10);
+        const validatedPassword = validateAdminPassword(adminPassword);
+        const hashedPassword = await bcrypt.hash(validatedPassword, 10);
         await prisma.user.create({
             data: {
                 username: adminUsername,
