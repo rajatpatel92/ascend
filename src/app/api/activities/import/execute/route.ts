@@ -110,46 +110,68 @@ export async function POST(req: NextRequest) {
         const investmentMap = new Map(allInvestments.map(i => [i.symbol, i]));
 
         // 2. Pre-process Activities (Currency Conversion)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const processedActivities: any[] = [];
-
-        // We handle this outside the transaction because we make external API calls
         console.log('Pre-processing activities for currency conversion...');
 
-        // Group by Date+CurrencyPair to batch requests if we were smarter, but sequential/parallel per activity is fine for now
-        // Or parallelize execution
+        // Group FX rate requests by currency pair and date to eliminate duplicate API/throttler calls
+        const fxRateRequests = new Map<string, { from: string; to: string; date: Date }>();
 
-        await Promise.all(activities.map(async (activity: any) => {
+        for (const activity of activities) {
             const investment = investmentMap.get(activity.Symbol);
-            if (!investment) throw new Error(`Investment not found for ${activity.Symbol}`); // Should not happen
+            if (!investment) throw new Error(`Investment not found for ${activity.Symbol}`);
+
+            const actCurrency = activity.Currency || investment.currencyCode;
+            if (actCurrency !== investment.currencyCode) {
+                const dateObj = new Date(activity.parsedDate);
+                const dateKey = dateObj.toISOString().split('T')[0];
+                const key = `${actCurrency}_${investment.currencyCode}_${dateKey}`;
+
+                if (!fxRateRequests.has(key)) {
+                    fxRateRequests.set(key, { from: actCurrency, to: investment.currencyCode, date: dateObj });
+                }
+            }
+        }
+
+        // Batch pre-fetch all unique historical exchange rates in parallel
+        const fxRateMap = new Map<string, number | null>();
+        await Promise.all(
+            Array.from(fxRateRequests.entries()).map(async ([key, req]) => {
+                try {
+                    const rate = await MarketDataService.getHistoricalExchangeRate(req.from, req.to, req.date);
+                    fxRateMap.set(key, rate);
+                } catch (e) {
+                    console.error(`Error converting currency for ${key}:`, e);
+                    fxRateMap.set(key, null);
+                }
+            })
+        );
+
+        // Synchronously map processed activities using pre-fetched rates
+        const processedActivities = activities.map((activity: any) => {
+            const investment = investmentMap.get(activity.Symbol);
+            if (!investment) throw new Error(`Investment not found for ${activity.Symbol}`);
 
             let finalCurrency = activity.Currency || investment.currencyCode;
             let finalPrice = activity.parsedPrice;
             let finalFee = activity.parsedFee;
-            const finalQuantity = activity.parsedQuantity; // Quantity doesn't change with currency, but good to preserve
+            const finalQuantity = activity.parsedQuantity;
 
-            // CHECK CURRENCY MISMATCH
             if (finalCurrency !== investment.currencyCode) {
-                console.log(`Currency mismatch for ${activity.Symbol}: Inv ${investment.currencyCode} vs Act ${finalCurrency}. Converting...`);
-                try {
-                    const rate = await MarketDataService.getHistoricalExchangeRate(finalCurrency, investment.currencyCode, new Date(activity.parsedDate));
+                const dateObj = new Date(activity.parsedDate);
+                const dateKey = dateObj.toISOString().split('T')[0];
+                const key = `${finalCurrency}_${investment.currencyCode}_${dateKey}`;
+                const rate = fxRateMap.get(key);
 
-                    if (rate) {
-                        console.log(`Conversion Rate (${finalCurrency}->${investment.currencyCode}) on ${activity.parsedDate}: ${rate}`);
-                        finalPrice = finalPrice * rate;
-                        finalFee = finalFee * rate;
-                        finalCurrency = investment.currencyCode; // Update to native currency
-                    } else {
-                        console.warn(`Could not find exchange rate for ${finalCurrency}->${investment.currencyCode} on ${activity.parsedDate}. Keeping original currency.`);
-                        // We keep original currency, causing potentially mixed currency data which relies on the downstream display logic to handle (or show mixed).
-                        // Ideally we failed? No, better to import as-is than fail.
-                    }
-                } catch (e) {
-                    console.error('Error converting currency:', e);
+                if (rate) {
+                    console.log(`Conversion Rate (${finalCurrency}->${investment.currencyCode}) on ${activity.parsedDate}: ${rate}`);
+                    finalPrice = finalPrice * rate;
+                    finalFee = finalFee * rate;
+                    finalCurrency = investment.currencyCode;
+                } else {
+                    console.warn(`Could not find exchange rate for ${finalCurrency}->${investment.currencyCode} on ${activity.parsedDate}. Keeping original currency.`);
                 }
             }
 
-            processedActivities.push({
+            return {
                 date: new Date(activity.parsedDate),
                 type: activity.Type,
                 quantity: finalQuantity,
@@ -159,8 +181,8 @@ export async function POST(req: NextRequest) {
                 investmentId: investment.id,
                 accountId: activity.accountId,
                 platformId: activity.platformId
-            });
-        }));
+            };
+        });
 
         // 3. Create Activities
         const createdActivities = await prisma.$transaction(
