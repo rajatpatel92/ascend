@@ -188,3 +188,73 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
         assert.ok(Math.abs(res[1].marketValue - 2339.2) < 0.001);
     });
 });
+
+test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
+    t.beforeEach(() => {
+        MarketDataService.getDailyHistory = async (sym: string) => {
+            if (sym === 'AAPL') {
+                return {
+                    '2023-01-01': 150,
+                    '2023-01-02': 155,
+                    '2023-01-03': 160,
+                };
+            }
+            if (sym === 'USDCAD=X') {
+                return {
+                    '2023-01-01': 1.30,
+                    '2023-01-02': 1.32,
+                    '2023-01-03': 1.35,
+                };
+            }
+            if (sym === '^GSPC') {
+                return {
+                    '2023-01-01': 3800,
+                    '2023-01-02': 3850,
+                    '2023-01-03': 3900,
+                };
+            }
+            return {};
+        };
+    });
+
+    await t.test('accumulates dividends prior to startDate with proper FX conversion', async () => {
+        const activities: any[] = [
+            {
+                type: 'BUY',
+                quantity: 10,
+                price: 150,
+                date: new Date('2022-12-15'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            },
+            {
+                type: 'DIVIDEND',
+                quantity: 10,
+                price: 2.5, // 10 * 2.5 = 25 USD dividend
+                date: new Date('2022-12-20'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            },
+            {
+                type: 'DIVIDEND',
+                quantity: 10,
+                price: 1.0, // 10 * 1.0 = 10 USD dividend
+                date: new Date('2023-01-02'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            }
+        ];
+
+        const startDate = new Date('2023-01-01');
+        const res = await PortfolioAnalytics.calculateComparisonHistory(activities, '^GSPC', startDate, 'CAD');
+
+        // Initial dividend is before 2023-01-01.
+        // USD dividend = 25. FX rate on or before 2022-12-20 defaults to earliest available ('2023-01-01': 1.30)
+        // Initial dividend in CAD = 25 * 1.30 = 32.5 CAD.
+        // On 2023-01-02, dividend = 10 USD * 1.32 (FX on 2023-01-02) = 13.2 CAD.
+        // Accumulated dividends on 2023-01-02 should be 32.5 + 13.2 = 45.7 CAD.
+        const day2 = res.portfolio.find(p => p.date === '2023-01-02');
+        assert.ok(day2);
+
+        const debugDividendLog = res.debug.find(line => line.includes('Initial Historical Dividends'));
+        assert.ok(debugDividendLog);
+        assert.ok(debugDividendLog.includes('32.5'));
+    });
+});
