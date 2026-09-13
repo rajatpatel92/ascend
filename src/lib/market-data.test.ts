@@ -86,6 +86,84 @@ test('Throttler', async (t) => {
 
         assert.ok(newReqError?.message.includes('Rate limit exceeded. Cooling down for'));
     });
+
+    await t.test('maintains concurrency limit under high volume concurrent queueing', async () => {
+        const concurrency = 5;
+        const throttler = new Throttler(concurrency, 2);
+        let activeCount = 0;
+        let maxObservedActive = 0;
+        const totalTasks = 50;
+
+        const tasks = Array.from({ length: totalTasks }, (_, i) => {
+            return throttler.add(() => new Promise<number>((resolve) => {
+                activeCount++;
+                if (activeCount > maxObservedActive) {
+                    maxObservedActive = activeCount;
+                }
+                setTimeout(() => {
+                    activeCount--;
+                    resolve(i);
+                }, 10);
+            }));
+        });
+
+        const results = await Promise.all(tasks);
+
+        assert.strictEqual(results.length, totalTasks);
+        assert.deepStrictEqual(results, Array.from({ length: totalTasks }, (_, i) => i));
+        assert.ok(maxObservedActive <= concurrency, `Max observed active (${maxObservedActive}) exceeded concurrency limit (${concurrency})`);
+
+        // Wait a small delay to ensure all cleanup timers in finally() complete
+        await new Promise((r) => setTimeout(r, 20));
+    });
+
+    await t.test('handles mixed resolution and rejection under high concurrency without exceeding limit', async () => {
+        const concurrency = 4;
+        const throttler = new Throttler(concurrency, 2);
+        let activeCount = 0;
+        let maxObservedActive = 0;
+        const totalTasks = 40;
+
+        const tasks = Array.from({ length: totalTasks }, (_, i) => {
+            return throttler.add(() => new Promise<number>((resolve, reject) => {
+                activeCount++;
+                if (activeCount > maxObservedActive) {
+                    maxObservedActive = activeCount;
+                }
+                setTimeout(() => {
+                    activeCount--;
+                    if (i % 3 === 0) {
+                        reject(new Error(`Task ${i} error`));
+                    } else {
+                        resolve(i);
+                    }
+                }, 5);
+            }));
+        });
+
+        const results = await Promise.allSettled(tasks);
+
+        assert.strictEqual(results.length, totalTasks);
+        assert.ok(maxObservedActive <= concurrency, `Max observed active (${maxObservedActive}) exceeded limit (${concurrency})`);
+
+        let rejectedCount = 0;
+        let fulfilledCount = 0;
+        results.forEach((res, i) => {
+            if (res.status === 'fulfilled') {
+                fulfilledCount++;
+                assert.strictEqual(res.value, i);
+            } else {
+                rejectedCount++;
+                assert.strictEqual(res.reason.message, `Task ${i} error`);
+            }
+        });
+
+        assert.strictEqual(fulfilledCount + rejectedCount, totalTasks);
+        assert.ok(rejectedCount > 0, 'Expected some tasks to reject');
+
+        // Wait a small delay to ensure cleanup timers complete
+        await new Promise((r) => setTimeout(r, 20));
+    });
 });
 
 test('estimateNextDividend', async (t) => {
