@@ -105,14 +105,102 @@ test('ClientCache', async (t) => {
         assert.strictEqual(storage[CACHE_PREFIX + key], undefined);
     });
 
-    await t.test('get - handles malformed JSON', () => {
+    await t.test('get - handles malformed JSON and logs error', () => {
         const key = 'malformed';
-        storage[CACHE_PREFIX + key] = 'invalid json';
-        (localStorageMock as any)[CACHE_PREFIX + key] = 'invalid json';
+        localStorageMock.setItem(CACHE_PREFIX + key, '{ invalid json ');
 
-        // Should catch and return null
-        const retrieved = ClientCache.get(key);
-        assert.strictEqual(retrieved, null);
+        const originalConsoleError = console.error;
+        let loggedError: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+
+        try {
+            const retrieved = ClientCache.get(key);
+            assert.strictEqual(retrieved, null);
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Read Error');
+        } finally {
+            console.error = originalConsoleError;
+        }
+    });
+
+    await t.test('get - handles localStorage.getItem exception', () => {
+        const key = 'throwOnGet';
+        const originalGetItem = localStorageMock.getItem;
+        localStorageMock.getItem = () => {
+            throw new Error('Access denied');
+        };
+
+        const originalConsoleError = console.error;
+        let loggedError: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+
+        try {
+            const retrieved = ClientCache.get(key);
+            assert.strictEqual(retrieved, null);
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Read Error');
+        } finally {
+            localStorageMock.getItem = originalGetItem;
+            console.error = originalConsoleError;
+        }
+    });
+
+    await t.test('set - handles generic write error', () => {
+        const key = 'genericWriteError';
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new Error('Storage write disabled');
+        };
+
+        const originalConsoleError = console.error;
+        let loggedError: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+
+        try {
+            ClientCache.set(key, { data: 123 });
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Write Error');
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+            console.error = originalConsoleError;
+        }
+    });
+
+    await t.test('set - handles QuotaExceededError when retry after clear also fails', () => {
+        const key = 'quotaRetryFail';
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new MockDOMException('Quota exceeded', 'QuotaExceededError');
+        };
+
+        const originalConsoleError = console.error;
+        const originalConsoleWarn = console.warn;
+        let loggedError: any = null;
+        let loggedWarn: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+        console.warn = (...args: any[]) => {
+            loggedWarn = args;
+        };
+
+        try {
+            ClientCache.set(key, { data: 123 });
+            assert.ok(loggedWarn);
+            assert.strictEqual(loggedWarn[0], 'LocalStorage Quota Exceeded. Clearing old cache and retrying.');
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Write Error after clear');
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+            console.error = originalConsoleError;
+            console.warn = originalConsoleWarn;
+        }
     });
 
     await t.test('set - handles QuotaExceededError by clearing and retrying', () => {
