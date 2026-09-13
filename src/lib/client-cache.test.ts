@@ -146,6 +146,66 @@ test('ClientCache', async (t) => {
         localStorageMock.setItem = originalSetItem;
     });
 
+    await t.test('set - handles NS_ERROR_DOM_QUOTA_REACHED error by clearing and retrying', () => {
+        const key = 'quota_firefox';
+        const data = 'some data';
+
+        let setItemCalls = 0;
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = (k: string, v: string) => {
+            setItemCalls++;
+            if (setItemCalls === 1) {
+                throw new MockDOMException('Quota exceeded', 'NS_ERROR_DOM_QUOTA_REACHED');
+            }
+            storage[k] = v;
+            (localStorageMock as any)[k] = v;
+        };
+
+        assert.doesNotThrow(() => {
+            ClientCache.set(key, data);
+        });
+
+        assert.strictEqual(setItemCalls, 2);
+        assert.ok(storage[CACHE_PREFIX + key]);
+
+        // Restore
+        localStorageMock.setItem = originalSetItem;
+    });
+
+    await t.test('set - handles persistent QuotaExceededError when retry after clear fails', () => {
+        const key = 'quota_persistent';
+        const data = 'large data';
+
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new MockDOMException('Quota exceeded', 'QuotaExceededError');
+        };
+
+        assert.doesNotThrow(() => {
+            ClientCache.set(key, data);
+        });
+
+        // Restore
+        localStorageMock.setItem = originalSetItem;
+    });
+
+    await t.test('set - handles generic storage error without throwing', () => {
+        const key = 'generic_error';
+        const data = 'some data';
+
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new Error('SecurityError: Access is denied');
+        };
+
+        assert.doesNotThrow(() => {
+            ClientCache.set(key, data);
+        });
+
+        // Restore
+        localStorageMock.setItem = originalSetItem;
+    });
+
     await t.test('generateKey - produces stable keys', () => {
         const base = 'base';
         const params1 = { b: 2, a: 1 };
