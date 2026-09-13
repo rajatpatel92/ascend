@@ -623,13 +623,12 @@ export class PortfolioAnalytics {
             // Accumulate dividends
             accDividends += dailyDividends;
 
-            // Adjust passive MV to include the dividends received today for NAV calculation?
+            // Adjust passive MV to include the dividends received today for NAV calculation
             // "Price Return" usually ignores dividends. "Total Return" includes them.
             // If we add dividends to 'passiveMV' effectively we simulate reinvesting them or just holding cash.
             const adjustablePassiveMV = passiveMV + dailyDividends;
 
-            // [FIX] Epsilon Start Protection
-            // Use a threshold (0.01) to avoid division by floating point dust (e.g. 1e-15)
+            // Use an epsilon threshold (0.01) to avoid division by floating point dust (e.g. 1e-15)
             if (prevMarketValue > 0.01) {
                 const growth = adjustablePassiveMV / prevMarketValue;
                 nav = nav * growth;

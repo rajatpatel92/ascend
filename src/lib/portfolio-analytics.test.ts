@@ -188,3 +188,60 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
         assert.ok(Math.abs(res[1].marketValue - 2339.2) < 0.001);
     });
 });
+
+test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
+    t.beforeEach(() => {
+        MarketDataService.getDailyHistory = async (sym: string) => {
+            if (sym === 'PENNY') {
+                return {
+                    '2023-10-01': 0.0001,
+                    '2023-10-02': 0.0001,
+                    '2023-10-03': 100
+                };
+            }
+            if (sym === '^GSPC') {
+                return {
+                    '2023-10-01': 4000,
+                    '2023-10-02': 4010,
+                    '2023-10-03': 4020
+                };
+            }
+            return {};
+        };
+    });
+
+    await t.test('prevents NAV spikes caused by floating point dust or near-zero market value', async () => {
+        // Holding 1 share of PENNY stock at 0.0001 price gives market value 0.0001 <= 0.01 threshold
+        const activities: any[] = [
+            {
+                type: 'BUY',
+                quantity: 1,
+                price: 0.0001,
+                date: new Date('2023-10-01'),
+                investment: { symbol: 'PENNY', currency: 'CAD' }
+            }
+        ];
+
+        const startDate = new Date('2023-10-01');
+        const res = await PortfolioAnalytics.calculateComparisonHistory(
+            activities,
+            '^GSPC',
+            startDate,
+            'CAD'
+        );
+
+        // Filter for the days we mocked
+        const day1 = res.portfolio.find(p => p.date === '2023-10-01');
+        const day2 = res.portfolio.find(p => p.date === '2023-10-02');
+
+        assert.ok(day1);
+        assert.ok(day2);
+
+        // Day 1 marketValue = 0.0001 <= 0.01 epsilon threshold
+        // Day 2 marketValue = 0.0001 (prevMarketValue = 0.0001 <= 0.01), so growth calculation is bypassed
+        // NAV should remain stable (100) and not explode due to division by near-zero float dust
+        assert.strictEqual(day1.nav, 100);
+        assert.strictEqual(day2.nav, 100);
+        assert.strictEqual(Number.isFinite(day2.nav), true);
+    });
+});
