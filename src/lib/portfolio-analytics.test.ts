@@ -188,3 +188,57 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
         assert.ok(Math.abs(res[1].marketValue - 2339.2) < 0.001);
     });
 });
+
+test('PortfolioAnalytics.calculateComparisonHistory negative holdings protection', async (t) => {
+    t.beforeEach(() => {
+        MarketDataService.getDailyHistory = async (sym: string) => {
+            if (sym === 'AAPL') {
+                return {
+                    '2023-01-01': 150,
+                    '2023-01-02': 160,
+                };
+            }
+            if (sym === '^GSPC') {
+                return {
+                    '2023-01-01': 4000,
+                    '2023-01-02': 4050,
+                };
+            }
+            return {};
+        };
+    });
+
+    await t.test('treats selling more than held as implicit deposit to adjust netFlow and prevent negative holdings', async () => {
+        // User bought 5 shares, but sells 10 shares (overselling deficit of 5 shares)
+        const activities: any[] = [
+            {
+                type: 'BUY',
+                quantity: 5,
+                price: 100,
+                date: new Date('2023-01-01'),
+                investment: { symbol: 'AAPL', currency: 'CAD' }
+            },
+            {
+                type: 'SELL',
+                quantity: 10,
+                price: 150,
+                date: new Date('2023-01-02'),
+                investment: { symbol: 'AAPL', currency: 'CAD' }
+            }
+        ];
+
+        const startDate = new Date('2023-01-01');
+        const res = await PortfolioAnalytics.calculateComparisonHistory(activities, '^GSPC', startDate, 'CAD');
+
+        // On 2023-01-02:
+        // Initial SELL netFlow calculation: -(10 * 150) = -1500
+        // Deficit: holdings = 5 - 10 = -5 -> Math.abs(-5) = 5
+        // Deficit value: 5 * 150 = 750
+        // Adjusted netFlow: -1500 + 750 = -750
+        // Holdings reset to 0
+        const day2Perf = res.portfolio.find(p => p.date === '2023-01-02');
+        assert.ok(day2Perf);
+        assert.strictEqual(day2Perf.netFlow, -750);
+        assert.strictEqual(day2Perf.marketValue, 0);
+    });
+});

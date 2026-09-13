@@ -567,7 +567,7 @@ export class PortfolioAnalytics {
 
                     holdings[a.investment.symbol] = (holdings[a.investment.symbol] || 0) - Math.abs(a.quantity);
 
-                    // [FIX] Negative Holdings Protection
+                    // Negative Holdings Protection
                     // If we sell more than we have (due to missing history/splits), treat the deficit as an implicit deposit
                     // to prevent massive value drops.
                     if (holdings[a.investment.symbol] < 0) {
