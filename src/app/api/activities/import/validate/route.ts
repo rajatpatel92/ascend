@@ -40,9 +40,11 @@ export async function POST(req: NextRequest) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const validRows: any[] = [];
 
-        // Fetch reference data for validation
-        const accounts = await prisma.account.findMany();
-        const platforms = await prisma.platform.findMany();
+        // Fetch reference data for validation in parallel
+        const [accounts, platforms] = await Promise.all([
+            prisma.account.findMany(),
+            prisma.platform.findMany()
+        ]);
 
         // Create lookup maps
         // Map "name|type" -> Account[] because different platforms might have same account name/type
