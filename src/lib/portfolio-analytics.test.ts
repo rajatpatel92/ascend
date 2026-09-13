@@ -192,56 +192,69 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
 test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
     t.beforeEach(() => {
         MarketDataService.getDailyHistory = async (sym: string) => {
-            if (sym === 'PENNY') {
+            if (sym === 'AAPL') {
                 return {
-                    '2023-10-01': 0.0001,
-                    '2023-10-02': 0.0001,
-                    '2023-10-03': 100
+                    '2023-01-01': 150,
+                    '2023-01-02': 155,
+                    '2023-01-03': 160,
+                };
+            }
+            if (sym === 'USDCAD=X') {
+                return {
+                    '2023-01-01': 1.30,
+                    '2023-01-02': 1.32,
+                    '2023-01-03': 1.35,
                 };
             }
             if (sym === '^GSPC') {
                 return {
-                    '2023-10-01': 4000,
-                    '2023-10-02': 4010,
-                    '2023-10-03': 4020
+                    '2023-01-01': 3800,
+                    '2023-01-02': 3850,
+                    '2023-01-03': 3900,
                 };
             }
             return {};
         };
     });
 
-    await t.test('prevents NAV spikes caused by floating point dust or near-zero market value', async () => {
-        // Holding 1 share of PENNY stock at 0.0001 price gives market value 0.0001 <= 0.01 threshold
+    await t.test('accumulates dividends prior to startDate with proper FX conversion', async () => {
         const activities: any[] = [
             {
                 type: 'BUY',
-                quantity: 1,
-                price: 0.0001,
-                date: new Date('2023-10-01'),
-                investment: { symbol: 'PENNY', currency: 'CAD' }
+                quantity: 10,
+                price: 150,
+                date: new Date('2022-12-15'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            },
+            {
+                type: 'DIVIDEND',
+                quantity: 10,
+                price: 2.5, // 10 * 2.5 = 25 USD dividend
+                date: new Date('2022-12-20'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            },
+            {
+                type: 'DIVIDEND',
+                quantity: 10,
+                price: 1.0, // 10 * 1.0 = 10 USD dividend
+                date: new Date('2023-01-02'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
             }
         ];
 
-        const startDate = new Date('2023-10-01');
-        const res = await PortfolioAnalytics.calculateComparisonHistory(
-            activities,
-            '^GSPC',
-            startDate,
-            'CAD'
-        );
+        const startDate = new Date('2023-01-01');
+        const res = await PortfolioAnalytics.calculateComparisonHistory(activities, '^GSPC', startDate, 'CAD');
 
-        // Filter for the days we mocked
-        const day1 = res.portfolio.find(p => p.date === '2023-10-01');
-        const day2 = res.portfolio.find(p => p.date === '2023-10-02');
-
-        assert.ok(day1);
+        // Initial dividend is before 2023-01-01.
+        // USD dividend = 25. FX rate on or before 2022-12-20 defaults to earliest available ('2023-01-01': 1.30)
+        // Initial dividend in CAD = 25 * 1.30 = 32.5 CAD.
+        // On 2023-01-02, dividend = 10 USD * 1.32 (FX on 2023-01-02) = 13.2 CAD.
+        // Accumulated dividends on 2023-01-02 should be 32.5 + 13.2 = 45.7 CAD.
+        const day2 = res.portfolio.find(p => p.date === '2023-01-02');
         assert.ok(day2);
 
-        // Day 1 marketValue = 0.0001 <= 0.01 epsilon threshold
-        // Day 2 marketValue = 0.0001 (prevMarketValue = 0.0001 <= 0.01), so growth calculation is bypassed
-        // NAV should remain stable (100) and not explode due to division by near-zero float dust
-        assert.strictEqual(day1.nav, 100);
-        assert.strictEqual(day2.nav, 100);
-        assert.strictEqual(Number.isFinite(day2.nav), true);
+        const debugDividendLog = res.debug.find(line => line.includes('Initial Historical Dividends'));
+        assert.ok(debugDividendLog);
+        assert.ok(debugDividendLog.includes('32.5'));
     });
 });

@@ -4,6 +4,12 @@ import { register } from 'node:module';
 
 register("data:text/javascript," + encodeURIComponent(`
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "@/auth") {
+    return {
+      shortCircuit: true,
+      url: "data:text/javascript," + encodeURIComponent("export const auth = () => globalThis.mockAuth();")
+    };
+  }
   if (specifier === "@/lib/prisma" || specifier === "./prisma" || specifier === "@prisma/client") {
     return {
       shortCircuit: true,
@@ -44,6 +50,39 @@ const { GET } = await import('./route.ts');
 test('GET /api/holdings', async (t) => {
     t.beforeEach(() => {
         prismaDelegate.currentMock = null;
+        (globalThis as any).mockAuth = () => Promise.resolve({ user: { id: '1', role: 'USER' } });
+        process.env.MCP_API_KEY = 'test-mcp-key';
+    });
+
+    await t.test('returns 401 Unauthorized when session is missing and x-api-key is invalid/missing', async () => {
+        (globalThis as any).mockAuth = () => Promise.resolve(null);
+        const req = new Request('http://localhost/api/holdings?symbol=AAPL');
+        const res = await GET(req);
+        assert.strictEqual(res.status, 401);
+
+        const data = await res.json();
+        assert.deepStrictEqual(data, { error: 'Unauthorized' });
+    });
+
+    await t.test('allows request with valid MCP_API_KEY header when session is missing', async () => {
+        (globalThis as any).mockAuth = () => Promise.resolve(null);
+        prismaDelegate.currentMock = {
+            activity: {
+                findMany: async () => [{ type: 'BUY', quantity: 10 }]
+            },
+            activityType: {
+                findMany: async () => []
+            }
+        };
+
+        const req = new Request('http://localhost/api/holdings?symbol=AAPL', {
+            headers: { 'x-api-key': 'test-mcp-key' }
+        });
+        const res = await GET(req);
+        assert.strictEqual(res.status, 200);
+
+        const data = await res.json();
+        assert.strictEqual(data.quantity, 10);
     });
 
     await t.test('returns 400 error when symbol parameter is missing', async () => {
