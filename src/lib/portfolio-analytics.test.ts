@@ -188,3 +188,86 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
         assert.ok(Math.abs(res[1].marketValue - 2339.2) < 0.001);
     });
 });
+
+test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
+    t.beforeEach(() => {
+        MarketDataService.getDailyHistory = async (sym: string) => {
+            if (sym === 'NVDA') {
+                return {
+                    '2024-06-06': 1200, // Pre-split price
+                    '2024-06-07': 120,  // Post 10:1 split price
+                    '2024-06-08': 125,
+                };
+            }
+            if (sym === '^GSPC') {
+                return {
+                    '2024-06-06': 5000,
+                    '2024-06-07': 5010,
+                    '2024-06-08': 5020,
+                };
+            }
+            return {};
+        };
+    });
+
+    await t.test('processes stock splits pre-market so valuation remains steady', async () => {
+        const activities: any[] = [
+            {
+                id: 'act-1',
+                type: 'BUY',
+                quantity: 10,
+                price: 1000,
+                fee: 0,
+                date: new Date('2024-06-01'),
+                investment: { symbol: 'NVDA', currency: 'USD' }
+            },
+            {
+                id: 'act-2',
+                type: 'STOCK_SPLIT',
+                quantity: 10, // 10:1 split
+                price: 0,
+                fee: 0,
+                date: new Date('2024-06-07'),
+                investment: { symbol: 'NVDA', currency: 'USD' }
+            }
+        ];
+
+        const startDate = new Date('2024-06-06');
+
+        // Mock RealDate to freeze target end date to 2024-06-08
+        const RealDate = globalThis.Date;
+        const MockDate = class extends RealDate {
+            constructor(...args: any[]) {
+                if (args.length === 0) {
+                    super('2024-06-08T12:00:00Z');
+                } else {
+                    // @ts-ignore
+                    super(...args);
+                }
+            }
+        } as DateConstructor;
+        globalThis.Date = MockDate;
+
+        try {
+            const result = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                startDate,
+                'USD'
+            );
+
+            // June 6: 10 shares @ 1200 = 12000 MV
+            // June 7: Pre-market split -> 100 shares. Price 120 -> 100 * 120 = 12000 MV (steady, no huge drop)
+            // June 8: 100 shares @ 125 = 12500 MV
+            const day1 = result.portfolio.find(p => p.date === '2024-06-06');
+            const day2 = result.portfolio.find(p => p.date === '2024-06-07');
+            const day3 = result.portfolio.find(p => p.date === '2024-06-08');
+
+            assert.strictEqual(day1?.marketValue, 12000);
+            assert.strictEqual(day2?.marketValue, 12000);
+            assert.strictEqual(day3?.marketValue, 12500);
+        } finally {
+            globalThis.Date = RealDate;
+        }
+    });
+});
