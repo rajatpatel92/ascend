@@ -32,14 +32,12 @@ export class SplitService {
             return;
         }
 
-        for (const inv of investments) {
-            if (inv.activities.length === 0) continue;
+        // Filter investments with activities and prepare split fetch promises in parallel
+        const activeInvestments = investments.filter(inv => inv.activities.length > 0);
 
+        const fetchSplitPromises = activeInvestments.map(async (inv) => {
             const symbol = inv.symbol;
-            // Use date of first activity to bound the history check
             const firstActivityDate = inv.activities[0].date;
-
-            // Fetch splits from Yahoo Finance
             const queryOptions = {
                 period1: firstActivityDate,
                 events: 'split' as const
@@ -47,22 +45,24 @@ export class SplitService {
 
             let splits: any[] = [];
             try {
-                // Typings for yahooFinance can be loose, cast to any
                 const result = await yahooFinance.chart(symbol, queryOptions) as any;
-                if (result.events && result.events.splits) {
+                if (result?.events?.splits) {
                     const rawSplits = result.events.splits;
-                    if (Array.isArray(rawSplits)) {
-                        splits = rawSplits;
-                    } else {
-                        splits = Object.values(rawSplits);
-                    }
+                    splits = Array.isArray(rawSplits) ? rawSplits : Object.values(rawSplits);
                 }
             } catch (err: any) {
                 console.warn(`[SplitService] Failed to fetch splits for ${symbol}: ${err.message}`);
-                continue;
             }
 
+            return { inv, splits };
+        });
+
+        const results = await Promise.all(fetchSplitPromises);
+
+        for (const { inv, splits } of results) {
             if (splits.length === 0) continue;
+
+            const symbol = inv.symbol;
 
             for (const split of splits) {
                 const splitDate = new Date(split.date);
