@@ -555,3 +555,41 @@ test('MarketDataService.getIntradayPrices', async (t) => {
         });
     });
 });
+
+test('MarketDataService.getIntradayHistory', async (t) => {
+    t.beforeEach(() => {
+        apiThrottler.reset();
+    });
+
+    await t.test('transforms intraday price points array into key-value map with ISO date keys', async (subT) => {
+        subT.mock.method(MarketDataService, 'getIntradayPrices', async () => [
+            { date: '2023-01-01T10:00:00.000Z', value: 150.5 },
+            { date: '2023-01-01T10:15:00.000Z', value: 151.25 }
+        ]);
+
+        const history = await MarketDataService.getIntradayHistory('AAPL');
+
+        assert.deepStrictEqual(history, {
+            '2023-01-01T10:00:00.000Z': 150.5,
+            '2023-01-01T10:15:00.000Z': 151.25
+        });
+    });
+
+    await t.test('returns empty record if getIntradayPrices returns empty list', async (subT) => {
+        subT.mock.method(MarketDataService, 'getIntradayPrices', async () => []);
+
+        const history = await MarketDataService.getIntradayHistory('EMPTY');
+
+        assert.deepStrictEqual(history, {});
+    });
+
+    await t.test('handles and catches error from getIntradayPrices returning empty record', async (subT) => {
+        subT.mock.method(MarketDataService, 'getIntradayPrices', async () => {
+            throw new Error('Network error');
+        });
+
+        const history = await MarketDataService.getIntradayHistory('ERROR');
+
+        assert.deepStrictEqual(history, {});
+    });
+});
