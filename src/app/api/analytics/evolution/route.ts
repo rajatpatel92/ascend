@@ -33,7 +33,6 @@ export async function POST(req: Request) {
             if (!a.account) return false; // Filter out orphans
 
             if (filters?.assetClasses?.length > 0) {
-                // console.log(`Checking asset class: ${a.investment.type} against ${filters.assetClasses}`);
                 if (!filters.assetClasses.includes(a.investment.type)) return false;
             }
             if (filters?.accountTypes?.length > 0) {
