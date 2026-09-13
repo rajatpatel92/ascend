@@ -188,3 +188,77 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
         assert.ok(Math.abs(res[1].marketValue - 2339.2) < 0.001);
     });
 });
+
+test('PortfolioAnalytics.calculateComparisonHistory updates last known prices and FX for newly involved assets', async (t) => {
+    t.beforeEach(() => {
+        MarketDataService.getDailyHistory = async (sym: string) => {
+            if (sym === 'AAPL') {
+                return {
+                    '2023-10-01': 150,
+                    '2023-10-02': 152,
+                    '2023-10-03': 154
+                };
+            }
+            if (sym === 'MSFT') {
+                return {
+                    '2023-10-02': 300,
+                    '2023-10-03': 305
+                };
+            }
+            if (sym === 'USDCAD=X') {
+                return {
+                    '2023-10-01': 1.30,
+                    '2023-10-02': 1.31,
+                    '2023-10-03': 1.32
+                };
+            }
+            if (sym === '^GSPC') {
+                return {
+                    '2023-10-01': 4200,
+                    '2023-10-02': 4210,
+                    '2023-10-03': 4220
+                };
+            }
+            return {};
+        };
+    });
+
+    await t.test('buying a new asset does not cause fake discovery flow on the next day', async () => {
+        const startDate = new Date('2023-10-01T00:00:00Z');
+
+        const activities: any[] = [
+            {
+                type: 'BUY',
+                quantity: 10,
+                price: 150,
+                fee: 0,
+                date: new Date('2023-10-01T12:00:00Z'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            },
+            {
+                type: 'BUY',
+                quantity: 5,
+                price: 300,
+                fee: 0,
+                date: new Date('2023-10-02T12:00:00Z'),
+                investment: { symbol: 'MSFT', currency: 'USD' }
+            }
+        ];
+
+        const result = await PortfolioAnalytics.calculateComparisonHistory(
+            activities,
+            '^GSPC',
+            startDate,
+            'CAD'
+        );
+
+        const day2 = result.portfolio.find(d => d.date === '2023-10-02');
+        const day3 = result.portfolio.find(d => d.date === '2023-10-03');
+
+        assert.ok(day2);
+        assert.ok(day3);
+
+        // On day 3 (Oct 3), there are no new discovery flows triggered for MSFT because lastKnownPrices[MSFT] was set on Oct 2
+        assert.strictEqual(day3.discoveryFlow || 0, 0);
+    });
+});
