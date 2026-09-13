@@ -1,14 +1,14 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { timingSafeCompare } from '@/lib/security';
+import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
     const apiKey = request.headers.get('x-api-key');
-    // Allow MCP API Key
-    if (!timingSafeCompare(apiKey, process.env.MCP_API_KEY)) {
-        // Continue to normal execution
+    const session = await auth();
+    if (apiKey !== process.env.MCP_API_KEY && !session) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     try {
         const { searchParams } = new URL(request.url);
