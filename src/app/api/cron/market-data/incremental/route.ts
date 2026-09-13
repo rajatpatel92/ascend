@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
+import { timingSafeCompare } from '@/lib/security';
 
 export const maxDuration = 30; // Fast execution
 export const dynamic = 'force-dynamic';
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const key = searchParams.get('key');
     const headerKey = request.headers.get('x-cron-secret');
-    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET && headerKey !== process.env.CRON_SECRET) {
+    if (process.env.CRON_SECRET && !timingSafeCompare(key, process.env.CRON_SECRET) && !timingSafeCompare(headerKey, process.env.CRON_SECRET)) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

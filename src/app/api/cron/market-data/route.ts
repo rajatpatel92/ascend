@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
+import { timingSafeCompare } from '@/lib/security';
 
 // Increase max duration for this function if hosting supports it (e.g. Vercel Pro)
 // For Hobby, 10s is limit (serverless) or 60s (edge). 
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
     const streamMode = searchParams.get('stream') === 'true';
 
     // Basic protection
-    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET && headerKey !== process.env.CRON_SECRET) {
+    if (process.env.CRON_SECRET && !timingSafeCompare(key, process.env.CRON_SECRET) && !timingSafeCompare(headerKey, process.env.CRON_SECRET)) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
