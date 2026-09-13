@@ -105,14 +105,102 @@ test('ClientCache', async (t) => {
         assert.strictEqual(storage[CACHE_PREFIX + key], undefined);
     });
 
-    await t.test('get - handles malformed JSON', () => {
+    await t.test('get - handles malformed JSON and logs error', () => {
         const key = 'malformed';
-        storage[CACHE_PREFIX + key] = 'invalid json';
-        (localStorageMock as any)[CACHE_PREFIX + key] = 'invalid json';
+        localStorageMock.setItem(CACHE_PREFIX + key, '{ invalid json ');
 
-        // Should catch and return null
-        const retrieved = ClientCache.get(key);
-        assert.strictEqual(retrieved, null);
+        const originalConsoleError = console.error;
+        let loggedError: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+
+        try {
+            const retrieved = ClientCache.get(key);
+            assert.strictEqual(retrieved, null);
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Read Error');
+        } finally {
+            console.error = originalConsoleError;
+        }
+    });
+
+    await t.test('get - handles localStorage.getItem exception', () => {
+        const key = 'throwOnGet';
+        const originalGetItem = localStorageMock.getItem;
+        localStorageMock.getItem = () => {
+            throw new Error('Access denied');
+        };
+
+        const originalConsoleError = console.error;
+        let loggedError: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+
+        try {
+            const retrieved = ClientCache.get(key);
+            assert.strictEqual(retrieved, null);
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Read Error');
+        } finally {
+            localStorageMock.getItem = originalGetItem;
+            console.error = originalConsoleError;
+        }
+    });
+
+    await t.test('set - handles generic write error', () => {
+        const key = 'genericWriteError';
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new Error('Storage write disabled');
+        };
+
+        const originalConsoleError = console.error;
+        let loggedError: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+
+        try {
+            ClientCache.set(key, { data: 123 });
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Write Error');
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+            console.error = originalConsoleError;
+        }
+    });
+
+    await t.test('set - handles QuotaExceededError when retry after clear also fails', () => {
+        const key = 'quotaRetryFail';
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new MockDOMException('Quota exceeded', 'QuotaExceededError');
+        };
+
+        const originalConsoleError = console.error;
+        const originalConsoleWarn = console.warn;
+        let loggedError: any = null;
+        let loggedWarn: any = null;
+        console.error = (...args: any[]) => {
+            loggedError = args;
+        };
+        console.warn = (...args: any[]) => {
+            loggedWarn = args;
+        };
+
+        try {
+            ClientCache.set(key, { data: 123 });
+            assert.ok(loggedWarn);
+            assert.strictEqual(loggedWarn[0], 'LocalStorage Quota Exceeded. Clearing old cache and retrying.');
+            assert.ok(loggedError);
+            assert.strictEqual(loggedError[0], 'Cache Write Error after clear');
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+            console.error = originalConsoleError;
+            console.warn = originalConsoleWarn;
+        }
     });
 
     await t.test('set - handles QuotaExceededError by clearing and retrying', () => {
@@ -141,6 +229,66 @@ test('ClientCache', async (t) => {
         assert.strictEqual(storage[CACHE_PREFIX + 'other'], undefined); // Cleared
         assert.strictEqual(storage['not_our_prefix'], 'leave me alone'); // Not cleared
         assert.ok(storage[CACHE_PREFIX + key]);
+
+        // Restore
+        localStorageMock.setItem = originalSetItem;
+    });
+
+    await t.test('set - handles NS_ERROR_DOM_QUOTA_REACHED error by clearing and retrying', () => {
+        const key = 'quota_firefox';
+        const data = 'some data';
+
+        let setItemCalls = 0;
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = (k: string, v: string) => {
+            setItemCalls++;
+            if (setItemCalls === 1) {
+                throw new MockDOMException('Quota exceeded', 'NS_ERROR_DOM_QUOTA_REACHED');
+            }
+            storage[k] = v;
+            (localStorageMock as any)[k] = v;
+        };
+
+        assert.doesNotThrow(() => {
+            ClientCache.set(key, data);
+        });
+
+        assert.strictEqual(setItemCalls, 2);
+        assert.ok(storage[CACHE_PREFIX + key]);
+
+        // Restore
+        localStorageMock.setItem = originalSetItem;
+    });
+
+    await t.test('set - handles persistent QuotaExceededError when retry after clear fails', () => {
+        const key = 'quota_persistent';
+        const data = 'large data';
+
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new MockDOMException('Quota exceeded', 'QuotaExceededError');
+        };
+
+        assert.doesNotThrow(() => {
+            ClientCache.set(key, data);
+        });
+
+        // Restore
+        localStorageMock.setItem = originalSetItem;
+    });
+
+    await t.test('set - handles generic storage error without throwing', () => {
+        const key = 'generic_error';
+        const data = 'some data';
+
+        const originalSetItem = localStorageMock.setItem;
+        localStorageMock.setItem = () => {
+            throw new Error('SecurityError: Access is denied');
+        };
+
+        assert.doesNotThrow(() => {
+            ClientCache.set(key, data);
+        });
 
         // Restore
         localStorageMock.setItem = originalSetItem;

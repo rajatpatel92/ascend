@@ -2,11 +2,17 @@
 import { NextResponse } from 'next/server';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from '@/lib/prisma';
+import { auth } from '@/auth';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
+    const session = await auth();
+    if (!session?.user) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const range = searchParams.get('range') || '1M';
     const targetCurrency = searchParams.get('currency') || 'CAD';
