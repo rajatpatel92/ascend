@@ -375,12 +375,8 @@ export class PortfolioAnalytics {
         const initialActivities = activities.filter(a => new Date(a.date) < startDate);
         holdings = this.computeHoldingsState(initialActivities);
 
-        // Accumulate dividends from initial activities
+        // Accumulate dividends from initial activities prior to startDate
         let initialDividends = 0;
-        // We need FX for initial dividends. 
-        // Logic: Iterate initialActivities, if DIVIDEND, find FX at that date and sum.
-        // Problem: We need the FX maps populated first. They are populated above.
-        // So we can do this calculation now.
 
         initialActivities.forEach(a => {
             if (a.type === 'DIVIDEND') {

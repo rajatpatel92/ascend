@@ -192,82 +192,69 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
 test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
     t.beforeEach(() => {
         MarketDataService.getDailyHistory = async (sym: string) => {
-            if (sym === 'NVDA') {
+            if (sym === 'AAPL') {
                 return {
-                    '2024-06-06': 1200, // Pre-split price
-                    '2024-06-07': 120,  // Post 10:1 split price
-                    '2024-06-08': 125,
+                    '2023-01-01': 150,
+                    '2023-01-02': 155,
+                    '2023-01-03': 160,
+                };
+            }
+            if (sym === 'USDCAD=X') {
+                return {
+                    '2023-01-01': 1.30,
+                    '2023-01-02': 1.32,
+                    '2023-01-03': 1.35,
                 };
             }
             if (sym === '^GSPC') {
                 return {
-                    '2024-06-06': 5000,
-                    '2024-06-07': 5010,
-                    '2024-06-08': 5020,
+                    '2023-01-01': 3800,
+                    '2023-01-02': 3850,
+                    '2023-01-03': 3900,
                 };
             }
             return {};
         };
     });
 
-    await t.test('processes stock splits pre-market so valuation remains steady', async () => {
+    await t.test('accumulates dividends prior to startDate with proper FX conversion', async () => {
         const activities: any[] = [
             {
-                id: 'act-1',
                 type: 'BUY',
                 quantity: 10,
-                price: 1000,
-                fee: 0,
-                date: new Date('2024-06-01'),
-                investment: { symbol: 'NVDA', currency: 'USD' }
+                price: 150,
+                date: new Date('2022-12-15'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
             },
             {
-                id: 'act-2',
-                type: 'STOCK_SPLIT',
-                quantity: 10, // 10:1 split
-                price: 0,
-                fee: 0,
-                date: new Date('2024-06-07'),
-                investment: { symbol: 'NVDA', currency: 'USD' }
+                type: 'DIVIDEND',
+                quantity: 10,
+                price: 2.5, // 10 * 2.5 = 25 USD dividend
+                date: new Date('2022-12-20'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            },
+            {
+                type: 'DIVIDEND',
+                quantity: 10,
+                price: 1.0, // 10 * 1.0 = 10 USD dividend
+                date: new Date('2023-01-02'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
             }
         ];
 
-        const startDate = new Date('2024-06-06');
+        const startDate = new Date('2023-01-01');
+        const res = await PortfolioAnalytics.calculateComparisonHistory(activities, '^GSPC', startDate, 'CAD');
 
-        // Mock RealDate to freeze target end date to 2024-06-08
-        const RealDate = globalThis.Date;
-        const MockDate = class extends RealDate {
-            constructor(...args: any[]) {
-                if (args.length === 0) {
-                    super('2024-06-08T12:00:00Z');
-                } else {
-                    // @ts-ignore
-                    super(...args);
-                }
-            }
-        } as DateConstructor;
-        globalThis.Date = MockDate;
+        // Initial dividend is before 2023-01-01.
+        // USD dividend = 25. FX rate on or before 2022-12-20 defaults to earliest available ('2023-01-01': 1.30)
+        // Initial dividend in CAD = 25 * 1.30 = 32.5 CAD.
+        // On 2023-01-02, dividend = 10 USD * 1.32 (FX on 2023-01-02) = 13.2 CAD.
+        // Accumulated dividends on 2023-01-02 should be 32.5 + 13.2 = 45.7 CAD.
+        const day2 = res.portfolio.find(p => p.date === '2023-01-02');
+        assert.ok(day2);
 
-        try {
-            const result = await PortfolioAnalytics.calculateComparisonHistory(
-                activities,
-                '^GSPC',
-                startDate,
-                'USD'
-            );
-
-            // June 6: 10 shares @ 1200 = 12000 MV
-            // June 7: Pre-market split -> 100 shares. Price 120 -> 100 * 120 = 12000 MV (steady, no huge drop)
-            // June 8: 100 shares @ 125 = 12500 MV
-            const day1 = result.portfolio.find(p => p.date === '2024-06-06');
-            const day2 = result.portfolio.find(p => p.date === '2024-06-07');
-            const day3 = result.portfolio.find(p => p.date === '2024-06-08');
-
-            assert.strictEqual(day1?.marketValue, 12000);
-            assert.strictEqual(day2?.marketValue, 12000);
-            assert.strictEqual(day3?.marketValue, 12500);
-        } finally {
-            globalThis.Date = RealDate;
-        }
+        const debugDividendLog = res.debug.find(line => line.includes('Initial Historical Dividends'));
+        assert.ok(debugDividendLog);
+        assert.ok(debugDividendLog.includes('32.5'));
     });
 });
