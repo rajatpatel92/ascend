@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from "@/auth";
+import { timingSafeCompare } from '@/lib/security';
 
 export async function GET(request: Request) {
     const apiKey = request.headers.get('x-api-key');
     const session = await auth();
-    if (apiKey !== process.env.MCP_API_KEY && !session) {
+    if (!timingSafeCompare(apiKey, process.env.MCP_API_KEY) && !session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -20,7 +21,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
     const apiKey = request.headers.get('x-api-key');
     const session = await auth();
-    if (apiKey !== process.env.MCP_API_KEY && !session) {
+    if (!timingSafeCompare(apiKey, process.env.MCP_API_KEY) && !session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { timingSafeCompare } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
     const apiKey = request.headers.get('x-api-key');
     // Allow MCP API Key
-    if (apiKey !== process.env.MCP_API_KEY) {
+    if (!timingSafeCompare(apiKey, process.env.MCP_API_KEY)) {
         // Continue to normal execution
     }
     try {
