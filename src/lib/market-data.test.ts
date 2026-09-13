@@ -86,6 +86,84 @@ test('Throttler', async (t) => {
 
         assert.ok(newReqError?.message.includes('Rate limit exceeded. Cooling down for'));
     });
+
+    await t.test('maintains concurrency limit under high volume concurrent queueing', async () => {
+        const concurrency = 5;
+        const throttler = new Throttler(concurrency, 2);
+        let activeCount = 0;
+        let maxObservedActive = 0;
+        const totalTasks = 50;
+
+        const tasks = Array.from({ length: totalTasks }, (_, i) => {
+            return throttler.add(() => new Promise<number>((resolve) => {
+                activeCount++;
+                if (activeCount > maxObservedActive) {
+                    maxObservedActive = activeCount;
+                }
+                setTimeout(() => {
+                    activeCount--;
+                    resolve(i);
+                }, 10);
+            }));
+        });
+
+        const results = await Promise.all(tasks);
+
+        assert.strictEqual(results.length, totalTasks);
+        assert.deepStrictEqual(results, Array.from({ length: totalTasks }, (_, i) => i));
+        assert.ok(maxObservedActive <= concurrency, `Max observed active (${maxObservedActive}) exceeded concurrency limit (${concurrency})`);
+
+        // Wait a small delay to ensure all cleanup timers in finally() complete
+        await new Promise((r) => setTimeout(r, 20));
+    });
+
+    await t.test('handles mixed resolution and rejection under high concurrency without exceeding limit', async () => {
+        const concurrency = 4;
+        const throttler = new Throttler(concurrency, 2);
+        let activeCount = 0;
+        let maxObservedActive = 0;
+        const totalTasks = 40;
+
+        const tasks = Array.from({ length: totalTasks }, (_, i) => {
+            return throttler.add(() => new Promise<number>((resolve, reject) => {
+                activeCount++;
+                if (activeCount > maxObservedActive) {
+                    maxObservedActive = activeCount;
+                }
+                setTimeout(() => {
+                    activeCount--;
+                    if (i % 3 === 0) {
+                        reject(new Error(`Task ${i} error`));
+                    } else {
+                        resolve(i);
+                    }
+                }, 5);
+            }));
+        });
+
+        const results = await Promise.allSettled(tasks);
+
+        assert.strictEqual(results.length, totalTasks);
+        assert.ok(maxObservedActive <= concurrency, `Max observed active (${maxObservedActive}) exceeded limit (${concurrency})`);
+
+        let rejectedCount = 0;
+        let fulfilledCount = 0;
+        results.forEach((res, i) => {
+            if (res.status === 'fulfilled') {
+                fulfilledCount++;
+                assert.strictEqual(res.value, i);
+            } else {
+                rejectedCount++;
+                assert.strictEqual(res.reason.message, `Task ${i} error`);
+            }
+        });
+
+        assert.strictEqual(fulfilledCount + rejectedCount, totalTasks);
+        assert.ok(rejectedCount > 0, 'Expected some tasks to reject');
+
+        // Wait a small delay to ensure cleanup timers complete
+        await new Promise((r) => setTimeout(r, 20));
+    });
 });
 
 test('estimateNextDividend', async (t) => {
@@ -161,6 +239,32 @@ test('estimateNextDividend', async (t) => {
 
     await t.test('returns undefined on API error', async (subT) => {
         subT.mock.method(yahooFinance, 'historical', async () => { throw new Error('API Error'); });
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+    });
+
+    await t.test('returns undefined when throttler circuit breaker or rate limit error occurs', async (subT) => {
+        subT.mock.method(yahooFinance, 'historical', async () => {
+            throw new Error('Circuit Breaker: Rate limit exceeded. Request cancelled.');
+        });
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+    });
+
+    await t.test('returns undefined when yahooFinance returns null or malformed data', async (subT) => {
+        subT.mock.method(yahooFinance, 'historical', async () => null);
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+
+        subT.mock.method(yahooFinance, 'historical', async () => ({ unexpected: 'response' }));
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+    });
+
+    await t.test('returns undefined when historical event objects throw during property evaluation', async (subT) => {
+        subT.mock.method(yahooFinance, 'historical', async () => [
+            {
+                get date() { throw new Error('Property evaluation error'); },
+                dividends: 0.5
+            },
+            { date: '2023-01-01', dividends: 0.5 }
+        ]);
         assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
     });
 });
@@ -358,6 +462,35 @@ test('MarketDataService.getPrice', async (t) => {
         assert.ok(errorCaught);
         assert.ok(errorCaught.message.includes('429 Rate Limit') || errorCaught.message.includes('Failed to fetch'));
     });
+
+    await t.test('triggers estimateNextDividend when forceRefresh is true and handles estimate error gracefully', async (subT) => {
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 100,
+            regularMarketChange: 1,
+            regularMarketChangePercent: 1.0,
+            currency: 'USD',
+            longName: 'Test Corp'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: { dividendRate: 2.0, dividendYield: 0.02 },
+            topHoldings: {},
+            calendarEvents: {}
+        }));
+        subT.mock.method(yahooFinance, 'historical', async () => {
+            throw new Error('Historical API error');
+        });
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+
+        const result = await MarketDataService.getPrice('TEST_DIV_ERR', true);
+
+        assert.ok(result);
+        assert.strictEqual(result.symbol, 'TEST_DIV_ERR');
+        assert.strictEqual(result.dividendRate, 2.0);
+        assert.strictEqual(result.exDividendDate, undefined);
+        assert.strictEqual(result.estNextDividendAmount, undefined);
+    });
 });
 
 test('MarketDataService.getExchangeRate', async (t) => {
@@ -553,5 +686,43 @@ test('MarketDataService.getIntradayPrices', async (t) => {
             date: '2023-01-01T10:15:00.000Z',
             value: 151.0
         });
+    });
+});
+
+test('MarketDataService.getIntradayHistory', async (t) => {
+    t.beforeEach(() => {
+        apiThrottler.reset();
+    });
+
+    await t.test('transforms intraday price points array into key-value map with ISO date keys', async (subT) => {
+        subT.mock.method(MarketDataService, 'getIntradayPrices', async () => [
+            { date: '2023-01-01T10:00:00.000Z', value: 150.5 },
+            { date: '2023-01-01T10:15:00.000Z', value: 151.25 }
+        ]);
+
+        const history = await MarketDataService.getIntradayHistory('AAPL');
+
+        assert.deepStrictEqual(history, {
+            '2023-01-01T10:00:00.000Z': 150.5,
+            '2023-01-01T10:15:00.000Z': 151.25
+        });
+    });
+
+    await t.test('returns empty record if getIntradayPrices returns empty list', async (subT) => {
+        subT.mock.method(MarketDataService, 'getIntradayPrices', async () => []);
+
+        const history = await MarketDataService.getIntradayHistory('EMPTY');
+
+        assert.deepStrictEqual(history, {});
+    });
+
+    await t.test('handles and catches error from getIntradayPrices returning empty record', async (subT) => {
+        subT.mock.method(MarketDataService, 'getIntradayPrices', async () => {
+            throw new Error('Network error');
+        });
+
+        const history = await MarketDataService.getIntradayHistory('ERROR');
+
+        assert.deepStrictEqual(history, {});
     });
 });
