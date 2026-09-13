@@ -188,3 +188,56 @@ test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
         assert.ok(Math.abs(res[1].marketValue - 2339.2) < 0.001);
     });
 });
+
+test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
+    t.beforeEach(() => {
+        MarketDataService.getDailyHistory = async (sym: string, _lookback?: Date) => {
+            if (sym === 'AAPL') {
+                return {
+                    '2023-01-01': 100,
+                    '2023-01-02': 105
+                };
+            }
+            if (sym === 'USDCAD=X') {
+                return {
+                    '2022-12-28': 1.30, // closest prior date before 2023-01-01
+                    '2023-01-02': 1.32
+                };
+            }
+            if (sym === '^GSPC') {
+                return {
+                    '2023-01-01': 3800,
+                    '2023-01-02': 3850
+                };
+            }
+            return {};
+        };
+    });
+
+    await t.test('initializes FX rates from closest available prior date before simulation loop', async () => {
+        const startDate = new Date('2023-01-01T00:00:00.000Z');
+        const initialActivities: any[] = [
+            {
+                type: 'BUY',
+                quantity: 10,
+                price: 100,
+                date: new Date('2022-12-15T00:00:00.000Z'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            }
+        ];
+
+        const result = await PortfolioAnalytics.calculateComparisonHistory(
+            initialActivities,
+            '^GSPC',
+            startDate,
+            'CAD'
+        );
+
+        // Day 1 (2023-01-01) has no direct USDCAD=X point on 2023-01-01 in our mock, but has 2022-12-28 (1.30).
+        // 10 shares * 100 price * 1.30 FX rate = 1300 market value.
+        // If it defaulted to 1.0, market value would have dropped to 1000.
+        const day1 = result.portfolio.find(p => p.date === '2023-01-01');
+        assert.ok(day1);
+        assert.strictEqual(day1.marketValue, 1300);
+    });
+});
