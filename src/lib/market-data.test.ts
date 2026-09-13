@@ -163,6 +163,32 @@ test('estimateNextDividend', async (t) => {
         subT.mock.method(yahooFinance, 'historical', async () => { throw new Error('API Error'); });
         assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
     });
+
+    await t.test('returns undefined when throttler circuit breaker or rate limit error occurs', async (subT) => {
+        subT.mock.method(yahooFinance, 'historical', async () => {
+            throw new Error('Circuit Breaker: Rate limit exceeded. Request cancelled.');
+        });
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+    });
+
+    await t.test('returns undefined when yahooFinance returns null or malformed data', async (subT) => {
+        subT.mock.method(yahooFinance, 'historical', async () => null);
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+
+        subT.mock.method(yahooFinance, 'historical', async () => ({ unexpected: 'response' }));
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+    });
+
+    await t.test('returns undefined when historical event objects throw during property evaluation', async (subT) => {
+        subT.mock.method(yahooFinance, 'historical', async () => [
+            {
+                get date() { throw new Error('Property evaluation error'); },
+                dividends: 0.5
+            },
+            { date: '2023-01-01', dividends: 0.5 }
+        ]);
+        assert.strictEqual(await estimateNextDividend('AAPL'), undefined);
+    });
 });
 
 test('MarketDataService.processHistory', async (t) => {
@@ -357,6 +383,35 @@ test('MarketDataService.getPrice', async (t) => {
 
         assert.ok(errorCaught);
         assert.ok(errorCaught.message.includes('429 Rate Limit') || errorCaught.message.includes('Failed to fetch'));
+    });
+
+    await t.test('triggers estimateNextDividend when forceRefresh is true and handles estimate error gracefully', async (subT) => {
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 100,
+            regularMarketChange: 1,
+            regularMarketChangePercent: 1.0,
+            currency: 'USD',
+            longName: 'Test Corp'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: { dividendRate: 2.0, dividendYield: 0.02 },
+            topHoldings: {},
+            calendarEvents: {}
+        }));
+        subT.mock.method(yahooFinance, 'historical', async () => {
+            throw new Error('Historical API error');
+        });
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+
+        const result = await MarketDataService.getPrice('TEST_DIV_ERR', true);
+
+        assert.ok(result);
+        assert.strictEqual(result.symbol, 'TEST_DIV_ERR');
+        assert.strictEqual(result.dividendRate, 2.0);
+        assert.strictEqual(result.exDividendDate, undefined);
+        assert.strictEqual(result.estNextDividendAmount, undefined);
     });
 });
 
