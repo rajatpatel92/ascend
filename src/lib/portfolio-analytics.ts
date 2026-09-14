@@ -422,7 +422,7 @@ export class PortfolioAnalytics {
             if (map[startIso]) lastKnownPrices[sym] = map[startIso];
         });
 
-        // [FIX] Initialize FX Rates for the loop
+        // Initialize FX Rates for the loop
         // Ensure we start with a valid FX rate (e.g. from START_DATE or closest available)
         // rather than defaulting to 1.0 inside the loop, which causes massive drops.
         relevantCurrencies.forEach(c => {
@@ -478,11 +478,10 @@ export class PortfolioAnalytics {
             const isLastDay = dateStr === endDate.toISOString().split('T')[0];
 
             // 1. Identify Activities ON this day
-            // [FIX] STOCK SPLIT HANDLING
-            // We must process Stock Splits BEFORE calculating Passive Market Value.
-            // Why? Because Market Data (Price) for this day is likely already Split-Adjusted (Lower).
-            // If we use yesterday's Holdings (Low Count) * Today's Price (Low Price), we get a massive value drop.
-            // We must adjust Holdings FIRST to match the new Price regime.
+            // Process Stock Splits BEFORE calculating Passive Market Value.
+            // Market Data (Price) for this day is likely already Split-Adjusted (Lower).
+            // If yesterday's Holdings (Low Count) * Today's Price (Low Price) were used, it would produce a massive value drop.
+            // Adjust Holdings FIRST to match the new Price regime.
 
             const rawDaysActivities = activities.filter(a => {
                 const aDate = new Date(a.date).toISOString().split('T')[0];
@@ -495,20 +494,22 @@ export class PortfolioAnalytics {
 
             splitActivities.forEach(a => {
                 const symbol = a.investment.symbol;
-                // Apply Split Multiplier
-                // e.g. 3:1 Split -> Quantity 3
-                holdings[symbol] = (holdings[symbol] || 0) * a.quantity;
+                const ratio = a.quantity;
+                if (ratio > 0) {
+                    // Apply Split Multiplier (e.g., 3:1 Split -> Quantity 3)
+                    holdings[symbol] = (holdings[symbol] || 0) * ratio;
 
-                // Negative Holdings Protection
-                if (holdings[symbol] < 0) holdings[symbol] = 0;
+                    // Negative Holdings Protection
+                    if (holdings[symbol] < 0) holdings[symbol] = 0;
 
-                // Also adjust lastKnownPrice so the passive MV calculation on this day (and next)
-                // doesn't spike if the new market price hasn't arrived yet.
-                if (lastKnownPrices[symbol]) {
-                    lastKnownPrices[symbol] /= a.quantity;
+                    // Also adjust lastKnownPrice so the passive MV calculation on this day (and next)
+                    // doesn't spike if the new market price hasn't arrived yet.
+                    if (lastKnownPrices[symbol]) {
+                        lastKnownPrices[symbol] /= ratio;
+                    }
+
+                    log(`[Pre-Market Split] ${symbol} multiplied by ${ratio}`);
                 }
-
-                log(`[Pre-Market Split] ${symbol} multiplied by ${a.quantity}`);
             });
 
             // Use other activities for Net Flow calculation
@@ -563,7 +564,7 @@ export class PortfolioAnalytics {
 
                     holdings[a.investment.symbol] = (holdings[a.investment.symbol] || 0) - Math.abs(a.quantity);
 
-                    // [FIX] Negative Holdings Protection
+                    // Negative Holdings Protection
                     // If we sell more than we have (due to missing history/splits), treat the deficit as an implicit deposit
                     // to prevent massive value drops.
                     if (holdings[a.investment.symbol] < 0) {
@@ -580,7 +581,7 @@ export class PortfolioAnalytics {
                     log(`[Dividend] ${a.date} ${symbol}: Qty=${a.quantity}, Price=${a.price}, FX=${fxRate} -> Val=${divVal * fxRate} (DailyTotal=${dailyDividends})`);
                 }
 
-                // [FIX]: Ensure we update lastKnownPrices/Fx for the asset involved today.
+                // Ensure we update lastKnownPrices/Fx for the asset involved today.
                 // If we don't, and this is a new asset, the NEXT day's calculateMarketValue loop
                 // will see it as a "New Discovery" because lastKnownPrices[symbol] would be 0 or undefined,
                 // causing a massive fake "inflow" equal to the entire position value.
@@ -624,7 +625,7 @@ export class PortfolioAnalytics {
             // If we add dividends to 'passiveMV' effectively we simulate reinvesting them or just holding cash.
             const adjustablePassiveMV = passiveMV + dailyDividends;
 
-            // [FIX] Epsilon Start Protection
+            // Epsilon Start Protection
             // Use a threshold (0.01) to avoid division by floating point dust (e.g. 1e-15)
             if (prevMarketValue > 0.01) {
                 const growth = adjustablePassiveMV / prevMarketValue;
