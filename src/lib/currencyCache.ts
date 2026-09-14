@@ -18,7 +18,6 @@ export async function getExchangeRate(from: string, to: string): Promise<number 
                 const { rate, timestamp } = JSON.parse(cached) as CachedRate;
                 const age = Date.now() - timestamp;
                 if (age < CACHE_DURATION) {
-                    // console.log(`[Cache Hit] ${from}->${to}`);
                     return rate;
                 }
             } catch (e) {
