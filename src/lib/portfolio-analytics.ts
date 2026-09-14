@@ -422,7 +422,7 @@ export class PortfolioAnalytics {
             if (map[startIso]) lastKnownPrices[sym] = map[startIso];
         });
 
-        // [FIX] Initialize FX Rates for the loop
+        // Initialize FX Rates for the loop
         // Ensure we start with a valid FX rate (e.g. from START_DATE or closest available)
         // rather than defaulting to 1.0 inside the loop, which causes massive drops.
         relevantCurrencies.forEach(c => {
@@ -437,8 +437,7 @@ export class PortfolioAnalytics {
                     else break;
                 }
                 // If found, seed it. Any later dates will update it in the loop.
-                // If not found (startDate is before any history?), we rely on the first available? 
-                // Or fallback to 1.0 (unavoidable if no history).
+                // If not found (startDate is before any history), use the EARLIEST history available.
                 if (closestDate) {
                     lastKnownFx[c] = fxMaps[c][closestDate];
                 } else if (dateKeys.length > 0) {
