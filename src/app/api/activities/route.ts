@@ -91,7 +91,15 @@ export async function GET(request: Request) {
 
 
     try {
+        const { searchParams } = new URL(request.url);
+        const limitParam = searchParams.get('limit');
+        const offsetParam = searchParams.get('offset');
+        const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+        const offset = offsetParam ? parseInt(offsetParam, 10) : undefined;
+
         const activities = await prisma.activity.findMany({
+            take: limit && !isNaN(limit) && limit > 0 ? Math.min(limit, 500) : undefined,
+            skip: offset && !isNaN(offset) && offset >= 0 ? offset : undefined,
             include: {
                 investment: true,
                 platform: true,

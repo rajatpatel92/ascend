@@ -7,6 +7,11 @@ export async function POST(request: Request) {
     if (!session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const userRole = (session.user as any)?.role;
+    if (userRole !== 'ADMIN' && userRole !== 'EDITOR') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     try {
         const body = await request.json();
         const { symbol, date, amount } = body;
@@ -44,6 +49,11 @@ export async function DELETE(request: Request) {
     const session = await auth();
     if (!session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const userRole = (session.user as any)?.role;
+    if (userRole !== 'ADMIN' && userRole !== 'EDITOR') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     try {
         const body = await request.json();

@@ -27,6 +27,8 @@ model Account {
   platform   Platform   @relation(fields: [platformId], references: [id])
   activities Activity[]
   isActive   Boolean    @default(true)
+
+  @@index([platformId])
 }
 
 
@@ -63,6 +65,10 @@ model Activity {
   account      Account?   @relation(fields: [accountId], references: [id])
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
+
+  @@index([investmentId])
+  @@index([accountId])
+  @@index([date])
 }
 
 model MarketDataCache {
@@ -140,6 +146,7 @@ model HiddenDividend {
   createdAt DateTime @default(now())
 
   @@unique([symbol, date]) // Ensure uniqueness
+  @@index([symbol])
 }
 
 model RateLimit {

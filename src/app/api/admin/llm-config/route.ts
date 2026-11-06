@@ -1,12 +1,12 @@
 import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/api-auth';
 
-export async function GET() {
-    const session = await auth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((session?.user as any)?.role !== 'ADMIN') {
-        return new NextResponse('Unauthorized', { status: 401 });
+export async function GET(req: Request) {
+    const authResult = await requireAuth(req, ['ADMIN'], false);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
 
     const keys = ['GEMINI_API_KEY', 'GPT_API_KEY', 'CLAUDE_API_KEY', 'AI_ENABLED'];
@@ -36,10 +36,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-    const session = await auth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((session?.user as any)?.role !== 'ADMIN') {
-        return new NextResponse('Unauthorized', { status: 401 });
+    const authResult = await requireAuth(req, ['ADMIN'], false);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
 
     const body = await req.json();

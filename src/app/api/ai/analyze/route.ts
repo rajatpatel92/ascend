@@ -14,6 +14,11 @@ export async function POST(req: Request) {
         return new NextResponse('Unauthorized', { status: 401 });
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((session?.user as any)?.aiEnabled === false) {
+        return new NextResponse('AI features are disabled for your account.', { status: 403 });
+    }
+
     const { prompt, messages, model: requestedModel } = await req.json();
 
     if (!prompt) {

@@ -2,13 +2,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
-
+import { requireAuth } from '@/lib/api-auth';
 import { auth } from "@/auth";
 
 export async function POST(req: NextRequest) {
-    const session = await auth();
-    if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(req, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
     try {
         const body = await req.json();

@@ -2,14 +2,15 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
+import { requireAuth } from '@/lib/api-auth';
 
 export async function DELETE(
     req: Request,
     { params }: { params: Promise<{ id: string }> }
 ) {
-    const session = await auth();
-    if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(req, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
 
     try {
