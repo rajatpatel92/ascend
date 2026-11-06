@@ -166,6 +166,18 @@ test('POST /api/ai/analyze route handler', async (t) => {
         assert.strictEqual(res.body, 'Unauthorized');
     });
 
+    await t.test('returns 403 Forbidden when session user has aiEnabled set to false', async () => {
+        (globalThis as any).__mockAuth = async () => ({
+            user: { username: 'testuser', name: 'Test User', aiEnabled: false }
+        });
+
+        const req = createRequest({ prompt: 'Analyze my portfolio' });
+        const res = await POST(req);
+
+        assert.strictEqual(res.status, 403);
+        assert.strictEqual(res.body, 'AI features are disabled for your account.');
+    });
+
     await t.test('returns 400 Bad Request when prompt is missing', async () => {
         const req = createRequest({});
         const res = await POST(req);

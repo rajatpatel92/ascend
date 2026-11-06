@@ -1,14 +1,15 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from "@/auth";
+import { requireAuth } from '@/lib/api-auth';
 
 export async function PUT(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
 ) {
-    const session = await auth();
-    if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
 
     try {
@@ -34,9 +35,9 @@ export async function DELETE(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
 ) {
-    const session = await auth();
-    if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
 
     try {

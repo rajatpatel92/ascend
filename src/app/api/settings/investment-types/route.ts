@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from "@/auth";
+import { requireAuth } from '@/lib/api-auth';
 
 export async function GET() {
     const session = await auth();
@@ -21,9 +22,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-    const session = await auth();
-    if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(request, ['ADMIN'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
     try {
         const { name, yahooInvestmentTypeId } = await request.json();
@@ -45,9 +46,9 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
-    const session = await auth();
-    if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(request, ['ADMIN'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
     try {
         const { id, name, yahooInvestmentTypeId } = await request.json();
