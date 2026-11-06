@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { requireAuth } from '@/lib/api-auth';
 
 export async function POST(request: Request) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const body = await request.json();
         const { dividends } = body;

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
+import { isValidCronSecret } from '@/lib/api-auth';
 
 // Increase max duration for this function if hosting supports it (e.g. Vercel Pro)
 // For Hobby, 10s is limit (serverless) or 60s (edge). 
@@ -12,13 +13,14 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const key = searchParams.get('key');
-    const headerKey = request.headers.get('x-cron-secret');
+    const bearerToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+    const headerKey = request.headers.get('x-cron-secret') || bearerToken;
     const streamMode = searchParams.get('stream') === 'true';
 
-    // Basic protection
-    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET && headerKey !== process.env.CRON_SECRET) {
+    if (!isValidCronSecret(headerKey) && !isValidCronSecret(key)) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
 
     // Shared Logic Wrapper
     const runRefresh = async (log: (msg: string) => void) => {

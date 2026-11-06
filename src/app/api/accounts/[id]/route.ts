@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { requireAuth } from '@/lib/api-auth';
 
 export async function PUT(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
 ) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const { id } = await params;
         const { name, type, platformId, currency, isActive } = await request.json();
@@ -34,6 +38,9 @@ export async function DELETE(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
 ) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const { id } = await params;
 

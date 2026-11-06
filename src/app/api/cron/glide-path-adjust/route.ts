@@ -1,9 +1,22 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isValidCronSecret } from '@/lib/api-auth';
+import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: Request) {
+    const bearerToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+    const headerKey = request.headers.get('x-cron-secret') || bearerToken;
+    const session = await auth();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const isAdmin = (session?.user as any)?.role === 'ADMIN';
+
+    if (!isValidCronSecret(headerKey) && !isAdmin) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+
     try {
         const targets = await prisma.targetAllocation.findMany({
             where: {

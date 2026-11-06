@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { requireAuth } from '@/lib/api-auth';
+import { auth } from '@/auth';
 
-export async function GET() {
+export async function GET(request: Request = new Request('http://localhost/api/rebalancer/targets')) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const targets = await prisma.targetAllocation.findMany({
             orderBy: { symbol: 'asc' }
@@ -13,6 +18,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const body = await request.json();
         const { targets } = body;

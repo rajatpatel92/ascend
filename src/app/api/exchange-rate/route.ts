@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server';
 import { MarketDataService } from '@/lib/market-data';
+import { requireAuth } from '@/lib/api-auth';
+import { auth } from '@/auth';
 
 export async function POST(request: Request) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) return authResult.response;
+
     let body;
     try {
         body = await request.json();

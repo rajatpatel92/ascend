@@ -2,18 +2,21 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
+import { isValidCronSecret } from '@/lib/api-auth';
 
 export const maxDuration = 30; // Fast execution
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-    // Basic protection
     const { searchParams } = new URL(request.url);
     const key = searchParams.get('key');
-    const headerKey = request.headers.get('x-cron-secret');
-    if (process.env.CRON_SECRET && key !== process.env.CRON_SECRET && headerKey !== process.env.CRON_SECRET) {
+    const bearerToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+    const headerKey = request.headers.get('x-cron-secret') || bearerToken;
+
+    if (!isValidCronSecret(headerKey) && !isValidCronSecret(key)) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
 
     try {
         console.log('[Cron:Incremental] Starting Price-Only Refresh...');

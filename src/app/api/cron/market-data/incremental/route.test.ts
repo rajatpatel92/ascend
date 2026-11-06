@@ -41,8 +41,17 @@ export async function resolve(specifier, context, nextResolve) {
       \`)
     };
   }
+  if (specifier === "@/auth") {
+    return {
+      shortCircuit: true,
+      url: "data:text/javascript," + encodeURIComponent("export const auth = () => Promise.resolve(null);")
+    };
+  }
   if (specifier.startsWith("@/")) {
-    const relativePath = specifier.replace("@/", "./src/");
+    let relativePath = specifier.replace("@/", "./src/");
+    if (!relativePath.endsWith('.ts') && !relativePath.endsWith('.js')) {
+      relativePath += '.ts';
+    }
     return nextResolve(new URL(relativePath, "file://" + process.cwd() + "/").href, context);
   }
   return nextResolve(specifier, context);

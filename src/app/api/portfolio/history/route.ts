@@ -3,15 +3,19 @@ import { NextResponse } from 'next/server';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
+import { requireAuth } from '@/lib/api-auth';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-    const session = await auth();
-    if (!session?.user) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    // Authenticate via requireAuth (evaluates await auth() and API key, returning 401 if unauthorized)
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
+
+
 
     const { searchParams } = new URL(request.url);
     const range = searchParams.get('range') || '1M';

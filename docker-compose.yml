@@ -13,6 +13,9 @@ services:
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - AUTH_TRUST_HOST=true
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - MCP_API_KEY=${MCP_API_KEY}
+      - CRON_SECRET=${CRON_SECRET}
+      - ALLOWED_DOMAINS=${ALLOWED_DOMAINS:-}
     depends_on:
       - db
     networks:
