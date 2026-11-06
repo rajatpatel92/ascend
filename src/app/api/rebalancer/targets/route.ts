@@ -3,9 +3,10 @@ import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
 import { auth } from '@/auth';
 
-export async function GET(request: Request = new Request('http://localhost/api/rebalancer/targets')) {
+export async function GET(request: Request) {
     const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
     if (!authResult.authorized) return authResult.response;
+
 
     try {
         const targets = await prisma.targetAllocation.findMany({

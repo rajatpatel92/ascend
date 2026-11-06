@@ -91,7 +91,8 @@ test('Rebalancer Targets API Route - GET Handler', async (t) => {
     await t.test('returns empty targets list when no allocations exist', async () => {
         prismaMock.targetAllocation.findMany = async () => [];
 
-        const response = await GET();
+        const request = new Request('http://localhost/api/rebalancer/targets');
+        const response = await GET(request);
         assert.strictEqual(response.status, 200);
 
         const data = await response.json();
@@ -110,7 +111,8 @@ test('Rebalancer Targets API Route - GET Handler', async (t) => {
             return mockTargets;
         };
 
-        const response = await GET();
+        const request = new Request('http://localhost/api/rebalancer/targets');
+        const response = await GET(request);
         assert.strictEqual(response.status, 200);
 
         const data = await response.json();
@@ -123,7 +125,8 @@ test('Rebalancer Targets API Route - GET Handler', async (t) => {
             throw new Error('Database connection failed');
         };
 
-        const response = await GET();
+        const request = new Request('http://localhost/api/rebalancer/targets');
+        const response = await GET(request);
         assert.strictEqual(response.status, 500);
 
         const data = await response.json();
