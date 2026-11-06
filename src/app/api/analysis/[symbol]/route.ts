@@ -3,10 +3,14 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
+import { requireAuth } from '@/lib/api-auth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request, props: { params: Promise<{ symbol: string }> }) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) return authResult.response;
+
     const params = await props.params;
     const { symbol } = params;
 

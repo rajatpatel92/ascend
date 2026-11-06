@@ -2,13 +2,14 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { auth } from '@/auth';
+import { requireAuth } from '@/lib/api-auth';
 
 export async function POST(request: Request) {
-    const apiKey = request.headers.get('x-api-key');
-    const session = await auth();
-    if (apiKey !== process.env.MCP_API_KEY && !session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
+
 
     try {
         const body = await request.json();
@@ -83,11 +84,11 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
-    const apiKey = request.headers.get('x-api-key');
-    const session = await auth();
-    if (apiKey !== process.env.MCP_API_KEY && !session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
+
 
     try {
         const activities = await prisma.activity.findMany({

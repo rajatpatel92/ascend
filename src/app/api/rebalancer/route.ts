@@ -2,10 +2,15 @@ import { NextResponse, NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
+import { requireAuth } from '@/lib/api-auth';
+import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const { searchParams } = new URL(request.url);
         const targetCurrency = searchParams.get('currency') || 'USD';

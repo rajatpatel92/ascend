@@ -1,9 +1,14 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { requireAuth } from '@/lib/api-auth';
+import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const { searchParams } = new URL(request.url);
         const symbol = searchParams.get('symbol');

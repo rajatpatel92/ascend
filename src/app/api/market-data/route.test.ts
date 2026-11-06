@@ -27,8 +27,17 @@ export async function resolve(specifier, context, nextResolve) {
       url: "data:text/javascript," + encodeURIComponent("export const MarketDataService = { getPrice: (...args) => globalThis.__mockGetPrice(...args) };")
     };
   }
+  if (specifier === "@/auth") {
+    return {
+      shortCircuit: true,
+      url: "data:text/javascript," + encodeURIComponent("export const auth = () => globalThis.__mockAuth ? globalThis.__mockAuth() : Promise.resolve({ user: { id: 'test-user', role: 'ADMIN' } });")
+    };
+  }
   if (specifier.startsWith("@/")) {
-    const relativePath = specifier.replace("@/", "./src/");
+    let relativePath = specifier.replace("@/", "./src/");
+    if (!relativePath.endsWith('.ts') && !relativePath.endsWith('.js') && !relativePath.endsWith('.json')) {
+      relativePath += '.ts';
+    }
     return nextResolve(new URL(relativePath, "file://" + process.cwd() + "/").href, context);
   }
   return nextResolve(specifier, context);

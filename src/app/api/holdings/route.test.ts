@@ -23,7 +23,10 @@ export async function resolve(specifier, context, nextResolve) {
     };
   }
   if (specifier.startsWith("@/")) {
-    const relativePath = specifier.replace("@/", "./src/");
+    let relativePath = specifier.replace("@/", "./src/");
+    if (!relativePath.endsWith('.ts') && !relativePath.endsWith('.js') && !relativePath.endsWith('.json')) {
+      relativePath += '.ts';
+    }
     return nextResolve(new URL(relativePath, "file://" + process.cwd() + "/").href, context);
   }
   return nextResolve(specifier, context);

@@ -2,8 +2,13 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
+import { requireAuth } from '@/lib/api-auth';
+import { auth } from '@/auth';
 
 export async function POST(req: Request) {
+    const authResult = await requireAuth(req, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const body = await req.json();
         const { timeRange, benchmarkSymbol, filters } = body;

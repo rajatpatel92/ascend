@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { requireAuth } from '@/lib/api-auth';
 
 export async function GET(request: Request) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) return authResult.response;
+
     const { searchParams } = new URL(request.url);
     const platformId = searchParams.get('platformId');
     const includeInactive = searchParams.get('includeInactive') === 'true';
@@ -28,6 +32,9 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
+    if (!authResult.authorized) return authResult.response;
+
     try {
         const body = await request.json();
         const { name, type, platformId, currency } = body;
