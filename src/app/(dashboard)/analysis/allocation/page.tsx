@@ -6,6 +6,7 @@ import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import ConstituentsGrid from '@/components/ConstituentsGrid';
 import AllocationChart from '@/components/AllocationChart';
+import SectorBreakdownCard from '@/components/SectorBreakdownCard';
 import AnalysisSkeleton from '@/components/AnalysisSkeleton';
 import ReportFilters, { FilterOptions } from '@/components/ReportFilters';
 import usePersistentState from '@/hooks/usePersistentState';
@@ -16,7 +17,7 @@ import {
     SectorBreakdown,
     CountryBreakdown
 } from '@/lib/look-through';
-import { Sparkles, Building2, Layers, PieChart } from 'lucide-react';
+import { Sparkles, Building2, Layers } from 'lucide-react';
 
 interface PortfolioSummary {
     allocationByType: { name: string; value: number }[];
@@ -370,17 +371,6 @@ export default function AnalysisPage() {
         interactiveFilters.sector ||
         interactiveFilters.country;
 
-    // Direct vs Look-through values for focused sector
-    const directValue = activeSectorBreakdown
-        ? activeSectorBreakdown.contributors.filter(c => !c.isLookThrough).reduce((sum, c) => sum + c.allocatedValue, 0)
-        : 0;
-    const lookThroughValue = activeSectorBreakdown
-        ? activeSectorBreakdown.contributors.filter(c => c.isLookThrough).reduce((sum, c) => sum + c.allocatedValue, 0)
-        : 0;
-    const totalSectorValue = activeSectorBreakdown ? activeSectorBreakdown.value : 0;
-    const directPercent = totalSectorValue > 0 ? (directValue / totalSectorValue) * 100 : 0;
-    const lookThroughPercent = totalSectorValue > 0 ? (lookThroughValue / totalSectorValue) * 100 : 0;
-
     return (
         <div className={styles.container}>
             <header className={styles.header}>
@@ -399,25 +389,31 @@ export default function AnalysisPage() {
                 {/* View Switcher Controls */}
                 <div className={styles.viewSwitcher}>
                     <button
+                        type="button"
                         className={`${styles.viewBtn} ${viewMode === 'xray' ? styles.viewBtnActive : ''}`}
                         onClick={() => setViewMode('xray')}
                     >
-                        <Sparkles size={16} />
-                        Macro X-Ray (Sectors & Geography)
+                        <Sparkles size={15} />
+                        <span className={styles.btnLabelDesktop}>Macro X-Ray (Sectors & Geography)</span>
+                        <span className={styles.btnLabelMobile}>Macro X-Ray</span>
                     </button>
                     <button
+                        type="button"
                         className={`${styles.viewBtn} ${viewMode === 'structure' ? styles.viewBtnActive : ''}`}
                         onClick={() => setViewMode('structure')}
                     >
-                        <Building2 size={16} />
-                        Structure & Accounts
+                        <Building2 size={15} />
+                        <span className={styles.btnLabelDesktop}>Structure & Accounts</span>
+                        <span className={styles.btnLabelMobile}>Structure</span>
                     </button>
                     <button
+                        type="button"
                         className={`${styles.viewBtn} ${viewMode === 'all' ? styles.viewBtnActive : ''}`}
                         onClick={() => setViewMode('all')}
                     >
-                        <Layers size={16} />
-                        All Dimensions
+                        <Layers size={15} />
+                        <span className={styles.btnLabelDesktop}>All Dimensions</span>
+                        <span className={styles.btnLabelMobile}>All</span>
                     </button>
                 </div>
 
@@ -426,34 +422,35 @@ export default function AnalysisPage() {
                         {interactiveFilters.sector && (
                             <span className={styles.badge}>
                                 Sector: {interactiveFilters.sector}
-                                <button onClick={() => setInteractiveFilters(prev => ({ ...prev, sector: null }))}>&times;</button>
+                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, sector: null }))}>&times;</button>
                             </span>
                         )}
                         {interactiveFilters.country && (
                             <span className={styles.badge}>
                                 Geography: {interactiveFilters.country}
-                                <button onClick={() => setInteractiveFilters(prev => ({ ...prev, country: null }))}>&times;</button>
+                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, country: null }))}>&times;</button>
                             </span>
                         )}
                         {interactiveFilters.investmentType && (
                             <span className={styles.badge}>
                                 Type: {interactiveFilters.investmentType}
-                                <button onClick={() => setInteractiveFilters(prev => ({ ...prev, investmentType: null }))}>&times;</button>
+                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, investmentType: null }))}>&times;</button>
                             </span>
                         )}
                         {interactiveFilters.accountType && (
                             <span className={styles.badge}>
                                 Account Type: {interactiveFilters.accountType}
-                                <button onClick={() => setInteractiveFilters(prev => ({ ...prev, accountType: null }))}>&times;</button>
+                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, accountType: null }))}>&times;</button>
                             </span>
                         )}
                         {interactiveFilters.accountName && (
                             <span className={styles.badge}>
                                 Account: {interactiveFilters.accountName}
-                                <button onClick={() => setInteractiveFilters(prev => ({ ...prev, accountName: null }))}>&times;</button>
+                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, accountName: null }))}>&times;</button>
                             </span>
                         )}
                         <button
+                            type="button"
                             onClick={() => setInteractiveFilters({ investmentType: null, accountType: null, accountName: null, sector: null, country: null })}
                             className={styles.clearBtn}
                         >
@@ -522,133 +519,16 @@ export default function AnalysisPage() {
 
                 {/* Interactive Sector Decomposition Card (Portfolio X-Ray) */}
                 {(viewMode === 'xray' || viewMode === 'all') && activeSectorBreakdown && (
-                    <div className={styles.breakdownCard}>
-                        <div className={styles.breakdownHeader}>
-                            <div className={styles.breakdownTitleGroup}>
-                                <span className={styles.breakdownBadge}>
-                                    <PieChart size={12} />
-                                    Portfolio X-Ray Decomposition
-                                </span>
-                                <h2 className={styles.breakdownTitle}>
-                                    {activeSectorBreakdown.name}
-                                </h2>
-                                <p className={styles.breakdownSubtitle}>
-                                    Aggregate exposure across direct equities and underlying ETF holdings.
-                                </p>
-                            </div>
-                            <div className={styles.breakdownMetric}>
-                                <div className={styles.breakdownValue}>{format(activeSectorBreakdown.value)}</div>
-                                <div className={styles.breakdownPercent}>
-                                    {activeSectorBreakdown.percentage.toFixed(1)}% of Portfolio
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Quick Sector Selector Pills */}
-                        <div className={styles.sectorPills}>
-                            {chartAllocations.allocationBySector.map(s => {
-                                const isActive = s.name === activeSectorBreakdown.name;
-                                return (
-                                    <button
-                                        key={s.name}
-                                        className={`${styles.sectorPill} ${isActive ? styles.sectorPillActive : ''}`}
-                                        onClick={() => setInteractiveFilters(prev => ({
-                                            ...prev,
-                                            sector: isActive && interactiveFilters.sector ? null : s.name
-                                        }))}
-                                    >
-                                        {s.name} ({format(s.value)})
-                                    </button>
-                                );
-                            })}
-                        </div>
-
-                        {/* Direct Stock vs ETF Decomposition Split */}
-                        <div className={styles.splitOverview}>
-                            <div className={styles.splitCard}>
-                                <span className={styles.splitLabel}>
-                                    <span className={styles.dotDirect} />
-                                    Direct Stock Holdings
-                                </span>
-                                <span className={styles.splitValue}>{format(directValue)}</span>
-                                <span className={styles.splitSubtext}>{directPercent.toFixed(1)}% of {activeSectorBreakdown.name}</span>
-                            </div>
-
-                            <div className={styles.splitCard}>
-                                <span className={styles.splitLabel}>
-                                    <span className={styles.dotLookThrough} />
-                                    ETF Look-Through Decomposition
-                                </span>
-                                <span className={styles.splitValue}>{format(lookThroughValue)}</span>
-                                <span className={styles.splitSubtext}>{lookThroughPercent.toFixed(1)}% of {activeSectorBreakdown.name}</span>
-                            </div>
-                        </div>
-
-                        {/* Dual Progress Bar */}
-                        <div className={styles.splitProgressContainer}>
-                            <div className={styles.splitProgressBar}>
-                                <div className={styles.barDirect} style={{ width: `${directPercent}%` }} />
-                                <div className={styles.barLookThrough} style={{ width: `${lookThroughPercent}%` }} />
-                            </div>
-                            <div className={styles.splitLegend}>
-                                <div className={styles.splitLegendItem}>
-                                    <span className={styles.dotDirect} /> Direct Equities ({directPercent.toFixed(1)}%)
-                                </div>
-                                <div className={styles.splitLegendItem}>
-                                    <span className={styles.dotLookThrough} /> ETF Look-Through ({lookThroughPercent.toFixed(1)}%)
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Contributor Overlap Table */}
-                        <div className={styles.contributorsWrapper}>
-                            <table className={styles.contributorsTable}>
-                                <thead>
-                                    <tr>
-                                        <th>Holding</th>
-                                        <th>Source Type</th>
-                                        <th>Holding Value</th>
-                                        <th>Weight In Holding</th>
-                                        <th>Sector Exposure</th>
-                                        <th>Share of Sector</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {activeSectorBreakdown.contributors.map(contrib => {
-                                        return (
-                                            <tr key={contrib.symbol}>
-                                                <td>
-                                                    <div className={styles.holdingSymbol}>{contrib.symbol}</div>
-                                                    <div className={styles.holdingName}>{contrib.name}</div>
-                                                </td>
-                                                <td>
-                                                    {contrib.isLookThrough ? (
-                                                        <span className={styles.typeBadgeETF}>ETF Decomposition</span>
-                                                    ) : (
-                                                        <span className={styles.typeBadgeDirect}>Direct Equity</span>
-                                                    )}
-                                                </td>
-                                                <td>{format(contrib.holdingValue)}</td>
-                                                <td>{(contrib.weightInHolding * 100).toFixed(1)}%</td>
-                                                <td><strong>{format(contrib.allocatedValue)}</strong></td>
-                                                <td>
-                                                    <div className={styles.shareCell}>
-                                                        <div className={styles.shareBarBg}>
-                                                            <div
-                                                                className={styles.shareBarFill}
-                                                                style={{ width: `${Math.min(100, contrib.weightInSector)}%` }}
-                                                            />
-                                                        </div>
-                                                        <span>{contrib.weightInSector.toFixed(1)}%</span>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
+                    <SectorBreakdownCard
+                        breakdown={activeSectorBreakdown}
+                        sectors={chartAllocations.allocationBySector}
+                        selectedSector={interactiveFilters.sector}
+                        onSelectSector={(sectorName) => setInteractiveFilters(prev => ({
+                            ...prev,
+                            sector: sectorName
+                        }))}
+                        format={format}
+                    />
                 )}
 
                 {/* Constituents Grid (Using Final Filtered Data) */}

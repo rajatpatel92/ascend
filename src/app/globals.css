@@ -118,8 +118,11 @@ a {
 
 .main-content {
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   padding-bottom: 4rem;
   overflow-y: auto;
+  overflow-x: hidden;
   height: 100vh;
   background-color: var(--background);
 }

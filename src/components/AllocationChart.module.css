@@ -4,6 +4,10 @@
     border-radius: 1rem;
     padding: 1.5rem;
     height: 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .title {
@@ -11,11 +15,15 @@
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 1.5rem;
+    word-break: break-word;
 }
 
 .chartArea {
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     height: 250px;
+    position: relative;
 }
 
 .legendContainer {
@@ -27,7 +35,9 @@
     max-height: 120px;
     overflow-y: auto;
     padding-right: 0.5rem;
-    /* Space for scrollbar */
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
 }
 
 /* Custom Scrollbar */
@@ -40,7 +50,7 @@
 }
 
 .legendContainer::-webkit-scrollbar-thumb {
-    background: var(--border);
+    background: var(--card-border);
     border-radius: 4px;
 }
 
@@ -55,6 +65,10 @@
     background-color: transparent;
     transition: all 0.2s;
     border: 1px solid transparent;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .legendItem:hover {
@@ -81,9 +95,36 @@
 }
 
 .empty {
-    height: 300px;
+    height: 250px;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+    .container {
+        padding: 1rem;
+        border-radius: 0.875rem;
+    }
+
+    .title {
+        font-size: 1rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .chartArea {
+        height: 210px;
+    }
+
+    .legendContainer {
+        max-height: 90px;
+        gap: 0.35rem;
+        margin-top: 0.75rem;
+    }
+
+    .legendItem {
+        font-size: 0.6875rem;
+        padding: 0.15rem 0.4rem;
+    }
 }
