@@ -3,6 +3,7 @@ import { NextResponse, NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { calculateXIRR, Transaction } from '@/lib/xirr';
+import { calculateLookThrough } from '@/lib/look-through';
 import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
@@ -360,6 +361,10 @@ export async function GET(request: NextRequest) {
                         value,
                         rateToUSD,
                         currency,
+                        sector: marketData?.sector || null,
+                        country: marketData?.country || null,
+                        sectorAllocations: marketData?.sectorAllocations || null,
+                        countryAllocations: marketData?.countryAllocations || null,
                         dayChange: {
                             absolute: dayChange,
                             percent: regularMarketChangePercent
@@ -633,6 +638,22 @@ export async function GET(request: NextRequest) {
         }
 
 
+        // Calculate Look-Through (Portfolio X-Ray: Sector & Geographic Exposure)
+        const lookThroughConstituents = constituents
+            .filter(c => c.quantity > 0)
+            .map(c => ({
+                symbol: c.symbol,
+                name: c.name,
+                type: c.type,
+                value: c.valueTarget ?? (c.value * (c.rateToUSD || 1) * finalRate),
+                currency: targetCurrency,
+                sector: c.sector,
+                country: c.country,
+                sectorAllocations: c.sectorAllocations,
+                countryAllocations: c.countryAllocations
+            }));
+        const lookThrough = calculateLookThrough(lookThroughConstituents);
+
         // Generate Top Movers (Pre-converted for Dashboard)
         const topMovers = constituents.map(c => {
             // Calculate converted values
@@ -672,6 +693,10 @@ export async function GET(request: NextRequest) {
             allocationByPlatform: allocationByPlatformArray,
             allocationByAccount: allocationByAccountArray,
             allocationByAccountType: allocationByAccountTypeArray,
+            allocationBySector: lookThrough.bySector,
+            allocationByCountry: lookThrough.byCountry,
+            sectorLookThrough: lookThrough.sectorDetails,
+            countryLookThrough: lookThrough.countryDetails,
             constituents,
             topMovers,
             dividendsYTD,

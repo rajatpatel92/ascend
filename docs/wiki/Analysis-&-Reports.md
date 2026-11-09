@@ -31,12 +31,44 @@ Ascend uses an advanced two-layer filtering model:
    - The entire constituents table immediately sub-slices to display only assets matching the selected category.
    - Supports multi-select via `Ctrl + Click` / `Cmd + Click`.
 
-### Allocation Visualizations
-* **By Asset Class / Investment Type**: High-level distribution between Equities, ETFs, Mutual Funds, and Cash.
-* **By Account Type**: Distribution across tax containers (Tax-Advantaged vs Taxable).
-* **By Account & Platform**: Granular distribution across brokerage institutions and specific accounts.
+### Allocation Visualizations & View Modes
+
+The Allocation page provides three distinct perspective views via a dedicated switcher:
+
+1. **Macro X-Ray (Sectors & Geography)** *(Default)*:
+   - **By Sector (Look-Through X-Ray)**: Decomposes ETF sector weightings (e.g. VOO's ~30% Technology) and combines them with direct stock holdings (e.g. direct AAPL shares) for true macro sector exposure.
+   - **By Geography (Country Exposure)**: Look-through geographic exposure across domestic, North American, European, Asian, and emerging markets.
+   - **By Investment Type**: High-level distribution between Equities, ETFs, Crypto, Mutual Funds, and Cash.
+2. **Structure & Accounts**:
+   - **By Investment Type**: High-level asset class breakdown.
+   - **By Account Type**: Distribution across tax containers (Registered/Tax-Advantaged vs. Taxable).
+   - **By Account & Platform**: Granular distribution across brokerage institutions and specific accounts.
+3. **All Dimensions**:
+   - Displays all five allocation charts simultaneously in a responsive grid.
 
 ---
+
+### 🔬 Portfolio X-Ray Holding Decomposition Card
+
+When viewing in **Macro X-Ray** or **All Dimensions**, selecting any sector (or viewing the primary exposure sector) reveals the **Portfolio X-Ray Decomposition Card**:
+
+* **Aggregate Exposure Metrics**:
+  * Total dollar valuation in the chosen currency and percentage of total portfolio NAV.
+* **Direct Equity vs. ETF Look-Through Dual Split**:
+  * Quantifies the exact split between direct company stocks and indirect ETF holdings.
+  * Visual dual-segmented progress bar clearly shows what portion is held directly versus fund decomposition.
+* **Sector Selector Pills**:
+  * Quick-access horizontal pill bar allowing users to switch between any portfolio sector without touching the chart.
+* **Comprehensive Contributor Overlap Table**:
+  * **Holding**: Symbol ticker and company/fund name.
+  * **Source Type**: Visual badge distinguishing `Direct Equity` from `ETF Decomposition`.
+  * **Holding Value**: Total value of the position in your portfolio.
+  * **Weight in Holding**: Percentage of the holding allocated to this sector (e.g., 100% for direct equities, or 30.5% for an S&P 500 ETF).
+  * **Sector Exposure**: Dollar contribution of this security to the active sector.
+  * **Share of Sector**: Percentage contribution to this sector's total exposure with a visual progress bar.
+* **Interactive Cross-Filtering**:
+  * Clicking on any sector or country donut slice immediately filters the **Constituents Grid** below, isolating all holdings with exposure to that dimension.
+
 
 ### Deep Constituents Grid (`ConstituentsGrid`)
 

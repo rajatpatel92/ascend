@@ -17,7 +17,24 @@ interface AllocationChartProps {
     isPreConverted?: boolean;
 }
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'];
+const COLORS = [
+    '#3b82f6', // Blue
+    '#10b981', // Emerald
+    '#f59e0b', // Amber
+    '#8b5cf6', // Violet
+    '#ec4899', // Pink
+    '#06b6d4', // Cyan
+    '#f97316', // Orange
+    '#84cc16', // Lime
+    '#a855f7', // Purple
+    '#14b8a6', // Teal
+    '#64748b', // Slate
+    '#ef4444', // Red
+    '#eab308', // Yellow
+    '#6366f1', // Indigo
+    '#d946ef', // Fuchsia
+    '#0ea5e9'  // Sky Blue
+];
 
 export default function AllocationChart(props: AllocationChartProps) {
     const { title, data, onSelect, selectedName } = props;

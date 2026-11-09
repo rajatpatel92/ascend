@@ -119,6 +119,16 @@ Maintains cost basis integrity when corporate stock splits occur:
 
 ---
 
+### D. Look-Through Portfolio X-Ray Engine — `src/lib/look-through.ts`
+Decomposes underlying fund holdings and combines them with direct equity positions:
+1. **GICS Sector Normalization**: Cleans and normalizes disparate data feeds and snake_case API keys into standardized GICS title-case categories.
+2. **ETF Decomposition**: Iterates ETF `sectorAllocations` maps (e.g. `[{ technology: 0.30 }, { financials: 0.15 }]`), multiplying fund weight by holding value.
+3. **Cash & Reserves Tracking**: Any residual unallocated weight (under 99%) is attributed to *Cash & Reserves*, guaranteeing total exposure strictly equals holding market value.
+4. **Contributor Attribution**: Each security records its `allocatedValue`, `weightInHolding`, and relative `weightInSector`, flagged with `isLookThrough` (true for ETF decomposition, false for direct equities).
+5. **Interactive Cross-Filter Matchers**: `constituentHasSectorExposure` and `constituentHasCountryExposure` inspect both direct properties and decomposed allocations for sub-millisecond table slicing.
+
+---
+
 ## ⚡ 4. Market Data Engine, Caching & Cron Scheduling
 
 ### Adaptive API Throttler (`src/lib/market-data.ts`)
