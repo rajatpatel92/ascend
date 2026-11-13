@@ -8,12 +8,13 @@ interface DateInputProps {
     value: string; // ISO string YYYY-MM-DD
     onChange: (value: string) => void;
     label?: string;
+    ariaLabel?: string;
     id?: string;
     required?: boolean;
     className?: string;
 }
 
-export default function DateInput({ value, onChange, label, id, required, className }: DateInputProps) {
+export default function DateInput({ value, onChange, label, ariaLabel, id, required, className }: DateInputProps) {
     const { dateFormat, formatDate } = useDate();
     const [inputValue, setInputValue] = useState('');
     const [error, setError] = useState(false);
@@ -136,6 +137,7 @@ export default function DateInput({ value, onChange, label, id, required, classN
                     onChange={handleInputChange}
                     onBlur={handleBlur}
                     placeholder={dateFormat.toLowerCase()}
+                    aria-label={ariaLabel || label || undefined}
                     className={`${styles.textInput} ${error ? styles.error : ''}`}
                     required={required}
                     autoComplete="off"
@@ -147,8 +149,9 @@ export default function DateInput({ value, onChange, label, id, required, classN
                         onChange={handleNativeChange}
                         className={styles.nativeInput}
                         tabIndex={-1} // Skip tab focus
+                        aria-hidden="true"
                     />
-                    <span className={styles.icon}>📅</span>
+                    <span className={styles.icon} aria-hidden="true">📅</span>
                 </div>
             </div>
         </div>

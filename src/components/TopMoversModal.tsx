@@ -1,64 +1,138 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import styles from './TopMoversModal.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import Link from 'next/link';
+
+export type MoverPeriod = '1D' | '1W' | '1M' | 'YTD';
 
 interface TopMoversModalProps {
     isOpen: boolean;
     onClose: () => void;
     constituents: any[];
-    portfolioTotalValue: number; // In USD (or base currency consistent with rateToUSD)
-    portfolioDayChange: number; // In USD
+    portfolioTotalValue: number; // Already in target display currency
+    portfolioDayChange?: number; // Already in target display currency
+    period?: MoverPeriod;
 }
 
 type SortField = 'symbol' | 'price' | 'changePercent' | 'impactAbs' | 'impactPercent';
 type SortDirection = 'asc' | 'desc';
+
+function getPeriodChange(constituent: any, period: MoverPeriod) {
+    switch (period) {
+        case '1W':
+            return constituent.change1W;
+        case '1M':
+            return constituent.change1M;
+        case 'YTD':
+            return constituent.changeYTD;
+        case '1D':
+        default:
+            return constituent.dayChange;
+    }
+}
 
 export default function TopMoversModal({
     isOpen,
     onClose,
     constituents,
     portfolioTotalValue,
-    portfolioDayChange
+    period = '1D'
 }: TopMoversModalProps) {
     const { format, convert } = useCurrency();
+    const dialogRef = useRef<HTMLDialogElement>(null);
     const [sortField, setSortField] = useState<SortField>('impactPercent');
     const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
-    const [prevValueUSD, setPrevValueUSD] = useState(0);
 
     useEffect(() => {
-        // Calculate previous portfolio value for impact % calculation
-        setPrevValueUSD(portfolioTotalValue - portfolioDayChange);
-    }, [portfolioTotalValue, portfolioDayChange]);
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+
+        if (isOpen && !dialog.open) {
+            dialog.showModal();
+        } else if (!isOpen && dialog.open) {
+            dialog.close();
+        }
+    }, [isOpen]);
+
+    useEffect(() => {
+        const dialog = dialogRef.current;
+        if (!dialog || ('closedBy' in HTMLDialogElement.prototype)) return;
+
+        const isOutside = (e: PointerEvent) => {
+            const rect = dialog.getBoundingClientRect();
+            return (
+                e.clientX < rect.left ||
+                e.clientX > rect.right ||
+                e.clientY < rect.top ||
+                e.clientY > rect.bottom
+            );
+        };
+
+        let pressedOutside = false;
+        const onPointerDown = (e: PointerEvent) => {
+            pressedOutside = isOutside(e);
+        };
+        const onPointerUp = (e: PointerEvent) => {
+            if (pressedOutside && isOutside(e)) {
+                dialog.close();
+            }
+            pressedOutside = false;
+        };
+
+        dialog.addEventListener('pointerdown', onPointerDown);
+        dialog.addEventListener('pointerup', onPointerUp);
+        return () => {
+            dialog.removeEventListener('pointerdown', onPointerDown);
+            dialog.removeEventListener('pointerup', onPointerUp);
+        };
+    }, []);
 
     const sortedConstituents = useMemo(() => {
-        const data = constituents
-            .filter(c => Math.abs(c.dayChange.percent) > 0.001)
-            .map(c => {
-                const impactUSD = c.dayChange.absolute * c.rateToUSD;
-                const impactPercent = prevValueUSD !== 0 ? (impactUSD / prevValueUSD) * 100 : 0;
+        const baseVal = portfolioTotalValue > 0 ? portfolioTotalValue : 1;
 
-                // Calculate Price Change Per Share from percentage to ensure consistency with displayed %
-                // Change % = (Change / PrevPrice) * 100
-                // Change = (Change % * PrevPrice) / 100
-                // Current Price = PrevPrice + Change
-                // PrevPrice = Current Price / (1 + Change%/100)
-                const prevPrice = c.price / (1 + (c.dayChange.percent / 100));
-                const priceChangePerShare = c.price - prevPrice;
+        const data = constituents
+            .filter(c => {
+                const changeObj = getPeriodChange(c, period);
+                return changeObj && Math.abs(changeObj.percent) > 0.001;
+            })
+            .map(c => {
+                const changeObj = getPeriodChange(c, period);
+                const hasStaleUsdRate = c.conversionRate === 1 && c.currency && c.currency !== 'USD' && typeof c.rateToUSD === 'number' && c.rateToUSD !== 1;
+                const hasConversionRate = c.conversionRate !== undefined;
+                const effectiveRate = hasStaleUsdRate ? c.rateToUSD : (c.conversionRate ?? 1);
+
+                const priceTarget = hasConversionRate ? c.price * effectiveRate : convert(c.price, c.currency);
+                const avgPriceTarget = hasConversionRate ? c.avgPrice * effectiveRate : convert(c.avgPrice, c.currency);
+                const impactAbsTarget =
+                    period === '1D' && changeObj.absoluteTarget !== undefined && !hasStaleUsdRate
+                        ? changeObj.absoluteTarget
+                        : hasConversionRate
+                            ? changeObj.absolute * effectiveRate
+                            : convert(changeObj.absolute, c.currency);
+
+                const impactPercent = portfolioTotalValue > 0 ? (impactAbsTarget / baseVal) * 100 : 0;
+
+                const denom = 1 + (changeObj.percent / 100);
+                const prevPriceTarget = denom !== 0 ? priceTarget / denom : priceTarget;
+                const priceChangePerShareTarget = priceTarget - prevPriceTarget;
 
                 return {
                     ...c,
-                    impactUSD,
+                    priceTarget,
+                    avgPriceTarget,
+                    changePercent: changeObj.percent,
+                    impactAbsTarget,
                     impactPercent,
-                    priceChangePerShare
+                    priceChangePerShareTarget
                 };
             });
 
         return data.sort((a, b) => {
-            let valA, valB;
+            let valA: string | number;
+            let valB: string | number;
 
             switch (sortField) {
                 case 'symbol':
@@ -66,17 +140,16 @@ export default function TopMoversModal({
                     valB = b.symbol;
                     break;
                 case 'price':
-                    valA = a.price * a.rateToUSD;
-                    valB = b.price * a.rateToUSD;
+                    valA = a.priceTarget;
+                    valB = b.priceTarget;
                     break;
                 case 'changePercent':
-                    valA = a.dayChange.percent;
-                    valB = b.dayChange.percent;
+                    valA = a.changePercent;
+                    valB = b.changePercent;
                     break;
                 case 'impactAbs':
-                    // Map old impactAbs sort to impactPercent logic (same direction)
-                    valA = Math.abs(a.impactUSD);
-                    valB = Math.abs(b.impactUSD);
+                    valA = Math.abs(a.impactAbsTarget);
+                    valB = Math.abs(b.impactAbsTarget);
                     break;
                 case 'impactPercent':
                 default:
@@ -89,9 +162,7 @@ export default function TopMoversModal({
             if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
             return 0;
         });
-    }, [constituents, sortField, sortDirection, prevValueUSD]);
-
-    if (!isOpen) return null;
+    }, [constituents, sortField, sortDirection, portfolioTotalValue, period, convert]);
 
     const handleSort = (field: SortField) => {
         if (sortField === field) {
@@ -102,9 +173,14 @@ export default function TopMoversModal({
         }
     };
 
-    const SortIcon = ({ field }: { field: SortField }) => {
+    const getAriaSort = (field: SortField): 'ascending' | 'descending' | 'none' => {
+        if (sortField !== field) return 'none';
+        return sortDirection === 'asc' ? 'ascending' : 'descending';
+    };
+
+    const renderSortIcon = (field: SortField) => {
         if (sortField !== field) return null;
-        return <span style={{ marginLeft: '4px' }}>{sortDirection === 'asc' ? '↑' : '↓'}</span>;
+        return <span className={styles.sortArrow} aria-hidden="true">{sortDirection === 'asc' ? '↑' : '↓'}</span>;
     };
 
     const formatPercent = (val: number) => {
@@ -119,86 +195,138 @@ export default function TopMoversModal({
     };
 
     return (
-        <div className={styles.overlay} onClick={onClose}>
-            <div className={styles.modal} onClick={e => e.stopPropagation()}>
-                <div className={styles.header}>
-                    <h3 className={styles.title}>Portfolio Constituents Details</h3>
-                    <button className={styles.closeButton} onClick={onClose}>&times;</button>
-                </div>
+        <dialog
+            ref={dialogRef}
+            aria-labelledby="top-movers-dialog-title"
+            {...({ closedby: 'any' } as any)}
+            className={styles.modal}
+            onClose={onClose}
+        >
+            <div className={styles.header}>
+                <h2 id="top-movers-dialog-title" className={styles.title}>
+                    Portfolio Movers Details ({period})
+                </h2>
+                <button
+                    type="button"
+                    className={styles.closeButton}
+                    aria-label="Close modal"
+                    onClick={onClose}
+                >
+                    &times;
+                </button>
+            </div>
 
+            {isOpen && (
                 <div className={styles.content}>
                     <table className={styles.tableContainer}>
                         <thead>
                             <tr>
-                                <th className={styles.tableHeader} onClick={() => handleSort('symbol')}>
-                                    Asset <SortIcon field="symbol" />
+                                <th scope="col" aria-sort={getAriaSort('symbol')} className={styles.tableHeader}>
+                                    <button
+                                        type="button"
+                                        className={styles.sortBtn}
+                                        onClick={() => handleSort('symbol')}
+                                    >
+                                        <span>Asset</span>
+                                        {renderSortIcon('symbol')}
+                                    </button>
                                 </th>
-                                <th className={`${styles.tableHeader} ${styles.alignRight}`}>
-                                    Price
+                                <th scope="col" aria-sort={getAriaSort('price')} className={`${styles.tableHeader} ${styles.alignRight}`}>
+                                    <button
+                                        type="button"
+                                        className={`${styles.sortBtn} ${styles.sortBtnRight}`}
+                                        onClick={() => handleSort('price')}
+                                    >
+                                        <span>Price</span>
+                                        {renderSortIcon('price')}
+                                    </button>
                                 </th>
-                                <th className={`${styles.tableHeader} ${styles.alignRight}`} onClick={() => handleSort('changePercent')}>
-                                    Change (1D) <SortIcon field="changePercent" />
+                                <th scope="col" aria-sort={getAriaSort('changePercent')} className={`${styles.tableHeader} ${styles.alignRight}`}>
+                                    <button
+                                        type="button"
+                                        className={`${styles.sortBtn} ${styles.sortBtnRight}`}
+                                        onClick={() => handleSort('changePercent')}
+                                    >
+                                        <span>Change ({period})</span>
+                                        {renderSortIcon('changePercent')}
+                                    </button>
                                 </th>
-                                <th className={`${styles.tableHeader} ${styles.alignRight}`} onClick={() => handleSort('impactPercent')}>
-                                    Impact <SortIcon field="impactPercent" />
+                                <th scope="col" aria-sort={getAriaSort('impactPercent')} className={`${styles.tableHeader} ${styles.alignRight}`}>
+                                    <button
+                                        type="button"
+                                        className={`${styles.sortBtn} ${styles.sortBtnRight}`}
+                                        onClick={() => handleSort('impactPercent')}
+                                    >
+                                        <span>Portfolio Impact</span>
+                                        {renderSortIcon('impactPercent')}
+                                    </button>
                                 </th>
                             </tr>
                         </thead>
                         <tbody>
-                            {sortedConstituents.map(c => {
-                                // Conversion for display
-                                const priceDisp = format(convert(c.price, c.currency));
-                                const avgPriceDisp = format(convert(c.avgPrice, c.currency));
-                                const changeAbsDisp = format(convert(c.priceChangePerShare, c.currency));
-                                const impactAbsDisp = format(convert(c.dayChange.absolute, c.currency));
+                            {sortedConstituents.length === 0 ? (
+                                <tr>
+                                    <td colSpan={4} className={styles.emptyCell}>
+                                        No price movement recorded for the selected period ({period}).
+                                    </td>
+                                </tr>
+                            ) : (
+                                sortedConstituents.map(c => {
+                                    const priceDisp = format(c.priceTarget);
+                                    const avgPriceDisp = format(c.avgPriceTarget);
+                                    const changeAbsDisp = format(c.priceChangePerShareTarget);
+                                    const impactAbsDisp = format(c.impactAbsTarget);
 
-                                return (
-                                    <tr key={c.symbol} className={styles.row}>
-                                        <td className={styles.cell}>
-                                            <Link
-                                                href={{
-                                                    pathname: `/analysis/${c.symbol}`,
-                                                    query: { from: 'dashboard' }
-                                                }}
-                                                onClick={() => sessionStorage.setItem('navContext', 'dashboard')}
-                                                className={styles.symbolLink}
-                                                style={{ textDecoration: 'none', color: 'inherit' }}
-                                            >
-                                                <span className={styles.symbol}>{c.symbol}</span>
-                                                <span className={styles.name}>{c.name}</span>
-                                            </Link>
-                                        </td>
-                                        <td className={`${styles.cell} ${styles.alignRight}`}>
-                                            <div className={styles.value}>
-                                                {priceDisp}
-                                            </div>
-                                            <div className={`${styles.neutral}`} style={{ fontSize: '0.8em' }}>
-                                                Avg: {avgPriceDisp}
-                                            </div>
-                                        </td>
-                                        <td className={`${styles.cell} ${styles.alignRight}`}>
-                                            <div className={`${styles.value} ${getColorClass(c.dayChange.percent)}`}>
-                                                {formatPercent(c.dayChange.percent)}
-                                            </div>
-                                            <div className={getColorClass(c.dayChange.percent) || styles.neutral} style={{ fontSize: '0.8em' }}>
-                                                {c.priceChangePerShare > 0 ? '+' : ''}{changeAbsDisp}
-                                            </div>
-                                        </td>
-                                        <td className={`${styles.cell} ${styles.alignRight}`}>
-                                            <div className={`${styles.value} ${getColorClass(c.impactPercent)}`}>
-                                                {formatPercent(c.impactPercent)}
-                                            </div>
-                                            <div className={getColorClass(c.impactPercent) || styles.neutral} style={{ fontSize: '0.8em' }}>
-                                                {c.dayChange.absolute > 0 ? '+' : ''}{impactAbsDisp}
-                                            </div>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
+                                    return (
+                                        <tr key={c.symbol} className={styles.row}>
+                                            <td className={styles.cell}>
+                                                <Link
+                                                    href={{
+                                                        pathname: `/analysis/${c.symbol}`,
+                                                        query: { from: 'dashboard' }
+                                                    }}
+                                                    onClick={() => {
+                                                        sessionStorage.setItem('navContext', 'dashboard');
+                                                        onClose();
+                                                    }}
+                                                    className={styles.symbolLink}
+                                                >
+                                                    <span className={styles.symbol}>{c.symbol}</span>
+                                                    <span className={styles.name}>{c.name}</span>
+                                                </Link>
+                                            </td>
+                                            <td className={`${styles.cell} ${styles.alignRight}`}>
+                                                <div className={styles.value}>
+                                                    {priceDisp}
+                                                </div>
+                                                <div className={`${styles.neutral} ${styles.subMetric}`}>
+                                                    Avg: {avgPriceDisp}
+                                                </div>
+                                            </td>
+                                            <td className={`${styles.cell} ${styles.alignRight}`}>
+                                                <div className={`${styles.value} ${getColorClass(c.changePercent)}`}>
+                                                    {formatPercent(c.changePercent)}
+                                                </div>
+                                                <div className={`${getColorClass(c.changePercent) || styles.neutral} ${styles.subMetric}`}>
+                                                    {c.priceChangePerShareTarget > 0 ? '+' : ''}{changeAbsDisp}
+                                                </div>
+                                            </td>
+                                            <td className={`${styles.cell} ${styles.alignRight}`}>
+                                                <div className={`${styles.value} ${getColorClass(c.impactPercent)}`}>
+                                                    {formatPercent(c.impactPercent)}
+                                                </div>
+                                                <div className={`${getColorClass(c.impactPercent) || styles.neutral} ${styles.subMetric}`}>
+                                                    {c.impactAbsTarget > 0 ? '+' : ''}{impactAbsDisp}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })
+                            )}
                         </tbody>
                     </table>
                 </div>
-            </div>
-        </div>
+            )}
+        </dialog>
     );
 }

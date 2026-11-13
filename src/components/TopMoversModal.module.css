@@ -1,15 +1,3 @@
-.overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 1000;
-    animation: fadeIn 0.2s ease-out;
-}
-
 .modal {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
@@ -17,22 +5,43 @@
     width: 90%;
     max-width: 900px;
     max-height: 85vh;
+    margin: auto;
+    padding: 0;
+    color: var(--text-primary);
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+}
+
+.modal[open] {
     display: flex;
     flex-direction: column;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-    animation: slideUp 0.3s ease-out;
+    animation: slideUp 0.25s ease-out;
+}
+
+.modal:modal {
+    overscroll-behavior: contain;
+}
+
+.modal::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(4px);
+    animation: fadeIn 0.2s ease-out;
 }
 
 .header {
-    padding: 1.5rem;
+    padding: 1.25rem 1.5rem;
     border-bottom: 1px solid var(--card-border);
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 1rem;
+    flex-shrink: 0;
 }
 
 .title {
-    font-size: 1.25rem;
+    font-size: 1.125rem;
     font-weight: 600;
     color: var(--text-primary);
     margin: 0;
@@ -40,54 +49,99 @@
 
 .closeButton {
     background: none;
-    border: none;
+    border: 1px solid transparent;
     color: var(--text-secondary);
     font-size: 1.5rem;
     cursor: pointer;
-    padding: 0.5rem;
+    width: 2.25rem;
+    height: 2.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     line-height: 1;
     border-radius: 0.5rem;
-    transition: all 0.2s;
+    transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .closeButton:hover {
-    background: var(--bg-hover);
+    background: var(--hover-bg);
     color: var(--text-primary);
+}
+
+.closeButton:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
 }
 
 .content {
     overflow-y: auto;
     padding: 0;
+    min-height: 0;
+    flex: 1;
+    overscroll-behavior: contain;
 }
 
 .tableContainer {
     width: 100%;
     border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
 }
 
 .tableHeader {
     text-align: left;
-    padding: 1rem 1.5rem;
+    padding: 0.875rem 1.5rem;
     background: var(--card-bg);
     color: var(--text-secondary);
-    font-size: 0.875rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
     font-weight: 600;
     position: sticky;
     top: 0;
     z-index: 10;
-    cursor: pointer;
     user-select: none;
-    border-bottom: 2px solid var(--card-border);
+    border-bottom: 1px solid var(--card-border);
 }
 
-.tableHeader:hover {
+.sortBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+}
+
+.sortBtnRight {
+    justify-content: flex-end;
+}
+
+.sortBtn:hover {
     color: var(--text-primary);
-    background: var(--bg-hover);
+}
+
+.sortBtn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 0.2rem;
+}
+
+.sortArrow {
+    color: var(--primary);
+}
+
+:global([data-theme='dark']) .sortArrow {
+    color: #60a5fa;
 }
 
 .row {
     border-bottom: 1px solid var(--card-border);
-    transition: background-color 0.15s;
+    transition: background-color 0.15s ease;
 }
 
 .row:last-child {
@@ -95,39 +149,75 @@
 }
 
 .row:hover {
-    background-color: var(--bg-hover);
+    background-color: var(--hover-bg);
 }
 
 .cell {
-    padding: 1rem 1.5rem;
-    font-size: 0.9rem;
+    padding: 0.875rem 1.5rem;
+    font-size: 0.875rem;
     color: var(--text-primary);
+}
+
+.symbolLink {
+    display: flex;
+    flex-direction: column;
+    text-decoration: none;
+    color: inherit;
+    min-width: 0;
+}
+
+.symbolLink:hover .symbol {
+    color: var(--primary);
+}
+
+:global([data-theme='dark']) .symbolLink:hover .symbol {
+    color: #60a5fa;
+}
+
+.symbolLink:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 0.25rem;
 }
 
 .symbol {
     font-weight: 600;
     display: block;
+    transition: color 0.15s ease;
 }
 
 .name {
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 200px;
+    max-width: 240px;
 }
 
 .value {
-    font-family: var(--font-mono);
+    font-weight: 600;
+}
+
+.subMetric {
+    font-size: 0.75rem;
+    margin-top: 0.125rem;
 }
 
 .positive {
-    color: var(--success);
+    color: #047857;
+}
+
+:global([data-theme='dark']) .positive {
+    color: #34d399;
 }
 
 .negative {
-    color: var(--danger);
+    color: #b91c1c;
+}
+
+:global([data-theme='dark']) .negative {
+    color: #f87171;
 }
 
 .neutral {
@@ -136,6 +226,13 @@
 
 .alignRight {
     text-align: right;
+}
+
+.emptyCell {
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
 }
 
 @keyframes fadeIn {
@@ -151,7 +248,7 @@
 @keyframes slideUp {
     from {
         opacity: 0;
-        transform: translateY(20px);
+        transform: translateY(16px);
     }
 
     to {
@@ -164,10 +261,10 @@
     .modal {
         width: 100%;
         height: 100%;
-        max-height: 100vh;
+        max-width: 100vw;
+        max-height: 100dvh;
         border-radius: 0;
-        display: flex;
-        flex-direction: column;
+        border: none;
     }
 
     .header {
@@ -180,28 +277,15 @@
     }
 
     .name {
-        max-width: 100px;
-        font-size: 0.75rem;
-    }
-
-    .tableHeader {
-        padding: 0.75rem 0.5rem;
-        font-size: 0.8rem;
-    }
-
-    /* Hide the full name description to save space, keeping only the Symbol */
-    .name {
         display: none;
     }
 
     .cell,
     .tableHeader {
-        padding: 0.75rem 0.25rem;
-        /* Tighter padding generally, but safer edges below */
+        padding: 0.75rem 0.5rem;
         font-size: 0.8rem;
     }
 
-    /* Add safe edge spacing for mobile */
     .cell:first-child,
     .tableHeader:first-child {
         padding-left: 1rem;
@@ -210,17 +294,5 @@
     .cell:last-child,
     .tableHeader:last-child {
         padding-right: 1rem;
-    }
-
-    /* Ensure Impact Column is visible */
-    .tableHeader:nth-child(4),
-    .cell:nth-child(4) {
-        display: table-cell;
-    }
-
-    /* Align Price Right properly */
-    .tableHeader:nth-child(2),
-    .cell:nth-child(2) {
-        text-align: right;
     }
 }

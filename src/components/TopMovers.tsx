@@ -1,179 +1,205 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import styles from './TopMovers.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
-import TopMoversModal from './TopMoversModal';
+import TopMoversModal, { MoverPeriod } from './TopMoversModal';
 
 interface TopMoversProps {
     constituents: any[];
-    portfolioTotalValue: number;
-    portfolioDayChange: number;
+    portfolioTotalValue: number; // Already in target display currency
+    portfolioDayChange?: number; // Already in target display currency
+}
+
+const PERIOD_OPTIONS: MoverPeriod[] = ['1D', '1W', '1M', 'YTD'];
+
+function getPeriodChange(constituent: any, period: MoverPeriod) {
+    switch (period) {
+        case '1W':
+            return constituent.change1W;
+        case '1M':
+            return constituent.change1M;
+        case 'YTD':
+            return constituent.changeYTD;
+        case '1D':
+        default:
+            return constituent.dayChange;
+    }
 }
 
 export default function TopMovers({ constituents, portfolioTotalValue, portfolioDayChange }: TopMoversProps) {
-    const { format, convert, currency, rates } = useCurrency();
+    const { format, convert } = useCurrency();
     const [showModal, setShowModal] = useState(false);
+    const [period, setPeriod] = useState<MoverPeriod>('1D');
 
-    // Calculate previous portfolio value to determine impact
-    const prevValueUSD = portfolioTotalValue - portfolioDayChange;
+    const heldConstituents = useMemo(
+        () => (constituents || []).filter(c => c.quantity > 0.00001),
+        [constituents]
+    );
 
-    // Filter out sold assets (quantity effectively 0)
-    const heldConstituents = constituents.filter(c => c.quantity > 0.00001);
+    const { gainers, losers } = useMemo(() => {
+        const baseVal = portfolioTotalValue > 0 ? portfolioTotalValue : 1;
 
-    // Enrich constituents with impact data
-    const constituentsWithImpact = heldConstituents.map(c => {
-        // If coming from API topMovers, value is already converted and rateToUSD might be missing.
-        // If rateToUSD is missing, assume 1 (already converted or same currency).
-        const rate = c.rateToUSD ?? 1;
-        const impactUSD = c.dayChange.absolute * rate; // 'absolute' is already converted in topMovers object
-        const impactPercent = prevValueUSD !== 0 ? (impactUSD / prevValueUSD) * 100 : 0;
-        return { ...c, impactPercent };
-    });
+        const activeMovers = heldConstituents
+            .map(c => {
+                const changeObj = getPeriodChange(c, period);
+                if (!changeObj || Math.abs(changeObj.percent) <= 0.001) {
+                    return null;
+                }
 
-    // Filter out items with 0 impact/change to avoid noise
-    const activeConstituents = constituentsWithImpact.filter(c => Math.abs(c.dayChange.percent) > 0.001);
+                const hasStaleUsdRate = c.conversionRate === 1 && c.currency && c.currency !== 'USD' && typeof c.rateToUSD === 'number' && c.rateToUSD !== 1;
+                const hasConversionRate = c.conversionRate !== undefined;
+                const effectiveRate = hasStaleUsdRate ? c.rateToUSD : (c.conversionRate ?? 1);
+                const priceTarget = hasConversionRate ? c.price * effectiveRate : convert(c.price, c.currency);
+                const impactAbsTarget =
+                    period === '1D' && changeObj.absoluteTarget !== undefined && !hasStaleUsdRate
+                        ? changeObj.absoluteTarget
+                        : hasConversionRate
+                            ? changeObj.absolute * effectiveRate
+                            : convert(changeObj.absolute, c.currency);
 
-    // Sort by impact percent descending (absolute impact)
-    // Wait, "Top Movers" usually separates Gainers (Positive Impact) and Losers (Negative Impact).
-    // So we sort simply by impactPercent value. 
-    // High positive impact -> Top Gainer.
-    // High negative impact -> Top Loser.
-    const sorted = [...activeConstituents].sort((a, b) => b.impactPercent - a.impactPercent);
+                const impactPercent = portfolioTotalValue > 0 ? (impactAbsTarget / baseVal) * 100 : 0;
 
-    // Gainers: Positive Impact, sorted desc
-    const gainers = sorted.filter(c => c.impactPercent > 0).slice(0, 4);
+                return {
+                    ...c,
+                    priceTarget,
+                    changePercent: changeObj.percent,
+                    impactAbsTarget,
+                    impactPercent
+                };
+            })
+            .filter(Boolean) as any[];
 
-    // Losers: Negative Impact, sorted asc (biggest losers first)
-    // "sorted" is desc, so negatives are at the end.
-    // We want the MOST negative at the top of "Losers" list?
-    // Usually "Top Losers" means biggest drops. -5% is "bigger" loser than -1%.
-    // So distinct slice for losers: sort asc.
-    const losers = [...activeConstituents]
-        .filter(c => c.impactPercent < 0)
-        .sort((a, b) => a.impactPercent - b.impactPercent)
-        .slice(0, 4);
+        const sortedDesc = [...activeMovers].sort((a, b) => b.impactPercent - a.impactPercent);
+        const topGainers = sortedDesc.filter(c => c.impactPercent > 0).slice(0, 3);
+        const topLosers = [...activeMovers]
+            .filter(c => c.impactPercent < 0)
+            .sort((a, b) => a.impactPercent - b.impactPercent)
+            .slice(0, 3);
 
-    if (gainers.length === 0 && losers.length === 0) {
+        return { gainers: topGainers, losers: topLosers };
+    }, [heldConstituents, period, portfolioTotalValue, convert]);
+
+    if (heldConstituents.length === 0) {
         return (
             <div className={styles.card}>
-                <h3 className={styles.title}>Top Movers (1D)</h3>
-                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                    Please add activity to see this list
+                <div className={styles.header}>
+                    <h2 className={styles.title}>Top Movers</h2>
+                </div>
+                <div className={styles.emptyCard}>
+                    Please add activity to see top movers
                 </div>
             </div>
         );
     }
 
+    const renderMoverRow = (c: any, isGain: boolean) => {
+        const badgeClass = isGain ? styles.positive : styles.negative;
+        const absSign = c.impactAbsTarget > 0 ? '+' : '';
+        const pctSign = c.changePercent > 0 ? '+' : '';
+        const impactSign = c.impactPercent > 0 ? '+' : '';
+
+        return (
+            <motion.li
+                key={c.symbol}
+                className={styles.item}
+                layout
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, transition: { duration: 0.05 } }}
+                transition={{ duration: 0.18 }}
+            >
+                <Link
+                    href={{
+                        pathname: `/analysis/${c.symbol}`,
+                        query: { from: 'dashboard' }
+                    }}
+                    onClick={() => sessionStorage.setItem('navContext', 'dashboard')}
+                    className={styles.itemLink}
+                >
+                    <div className={styles.symbolCol}>
+                        <span className={styles.symbol}>{c.symbol}</span>
+                        <span className={styles.price}>
+                            {format(c.priceTarget)}
+                            {c.name ? ` · ${c.name}` : ''}
+                        </span>
+                    </div>
+                    <div className={styles.metricsCol}>
+                        <div className={styles.changeContainer}>
+                            <span className={styles.absChange}>
+                                {absSign}{format(c.impactAbsTarget)}
+                            </span>
+                            <span className={`${styles.badge} ${badgeClass}`}>
+                                {pctSign}{c.changePercent.toFixed(2)}%
+                            </span>
+                        </div>
+                        <span className={styles.impactText}>
+                            Impact: {impactSign}{c.impactPercent.toFixed(2)}%
+                        </span>
+                    </div>
+                </Link>
+            </motion.li>
+        );
+    };
+
     return (
         <>
             <div className={styles.card}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                    <h3 className={styles.title} style={{ marginBottom: 0 }}>Top Movers (1D)</h3>
+                <div className={styles.header}>
+                    <div className={styles.titleWrap}>
+                        <h2 className={styles.title}>Top Movers</h2>
+                        <div className={styles.periodControls} role="group" aria-label="Top movers period">
+                            {PERIOD_OPTIONS.map(opt => {
+                                const isActive = period === opt;
+                                return (
+                                    <button
+                                        key={opt}
+                                        type="button"
+                                        aria-pressed={isActive}
+                                        className={`${styles.periodBtn} ${isActive ? styles.periodBtnActive : ''}`}
+                                        onClick={() => setPeriod(opt)}
+                                    >
+                                        {opt}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
                     <button
+                        type="button"
                         onClick={() => setShowModal(true)}
-                        style={{
-                            background: 'transparent',
-                            border: 'none',
-                            color: 'var(--primary)',
-                            cursor: 'pointer',
-                            fontSize: '0.875rem',
-                            fontWeight: 500
-                        }}
+                        className={styles.viewAllBtn}
                     >
-                        View Details
+                        View All
                     </button>
                 </div>
 
                 <div className={styles.grid}>
                     <div className={styles.column}>
-                        <h4 className={styles.subtitle}>Gainers</h4>
+                        <h3 className={styles.subtitle}>Top Gainers ({period})</h3>
                         {gainers.length > 0 ? (
                             <ul className={styles.list}>
                                 <AnimatePresence mode="popLayout">
-                                    {gainers.map(c => (
-                                        <motion.li
-                                            key={c.symbol}
-                                            className={styles.item}
-                                            layout
-                                            initial={{ opacity: 0, scale: 0.95 }}
-                                            animate={{ opacity: 1, scale: 1 }}
-                                            exit={{ opacity: 0, transition: { duration: 0.05 } }}
-                                            transition={{ duration: 0.2 }}
-                                        >
-                                            <Link
-                                                href={{
-                                                    pathname: `/analysis/${c.symbol}`,
-                                                    query: { from: 'dashboard' }
-                                                }}
-                                                onClick={() => sessionStorage.setItem('navContext', 'dashboard')}
-                                                style={{ textDecoration: 'none', color: 'inherit', display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center' }}
-                                            >
-                                                <div className={styles.symbolRow}>
-                                                    <span className={styles.symbol}>{c.symbol}</span>
-                                                    <span className={styles.price}>{format(convert(c.price, c.currency))}</span>
-                                                </div>
-                                                <div className={styles.changeContainer}>
-                                                    <span className={`${styles.badge} ${styles.positive}`}>
-                                                        +{format(convert(c.dayChange.absolute, c.currency))}
-                                                    </span>
-                                                    <span className={`${styles.badge} ${styles.positive}`}>
-                                                        +{c.dayChange.percent.toFixed(2)}%
-                                                    </span>
-                                                </div>
-                                            </Link>
-                                        </motion.li>
-                                    ))}
+                                    {gainers.map(c => renderMoverRow(c, true))}
                                 </AnimatePresence>
                             </ul>
                         ) : (
-                            <div className={styles.empty}>No gainers today</div>
+                            <div className={styles.empty}>No gainers for {period}</div>
                         )}
                     </div>
                     <div className={styles.column}>
-                        <h4 className={styles.subtitle}>Losers</h4>
+                        <h3 className={styles.subtitle}>Top Losers ({period})</h3>
                         {losers.length > 0 ? (
                             <ul className={styles.list}>
                                 <AnimatePresence mode="popLayout">
-                                    {losers.map(c => (
-                                        <motion.li
-                                            key={c.symbol}
-                                            className={styles.item}
-                                            layout
-                                            initial={{ opacity: 0, scale: 0.95 }}
-                                            animate={{ opacity: 1, scale: 1 }}
-                                            exit={{ opacity: 0, transition: { duration: 0.05 } }}
-                                            transition={{ duration: 0.2 }}
-                                        >
-                                            <Link
-                                                href={{
-                                                    pathname: `/analysis/${c.symbol}`,
-                                                    query: { from: 'dashboard' }
-                                                }}
-                                                onClick={() => sessionStorage.setItem('navContext', 'dashboard')}
-                                                style={{ textDecoration: 'none', color: 'inherit', display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center' }}
-                                            >
-                                                <div className={styles.symbolRow}>
-                                                    <span className={styles.symbol}>{c.symbol}</span>
-                                                    <span className={styles.price}>{format(convert(c.price, c.currency))}</span>
-                                                </div>
-                                                <div className={styles.changeContainer}>
-                                                    <span className={`${styles.badge} ${styles.negative}`}>
-                                                        {format(convert(c.dayChange.absolute, c.currency))}
-                                                    </span>
-                                                    <span className={`${styles.badge} ${styles.negative}`}>
-                                                        {c.dayChange.percent.toFixed(2)}%
-                                                    </span>
-                                                </div>
-                                            </Link>
-                                        </motion.li>
-                                    ))}
+                                    {losers.map(c => renderMoverRow(c, false))}
                                 </AnimatePresence>
                             </ul>
                         ) : (
-                            <div className={styles.empty}>No losers today</div>
+                            <div className={styles.empty}>No losers for {period}</div>
                         )}
                     </div>
                 </div>
@@ -185,6 +211,7 @@ export default function TopMovers({ constituents, portfolioTotalValue, portfolio
                 constituents={heldConstituents}
                 portfolioTotalValue={portfolioTotalValue}
                 portfolioDayChange={portfolioDayChange}
+                period={period}
             />
         </>
     );

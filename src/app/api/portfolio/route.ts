@@ -539,7 +539,7 @@ export async function GET(request: NextRequest) {
                 if (constituent) {
                     constituents.push(constituent);
                 }
-            } else if (constituent && (totalLifetimeDividends > 0 || Math.abs(constituent.realizedGain) > 0.01)) {
+            } else if (constituent && (constituent.lifetimeDividends > 0 || Math.abs(constituent.realizedGain) > 0.01)) {
                 // Include Sold Assets if they have history
                 constituents.push(constituent);
             }
@@ -606,36 +606,22 @@ export async function GET(request: NextRequest) {
 
             // Update Upcoming Dividends
             upcomingDividends.forEach(x => x.estimatedAmount *= finalRate);
-
-            // Enrich Constituents with Target Values
-            constituents.forEach(c => {
-                // Calculate Composite Rate: Native -> USD -> Target
-                const conversionRate = (c.rateToUSD || 1) * finalRate;
-                c.conversionRate = conversionRate; // Pass to frontend for consistent math
-
-                // Pre-calculate Target Values to ensure Sum(Parts) matches Backend Total
-                c.valueTarget = c.value * conversionRate;
-                c.bookValueTarget = c.bookValue * conversionRate;
-                c.realizedGainTarget = (c.realizedGain || 0) * conversionRate;
-                c.lifetimeDividendsTarget = (c.lifetimeDividends || 0) * conversionRate;
-
-                const absUSD = c.dayChange.absolute * c.rateToUSD;
-                c.dayChange.absoluteTarget = absUSD * finalRate;
-            });
-
-            // NOTE: Constituents remain in NATIVE currency structure, but now carry target values
-            // for precise display independent of frontend context rates.
-        } else {
-            // Even if rate is 1 (USD selected), we popuplate target values for consistency
-            constituents.forEach(c => {
-                c.conversionRate = 1;
-                c.valueTarget = c.value;
-                c.bookValueTarget = c.bookValue;
-                c.realizedGainTarget = c.realizedGain || 0;
-                c.lifetimeDividendsTarget = c.lifetimeDividends || 0;
-                c.dayChange.absoluteTarget = c.dayChange.absolute;
-            });
         }
+
+        // Enrich Constituents with Target Values (c.value, bookValue, dayChange.absolute are native;
+        // realizedGain and lifetimeDividends are already stored in USD).
+        constituents.forEach(c => {
+            const conversionRate = (c.rateToUSD || 1) * finalRate;
+            c.conversionRate = conversionRate;
+
+            c.valueTarget = c.value * conversionRate;
+            c.bookValueTarget = c.bookValue * conversionRate;
+            c.realizedGainTarget = (c.realizedGain || 0) * finalRate;
+            c.lifetimeDividendsTarget = (c.lifetimeDividends || 0) * finalRate;
+
+            const absUSD = c.dayChange.absolute * (c.rateToUSD || 1);
+            c.dayChange.absoluteTarget = absUSD * finalRate;
+        });
 
 
         // Calculate Look-Through (Portfolio X-Ray: Sector & Geographic Exposure)
@@ -680,12 +666,17 @@ export async function GET(request: NextRequest) {
             };
         }).sort((a, b) => b.impact - a.impact).slice(0, 10); // Take top 10 relevant
 
+        const prevTotalValue = totalValue - totalDayChange;
+
         return NextResponse.json({
             totalValue,
+            totalCostBasis,
             dayChange: totalDayChange,
-            dayChangePercent: totalValue > 0 ? (totalDayChange / (totalValue - totalDayChange)) * 100 : 0,
+            dayChangePercent: totalValue > 0 && prevTotalValue > 0 ? (totalDayChange / prevTotalValue) * 100 : 0,
             totalGrowth,
             totalGrowthPercent,
+            totalLifetimeDividends,
+            totalRealizedGain,
             xirr: portfolioXIRR,
             isPortfolioYoungerThan1Y,
             lastUpdated: latestDataTimestamp,

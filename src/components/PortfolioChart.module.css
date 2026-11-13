@@ -32,11 +32,19 @@
 }
 
 .positive {
-    color: var(--success);
+    color: #047857;
+}
+
+:global([data-theme='dark']) .positive {
+    color: #34d399;
 }
 
 .negative {
-    color: var(--danger);
+    color: #b91c1c;
+}
+
+:global([data-theme='dark']) .negative {
+    color: #f87171;
 }
 
 .controls {
@@ -44,10 +52,14 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 0.75rem;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .ranges {
     display: flex;
+    flex-wrap: wrap;
+    max-width: 100%;
     background: var(--hover-bg);
     padding: 0.25rem;
     border-radius: 0.75rem;
@@ -57,6 +69,8 @@
 .dateInputs {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    min-width: 0;
     gap: 0.5rem;
     animation: fadeIn 0.2s ease-in-out;
 }
@@ -101,19 +115,32 @@
     border-radius: 0.5rem;
     font-size: 0.75rem;
     font-weight: 600;
-    color: var(--text-secondary);
+    color: #475569;
     cursor: pointer;
     transition: all 0.2s;
+}
+
+:global([data-theme='dark']) .rangeButton {
+    color: #cbd5e1;
 }
 
 .rangeButton:hover {
     color: var(--text-primary);
 }
 
+.rangeButton:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+}
+
 .rangeButton.active {
     background: var(--card-bg);
-    color: var(--primary);
+    color: #1d4ed8;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:global([data-theme='dark']) .rangeButton.active {
+    color: #60a5fa;
 }
 
 @media (max-width: 640px) {
@@ -183,6 +210,12 @@
     position: relative;
 }
 
+.chartWrapper:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 0.5rem;
+}
+
 @media (max-width: 640px) {
     .chartWrapper {
         height: 250px;
@@ -195,7 +228,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.72);
     backdrop-filter: blur(2px);
     display: flex;
     justify-content: center;
@@ -204,4 +237,236 @@
     font-size: 0.875rem;
     font-weight: 500;
     color: var(--text-secondary);
+    border-radius: 0.5rem;
+}
+
+:global([data-theme='dark']) .loading {
+    background: rgba(15, 23, 42, 0.72);
+}
+
+/* Unified Performance & Evolution Card */
+.unifiedContainer {
+    background: var(--card-bg);
+    padding: 1.5rem;
+    border-radius: 1rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.04);
+    border: 1px solid var(--card-border);
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    width: 100%;
+    min-width: 0;
+}
+
+.unifiedHeader {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.headerTopRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.headerTitleArea {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
+    border-bottom: 1px solid var(--card-border);
+}
+
+.modeTablist {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    max-width: 100%;
+}
+
+.modeTablist::-webkit-scrollbar {
+    display: none;
+}
+
+.modeTab {
+    position: relative;
+    flex: none;
+    padding: 0.45rem 0.85rem 0.6rem;
+    border: none;
+    border-radius: 0.5rem 0.5rem 0 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.modeTab:hover {
+    color: var(--text-primary);
+    background: var(--hover-bg);
+}
+
+.modeTab:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+}
+
+.modeTab[aria-selected="true"] {
+    color: #1d4ed8;
+}
+
+:global([data-theme='dark']) .modeTab[aria-selected="true"] {
+    color: #60a5fa;
+}
+
+.modeTab[aria-selected="true"]::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    border-block-end: 2px solid #1d4ed8;
+}
+
+:global([data-theme='dark']) .modeTab[aria-selected="true"]::after {
+    border-block-end-color: #60a5fa;
+}
+
+.periodMetricsStrip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.875rem 1.5rem;
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    background: var(--background);
+    border: 1px solid var(--card-border);
+    border-radius: 0.75rem;
+}
+
+.metricGroup {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem 1.5rem;
+    flex-wrap: wrap;
+}
+
+.metricChip {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.metricChipLabel {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.metricChipValue {
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.metricChipSub {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.metricPill {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.125rem 0.45rem;
+    border-radius: 9999px;
+}
+
+.metricPillPos {
+    color: #047857;
+    background: rgba(16, 185, 129, 0.12);
+}
+
+:global([data-theme='dark']) .metricPillPos {
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.14);
+}
+
+.metricPillNeg {
+    color: #b91c1c;
+    background: rgba(239, 68, 68, 0.12);
+}
+
+:global([data-theme='dark']) .metricPillNeg {
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.14);
+}
+
+.chartLegend {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.legendItem {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.legendLinePrimary {
+    width: 14px;
+    height: 2.5px;
+    background: #3b82f6;
+    border-radius: 9999px;
+}
+
+.legendLineDashed {
+    width: 14px;
+    height: 0;
+    border-top: 2px dashed #94a3b8;
+}
+
+.emptyOverlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    z-index: 10;
+}
+
+@media (max-width: 640px) {
+    .unifiedContainer {
+        padding: 1rem;
+        border-radius: 0.875rem;
+        gap: 1rem;
+    }
+
+    .controls {
+        width: 100%;
+        align-items: stretch;
+    }
+
+    .modeTab {
+        font-size: 0.8125rem;
+        padding: 0.4rem 0.65rem 0.55rem;
+    }
+
+    .periodMetricsStrip {
+        padding: 0.65rem 0.75rem;
+    }
 }
