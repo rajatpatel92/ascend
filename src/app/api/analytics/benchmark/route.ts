@@ -3,7 +3,6 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
 import { requireAuth } from '@/lib/api-auth';
-import { auth } from '@/auth';
 
 export async function POST(req: Request) {
     const authResult = await requireAuth(req, ['ADMIN', 'EDITOR', 'VIEWER'], true);
@@ -39,7 +38,7 @@ export async function POST(req: Request) {
         }
 
         // Build Filter Query
-        const whereClause: any = {
+        const whereClause: Record<string, unknown> = {
             investment: { not: undefined } // Ensure linked investment
         };
 
@@ -68,9 +67,16 @@ export async function POST(req: Request) {
             orderBy: { date: 'asc' }
         });
 
+        const formattedActivities = activities.map((a) => ({
+            ...a,
+            investment: a.investment
+                ? { ...a.investment, currency: a.investment.currencyCode }
+                : a.investment
+        }));
+
         // Run Calculation
         const result = await PortfolioAnalytics.calculateComparisonHistory(
-            activities as any,
+            formattedActivities as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0],
             benchmarkSymbol || '^GSPC',
             startDate
         );

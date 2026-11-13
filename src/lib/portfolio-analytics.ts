@@ -713,7 +713,10 @@ export class PortfolioAnalytics {
         const portfolioStart = dailyPerf.find(d => d.marketValue > 0) || dailyPerf[0];
         const portfolioEnd = dailyPerf[dailyPerf.length - 1];
 
-        const portfolioReturn = portfolioStart && portfolioEnd.nav ? ((portfolioEnd.nav - portfolioStart.nav) / portfolioStart.nav) * 100 : 0;
+        const portfolioReturn =
+            portfolioStart && portfolioEnd?.nav && portfolioStart.nav
+                ? ((portfolioEnd.nav - portfolioStart.nav) / portfolioStart.nav) * 100
+                : 0;
 
         let benchmarkReturn = 0;
         const validBenchmark = benchmarkData.filter(d => d.value > 0);

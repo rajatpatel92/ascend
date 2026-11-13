@@ -1,86 +1,170 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import {
+    ResponsiveContainer,
+    AreaChart,
+    Area,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip
+} from 'recharts';
 import ReportFilters, { FilterOptions } from '@/components/ReportFilters';
-import RangeSelector from '@/components/RangeSelector';
-import PortfolioChart from '@/components/PortfolioChart';
 import ContributionChart from '@/components/ContributionChart';
 import DividendChart from '@/components/DividendChart';
 import styles from './page.module.css';
-import AnalysisSkeleton from '@/components/AnalysisSkeleton';
 import { useCurrency } from '@/context/CurrencyContext';
-
+import { useDate } from '@/context/DateContext';
 import { ClientCache } from '@/lib/client-cache';
+import { getBucketEndMs, parseLocalDate } from '@/lib/date-utils';
 import usePersistentState from '@/hooks/usePersistentState';
+
+interface EvolutionPoint {
+    date: string;
+    value: number;
+    invested: number;
+}
+
+interface ContributionPoint {
+    date: string;
+    inflow: number;
+    outflow: number;
+}
+
+interface DividendPoint {
+    date: string;
+    amount: number;
+}
+
+interface EvolutionHistoryResponse {
+    evolution?: EvolutionPoint[];
+}
+
+interface EvolutionFlowsResponse {
+    contributions?: { week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
+    dividends?: { month: DividendPoint[]; year: DividendPoint[] };
+}
+
+type EvolutionTab = 'valueVsInvested' | 'wealthStack';
+
+const RANGES = ['1M', '3M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', 'ALL'];
+
+const EVOLUTION_TABS: { id: EvolutionTab; label: string }[] = [
+    { id: 'valueVsInvested', label: 'Value vs. Invested Principal' },
+    { id: 'wealthStack', label: 'Wealth Growth Breakdown' }
+];
+
+function getCutoffDate(rangeToUse: string): Date | null {
+    if (rangeToUse === 'ALL') return null;
+
+    const now = new Date();
+    const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+
+    switch (rangeToUse) {
+        case '1M': cutoff.setMonth(cutoff.getMonth() - 1); break;
+        case '3M': cutoff.setMonth(cutoff.getMonth() - 3); break;
+        case '6M': cutoff.setMonth(cutoff.getMonth() - 6); break;
+        case 'YTD': cutoff.setMonth(0, 1); break;
+        case '1Y': cutoff.setFullYear(cutoff.getFullYear() - 1); break;
+        case '2Y': cutoff.setFullYear(cutoff.getFullYear() - 2); break;
+        case '3Y': cutoff.setFullYear(cutoff.getFullYear() - 3); break;
+        case '5Y': cutoff.setFullYear(cutoff.getFullYear() - 5); break;
+        default: return null;
+    }
+    return cutoff;
+}
+
+function filterByRange<T extends { date: string }>(
+    items: T[] | undefined,
+    rangeToUse: string,
+    granularity: 'day' | 'week' | 'month' | 'year' = 'day'
+): T[] {
+    if (!items || items.length === 0) return [];
+    const cutoff = getCutoffDate(rangeToUse);
+    if (!cutoff) return items;
+
+    const cutoffMs = cutoff.getTime();
+    return items.filter(p => getBucketEndMs(p.date, granularity) >= cutoffMs);
+}
 
 export default function EvolutionPage() {
     const [filters, setFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('evolution_filters', null);
+    const [range, setRange] = usePersistentState('evolution_range', 'ALL');
 
     const [data, setData] = useState<{
-        evolution?: any[];
-        contributions?: any;
-        dividends?: any;
-        debug?: any[];
+        evolution?: EvolutionPoint[];
+        contributions?: { week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
+        dividends?: { month: DividendPoint[]; year: DividendPoint[] };
     }>({});
 
     const [loadingHistory, setLoadingHistory] = useState(true);
     const [loadingFlows, setLoadingFlows] = useState(true);
+    const [fetchError, setFetchError] = useState<string | null>(null);
 
-    // Chart toggles
+    const [evolutionTab, setEvolutionTab] = useState<EvolutionTab>('valueVsInvested');
     const [contributionPeriod, setContributionPeriod] = useState<'week' | 'month' | 'year'>('month');
     const [dividendPeriod, setDividendPeriod] = useState<'month' | 'year'>('year');
+    const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-    // Independent Ranges
-    const [contributionRange, setContributionRange] = useState('ALL');
-    const [dividendRange, setDividendRange] = useState('ALL');
-
-    const [range, setRange] = usePersistentState('evolution_range', 'ALL');
-    const { currency } = useCurrency();
+    const { currency, format } = useCurrency();
+    const { formatDate } = useDate();
 
     useEffect(() => {
-        // Safe filters: if null (initial load), treat as empty arrays (fetch all).
-        const safeFilters = filters || { accountTypes: [], investmentTypes: [] };
+        if (!isFiltersLoaded) return;
 
-        // Only fetch if filters are loaded (or if we decide to fetch anyway with defaults)
-        // But to avoid double-fetch (one with null, one with loaded), we can wait?
-        // Actually the race condition was in ReportFilters resetting state.
-        // Fetching with empty filters is fine, but ReportFilters will overwrite `filters` if we render it too early.
+        const controller = new AbortController();
+        const safeFilters: FilterOptions = filters || { accountTypes: [], investmentTypes: [] };
+        const normalizedFilters = {
+            accountTypes: [...(safeFilters.accountTypes || [])].sort(),
+            investmentTypes: [...(safeFilters.investmentTypes || [])].sort()
+        };
+        const backendFilters = { ...normalizedFilters, assetClasses: normalizedFilters.investmentTypes };
 
         const fetchHistory = async () => {
-            const cacheKey = ClientCache.generateKey('evolution_history', { filters: safeFilters, range, currency });
-            const cached = ClientCache.get<any>(cacheKey);
+            const cacheKey = ClientCache.generateKey('evolution_history_v2', { filters: normalizedFilters, currency });
+            const cached = ClientCache.get<EvolutionHistoryResponse>(cacheKey);
 
-            if (cached) {
+            if (cached && Array.isArray(cached.evolution)) {
                 setData(prev => ({ ...prev, evolution: cached.evolution }));
+                setFetchError(null);
                 setLoadingHistory(false);
                 return;
             }
 
             setLoadingHistory(true);
             try {
-                const backendFilters = { ...safeFilters, assetClasses: safeFilters.investmentTypes };
                 const res = await fetch('/api/analytics/evolution', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filters: backendFilters, range, currency, mode: 'evolution' })
+                    body: JSON.stringify({ filters: backendFilters, currency, mode: 'evolution' }),
+                    signal: controller.signal
                 });
-                if (res.ok) {
-                    const json = await res.json();
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                const json: EvolutionHistoryResponse = await res.json();
+                if (!controller.signal.aborted) {
                     setData(prev => ({ ...prev, evolution: json.evolution }));
+                    setFetchError(null);
                     ClientCache.set(cacheKey, { evolution: json.evolution });
                 }
             } catch (err) {
-                console.error(err);
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to fetch evolution history:', err);
+                setFetchError('Unable to load portfolio evolution history for the selected filters.');
             } finally {
-                setLoadingHistory(false);
+                if (!controller.signal.aborted) {
+                    setLoadingHistory(false);
+                }
             }
         };
 
         const fetchFlows = async () => {
-            const cacheKey = ClientCache.generateKey('evolution_flows', { filters: safeFilters, range, currency });
-            const cached = ClientCache.get<any>(cacheKey);
+            const cacheKey = ClientCache.generateKey('evolution_flows_v2', { filters: normalizedFilters, currency });
+            const cached = ClientCache.get<EvolutionFlowsResponse>(cacheKey);
 
-            if (cached) {
+            if (cached && cached.contributions) {
                 setData(prev => ({ ...prev, contributions: cached.contributions, dividends: cached.dividends }));
                 setLoadingFlows(false);
                 return;
@@ -88,184 +172,593 @@ export default function EvolutionPage() {
 
             setLoadingFlows(true);
             try {
-                const backendFilters = { ...safeFilters, assetClasses: safeFilters.investmentTypes };
                 const res = await fetch('/api/analytics/evolution', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filters: backendFilters, range, currency, mode: 'flows' })
+                    body: JSON.stringify({ filters: backendFilters, currency, mode: 'flows' }),
+                    signal: controller.signal
                 });
-                if (res.ok) {
-                    const json = await res.json();
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                const json: EvolutionFlowsResponse = await res.json();
+                if (!controller.signal.aborted) {
                     setData(prev => ({ ...prev, contributions: json.contributions, dividends: json.dividends }));
                     ClientCache.set(cacheKey, { contributions: json.contributions, dividends: json.dividends });
                 }
             } catch (err) {
-                console.error(err);
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to fetch cash flows:', err);
+                setFetchError(prev => prev || 'Unable to load cash flows and dividend schedules.');
             } finally {
-                setLoadingFlows(false);
+                if (!controller.signal.aborted) {
+                    setLoadingFlows(false);
+                }
             }
         };
 
         const timeout = setTimeout(() => {
             fetchHistory();
             fetchFlows();
-        }, 300);
-        return () => clearTimeout(timeout);
-    }, [filters, range, currency]);
+        }, 120);
 
-    // Generic Range Filter
-    const filterByRange = (items: any[], rangeToUse: string) => {
-        if (!items) return [];
-        if (rangeToUse === 'ALL') return items;
+        return () => {
+            clearTimeout(timeout);
+            controller.abort();
+        };
+    }, [filters, currency, isFiltersLoaded]);
 
-        const now = new Date();
-        const cutoff = new Date();
+    const filteredEvolution = useMemo(
+        () => filterByRange(data.evolution, range, 'day'),
+        [data.evolution, range]
+    );
 
-        switch (rangeToUse) {
-            case '1D': cutoff.setDate(now.getDate() - 1); break;
-            case '1W': cutoff.setDate(now.getDate() - 7); break;
-            case '1M': cutoff.setMonth(now.getMonth() - 1); break;
-            case '3M': cutoff.setMonth(now.getMonth() - 3); break;
-            case '6M': cutoff.setMonth(now.getMonth() - 6); break;
-            case '1Y': cutoff.setFullYear(now.getFullYear() - 1); break;
-            case '2Y': cutoff.setFullYear(now.getFullYear() - 2); break;
-            case '3Y': cutoff.setFullYear(now.getFullYear() - 3); break;
-            case 'YTD': cutoff.setMonth(0, 1); break; // Jan 1st
-            case '5Y': cutoff.setFullYear(now.getFullYear() - 5); break;
-            default: return items;
-        }
-        // Comparison using string dates (YYYY-MM-DD or YYYY-MM or YYYY)
-        // ISO Strings compare correctly lexicographically if format is compatible.
-        // But our data.date can be '2026' or '2026-01'.
-        // '2026' < '2025-12-31' ? No.
-        // Safer to construct Date objects.
-        return items.filter((p: any) => {
-            // Handle partial dates e.g. "2023" -> "2023-01-01" for comparison
-            const dStr = p.date.length === 4 ? `${p.date}-01-01` :
-                p.date.length === 7 ? `${p.date}-01` : p.date;
-            return new Date(dStr) >= cutoff;
+    const filteredContributions = useMemo(
+        () => filterByRange(data.contributions?.[contributionPeriod], range, contributionPeriod),
+        [data.contributions, contributionPeriod, range]
+    );
+
+    const filteredDividends = useMemo(
+        () => filterByRange(data.dividends?.[dividendPeriod], range, dividendPeriod),
+        [data.dividends, dividendPeriod, range]
+    );
+
+    const evolutionChartData = useMemo(() => {
+        return filteredEvolution.map(p => {
+            const clampedInvested = Math.max(0, p.invested);
+            const investedBase = Math.max(0, Math.min(p.value, clampedInvested));
+            const marketGain = Math.max(0, p.value - investedBase);
+            return {
+                date: p.date,
+                dateNumber: parseLocalDate(p.date).getTime(),
+                value: p.value,
+                invested: p.invested,
+                investedBase,
+                marketGain,
+                netGain: p.value - p.invested
+            };
         });
+    }, [filteredEvolution]);
+
+    const kpis = useMemo(() => {
+        const len = filteredEvolution.length;
+        const firstEv = len > 0 ? filteredEvolution[0] : null;
+        const lastEv = len > 0 ? filteredEvolution[len - 1] : null;
+
+        const endingValue = lastEv ? lastEv.value : 0;
+        const startingValue = firstEv ? firstEv.value : 0;
+        const endInvested = lastEv ? lastEv.invested : 0;
+        const startInvested = firstEv ? firstEv.invested : 0;
+
+        const periodDelta = endingValue - startingValue;
+        const periodDeltaPct = startingValue > 0.01 ? (periodDelta / startingValue) * 100 : 0;
+
+        const monthlyFlows = filterByRange(data.contributions?.month, range, 'month');
+        const totalInflows = monthlyFlows.reduce((s, d) => s + d.inflow, 0);
+        const totalOutflows = monthlyFlows.reduce((s, d) => s + Math.abs(d.outflow), 0);
+        const netFlowFromSchedule = totalInflows - totalOutflows;
+        const avgMonthlyContribution = monthlyFlows.length > 0 ? netFlowFromSchedule / monthlyFlows.length : 0;
+
+        const compoundedGain = range === 'ALL'
+            ? (endingValue - endInvested)
+            : (endingValue - startingValue) - (endInvested - startInvested);
+        const gainDenominator = range === 'ALL'
+            ? (endInvested > 0.01 ? endInvested : endingValue)
+            : startingValue + Math.max(0, endInvested - startInvested);
+        const compoundedGainPct = gainDenominator > 0.01 ? (compoundedGain / gainDenominator) * 100 : 0;
+
+        const monthlyDivs = filterByRange(data.dividends?.month, range, 'month');
+        const totalDividends = monthlyDivs.reduce((s, d) => s + d.amount, 0);
+        const avgMonthlyDividend = monthlyDivs.length > 0 ? totalDividends / monthlyDivs.length : 0;
+        const peakDivMonth = monthlyDivs.reduce(
+            (best, cur) => (cur.amount > best.amount ? cur : best),
+            { date: '', amount: 0 }
+        );
+
+        const totalWealthCreated = Math.max(0, compoundedGain) + Math.max(0, totalDividends);
+        const gainSharePct = totalWealthCreated > 0 ? (Math.max(0, compoundedGain) / totalWealthCreated) * 100 : 0;
+        const divSharePct = totalWealthCreated > 0 ? (Math.max(0, totalDividends) / totalWealthCreated) * 100 : 0;
+
+        return {
+            endingValue,
+            startingValue,
+            endInvested,
+            periodDelta,
+            periodDeltaPct,
+            totalInflows,
+            totalOutflows,
+            netFlowFromSchedule,
+            avgMonthlyContribution,
+            compoundedGain,
+            compoundedGainPct,
+            gainSharePct,
+            totalDividends,
+            avgMonthlyDividend,
+            peakDivMonth,
+            divSharePct,
+            startDate: firstEv?.date || null,
+            endDate: lastEv?.date || null
+        };
+    }, [filteredEvolution, data.contributions, data.dividends, range]);
+
+    const flowStats = useMemo(() => {
+        const inflows = filteredContributions.reduce((s, d) => s + d.inflow, 0);
+        const outflows = filteredContributions.reduce((s, d) => s + Math.abs(d.outflow), 0);
+        return { inflows, outflows, net: inflows - outflows };
+    }, [filteredContributions]);
+
+    const divStats = useMemo(() => {
+        const total = filteredDividends.reduce((s, d) => s + d.amount, 0);
+        const avg = filteredDividends.length > 0 ? total / filteredDividends.length : 0;
+        const peak = filteredDividends.reduce(
+            (best, cur) => (cur.amount > best.amount ? cur : best),
+            { date: '', amount: 0 }
+        );
+        return { total, avg, peak };
+    }, [filteredDividends]);
+
+    const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        const currentIndex = EVOLUTION_TABS.findIndex(t => t.id === evolutionTab);
+        if (currentIndex === -1) return;
+
+        let nextIndex: number | null = null;
+        if (e.key === 'ArrowRight') nextIndex = (currentIndex + 1) % EVOLUTION_TABS.length;
+        else if (e.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + EVOLUTION_TABS.length) % EVOLUTION_TABS.length;
+        else if (e.key === 'Home') nextIndex = 0;
+        else if (e.key === 'End') nextIndex = EVOLUTION_TABS.length - 1;
+
+        if (nextIndex !== null) {
+            e.preventDefault();
+            setEvolutionTab(EVOLUTION_TABS[nextIndex].id);
+            tabRefs.current[nextIndex]?.focus();
+        }
     };
 
     return (
         <div className={styles.container}>
-            <div className={styles.header}>
-                <div>
-                    <h1 className={styles.title}>Portfolio History</h1>
-                    <p className={styles.subtitle}>Track your portfolio performance, contributions, and dividends over time.</p>
+            {/* Header & Master Timeframe Controls */}
+            <header className={styles.header}>
+                <div className={styles.headerLeft}>
+                    <h1 className={styles.title}>Portfolio Evolution &amp; Cash Flows</h1>
+                    <p className={styles.subtitle}>
+                        Track long-term wealth compounding, net capital contributions, and dividend income velocity.
+                    </p>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'flex-end' }}>
+
+                <div className={styles.headerControls}>
+                    <div className={styles.masterRanges} role="group" aria-label="Master evolution timeframe">
+                        {RANGES.map(r => (
+                            <button
+                                key={r}
+                                type="button"
+                                aria-pressed={range === r}
+                                className={`${styles.rangeBtn} ${range === r ? styles.rangeBtnActive : ''}`}
+                                onClick={() => setRange(r)}
+                            >
+                                {r}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className={styles.mobileRangeWrap}>
+                        <select
+                            aria-label="Master evolution timeframe"
+                            className={styles.mobileSelect}
+                            value={range}
+                            onChange={(e) => setRange(e.target.value)}
+                        >
+                            {RANGES.map(r => (
+                                <option key={r} value={r}>{r === 'ALL' ? 'All Time' : r}</option>
+                            ))}
+                        </select>
+                    </div>
+
                     {isFiltersLoaded && (
-                        <ReportFilters
-                            onChange={setFilters}
-                            initialFilters={filters || undefined}
-                        />
+                        <ReportFilters onChange={setFilters} initialFilters={filters || undefined} />
                     )}
                 </div>
-            </div>
+            </header>
 
-            <div className={styles.analysisGrid}>
-                {/* 1. Portfolio Evolution Chart */}
-                <div style={{ height: '500px', width: '100%', position: 'relative' }}>
-                    {loadingHistory && !data.evolution && (
-                        <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.1)', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading Portfolio History...</div>
-                    )}
-                    <PortfolioChart
-                        range={range}
-                        setRange={setRange}
-                        customStart="" setCustomStart={() => { }}
-                        customEnd="" setCustomEnd={() => { }}
-                        externalData={filterByRange(data.evolution || [], range)}
-                    />
+            {fetchError && (
+                <div role="alert" className={styles.errorBanner}>
+                    {fetchError}
                 </div>
+            )}
 
-                {/* 2. Contribution History */}
-                <div className={styles.chartCard} style={{ height: '600px', position: 'relative' }}>
-                    {loadingFlows && !data.contributions && (
-                        <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.1)', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading Flows...</div>
-                    )}
-                    <div style={{ marginBottom: '1rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-                                <h3 style={{ margin: 0 }}>Contribution History</h3>
-                                <div className={styles.filterGroup}>
-                                    {['week', 'month', 'year'].map(p => (
+            <div className={styles.pageGrid}>
+                {/* Tier 1: 4-Card Wealth Evolution KPI Strip */}
+                <section className={styles.kpiStrip} aria-label="Portfolio evolution metrics">
+                    {/* Card 1: Ending Portfolio Value Hero */}
+                    <div className={styles.heroCard}>
+                        <div className={styles.heroTop}>
+                            <span className={styles.heroLabel}>Ending Portfolio Value</span>
+                            <div className={styles.heroValue}>{format(kpis.endingValue)}</div>
+                            <span className={styles.heroPill}>
+                                <span aria-hidden="true">{kpis.periodDelta >= 0 ? '▲' : '▼'}</span>
+                                <span>
+                                    {kpis.periodDelta > 0 ? '+' : ''}
+                                    {format(kpis.periodDelta, { maximumFractionDigits: 0 })}
+                                    {kpis.startingValue > 0.01 ? ` (${kpis.periodDeltaPct > 0 ? '+' : ''}${kpis.periodDeltaPct.toFixed(1)}%)` : ` (${range})`}
+                                </span>
+                            </span>
+                        </div>
+                        <div className={styles.heroFooter}>
+                            <span>Start: <strong>{format(kpis.startingValue, { maximumFractionDigits: 0 })}</strong></span>
+                            {kpis.startDate && kpis.endDate && (
+                                <span>{formatDate(kpis.startDate)} &ndash; {formatDate(kpis.endDate)}</span>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Card 2: Net Capital Contributions */}
+                    <div className={styles.kpiCard}>
+                        <div className={styles.kpiHeader}>
+                            <span className={styles.kpiLabel}>Net Capital Contributions</span>
+                            <span className={styles.kpiTag}>Inflows &minus; Outflows</span>
+                        </div>
+                        <div className={styles.kpiValue}>{format(kpis.netFlowFromSchedule, { maximumFractionDigits: 0 })}</div>
+                        <div className={styles.kpiFooter}>
+                            <div className={styles.kpiFootRow}>
+                                <span className={styles.positiveText}>In: {format(kpis.totalInflows, { notation: 'compact' })}</span>
+                                <span className={styles.negativeText}>Out: {format(kpis.totalOutflows, { notation: 'compact' })}</span>
+                            </div>
+                            <span className={styles.kpiSubtext}>
+                                Avg <strong>{format(kpis.avgMonthlyContribution, { maximumFractionDigits: 0 })}/mo</strong> net contribution
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Card 3: Compounded Market Gains */}
+                    <div className={styles.kpiCard}>
+                        <div className={styles.kpiHeader}>
+                            <span className={styles.kpiLabel}>Compounded Market Gains</span>
+                            <span className={`${styles.kpiBadge} ${kpis.compoundedGain >= 0 ? styles.badgeEmerald : styles.badgeRed}`}>
+                                {kpis.compoundedGainPct >= 0 ? '+' : ''}{kpis.compoundedGainPct.toFixed(1)}%
+                            </span>
+                        </div>
+                        <div className={`${styles.kpiValue} ${kpis.compoundedGain >= 0 ? styles.positiveText : styles.negativeText}`}>
+                            {kpis.compoundedGain >= 0 ? '+' : ''}{format(kpis.compoundedGain, { maximumFractionDigits: 0 })}
+                        </div>
+                        <div className={styles.kpiFooter}>
+                            <span className={styles.kpiSubtext}>
+                                <strong>{kpis.gainSharePct.toFixed(0)}%</strong> of period wealth creation from appreciation
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Card 4: Cumulative Dividend Income */}
+                    <div className={styles.kpiCard}>
+                        <div className={styles.kpiHeader}>
+                            <span className={styles.kpiLabel}>Cumulative Dividend Income</span>
+                            <span className={styles.badgeViolet}>
+                                {kpis.compoundedGain > 0 ? `${kpis.divSharePct.toFixed(1)}% of Profit` : 'Income Earned'}
+                            </span>
+                        </div>
+                        <div className={`${styles.kpiValue} ${styles.violetText}`}>
+                            {format(kpis.totalDividends)}
+                        </div>
+                        <div className={styles.kpiFooter}>
+                            <span className={styles.kpiSubtext}>
+                                Avg <strong>{format(kpis.avgMonthlyDividend, { maximumFractionDigits: 0 })}/mo</strong> &bull; Peak {format(kpis.peakDivMonth.amount, { maximumFractionDigits: 0 })}
+                            </span>
+                        </div>
+                    </div>
+                </section>
+
+                {/* Tier 2: Master Wealth Evolution Chart Card */}
+                <section className={styles.evolutionCard} aria-label="Wealth evolution over time">
+                    <div className={styles.evolutionHeader}>
+                        <div className={styles.tablistWrap}>
+                            <div
+                                role="tablist"
+                                aria-label="Evolution chart view"
+                                className={styles.tablist}
+                                onKeyDown={handleTabKeyDown}
+                            >
+                                {EVOLUTION_TABS.map((tab, idx) => {
+                                    const selected = evolutionTab === tab.id;
+                                    return (
                                         <button
-                                            key={p}
-                                            className={`${styles.filterButton} ${contributionPeriod === p ? styles.filterButtonActive : ''}`}
-                                            onClick={() => setContributionPeriod(p as any)}
+                                            key={tab.id}
+                                            ref={el => { tabRefs.current[idx] = el; }}
+                                            type="button"
+                                            role="tab"
+                                            id={`evo-tab-${tab.id}`}
+                                            aria-selected={selected}
+                                            tabIndex={selected ? 0 : -1}
+                                            className={styles.tabBtn}
+                                            onClick={() => setEvolutionTab(tab.id)}
                                         >
-                                            {p.charAt(0).toUpperCase() + p.slice(1)}
+                                            {tab.label}
                                         </button>
-                                    ))}
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <div className={styles.evolutionMetaStrip}>
+                            <span>
+                                Invested Principal: <strong>{format(kpis.endInvested, { maximumFractionDigits: 0 })}</strong>
+                            </span>
+                            <span>
+                                Gain Wedge: <strong className={kpis.endingValue - kpis.endInvested >= 0 ? styles.positiveText : styles.negativeText}>
+                                    {kpis.endingValue - kpis.endInvested >= 0 ? '+' : ''}
+                                    {format(kpis.endingValue - kpis.endInvested, { maximumFractionDigits: 0 })}
+                                </strong>
+                            </span>
+                        </div>
+                    </div>
+
+                    <div
+                        role="tabpanel"
+                        aria-labelledby={`evo-tab-${evolutionTab}`}
+                        tabIndex={0}
+                        className={styles.evolutionChartWrapper}
+                    >
+                        {loadingHistory && !data.evolution && (
+                            <div className={styles.loadingOverlay}>Loading portfolio evolution...</div>
+                        )}
+                        {!loadingHistory && evolutionChartData.length === 0 && (
+                            <div className={styles.emptyChart}>No evolution history available for the selected filters</div>
+                        )}
+
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                            {evolutionTab === 'valueVsInvested' ? (
+                                <AreaChart data={evolutionChartData} margin={{ top: 10, right: 12, bottom: 0, left: 6 }}>
+                                    <defs>
+                                        <linearGradient id="evoValueFill" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.28} />
+                                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--card-border)" strokeOpacity={0.7} />
+                                    <XAxis
+                                        dataKey="dateNumber"
+                                        type="number"
+                                        domain={['dataMin', 'dataMax']}
+                                        tickFormatter={(ts) => formatDate(new Date(ts))}
+                                        stroke="var(--text-secondary)"
+                                        fontSize={11}
+                                        minTickGap={38}
+                                        tickLine={false}
+                                        axisLine={false}
+                                    />
+                                    <YAxis
+                                        tickFormatter={(val) => format(val, { notation: 'compact' })}
+                                        stroke="var(--text-secondary)"
+                                        fontSize={11}
+                                        width={68}
+                                        tickLine={false}
+                                        axisLine={false}
+                                        domain={['auto', 'auto']}
+                                    />
+                                    <Tooltip
+                                        content={({ active, payload }) => {
+                                            if (!active || !payload || !payload.length) return null;
+                                            const pt = payload[0].payload;
+                                            return (
+                                                <div className={styles.tooltipBox}>
+                                                    <div className={styles.tooltipDate}>{formatDate(pt.date)}</div>
+                                                    <div className={styles.tooltipRow}>
+                                                        <span>Portfolio Value</span>
+                                                        <strong>{format(pt.value)}</strong>
+                                                    </div>
+                                                    <div className={styles.tooltipRow}>
+                                                        <span>Invested Principal</span>
+                                                        <strong>{format(pt.invested)}</strong>
+                                                    </div>
+                                                    <div className={`${styles.tooltipRow} ${styles.tooltipDivider}`}>
+                                                        <span>Net Gain</span>
+                                                        <strong className={pt.netGain >= 0 ? styles.positiveText : styles.negativeText}>
+                                                            {pt.netGain >= 0 ? '+' : ''}{format(pt.netGain)}
+                                                        </strong>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }}
+                                    />
+                                    <Area
+                                        type="monotone"
+                                        dataKey="value"
+                                        name="Portfolio Value"
+                                        stroke="#3b82f6"
+                                        strokeWidth={2.5}
+                                        fill="url(#evoValueFill)"
+                                        dot={false}
+                                    />
+                                    <Area
+                                        type="monotone"
+                                        dataKey="invested"
+                                        name="Invested Principal"
+                                        stroke="#94a3b8"
+                                        strokeWidth={2}
+                                        strokeDasharray="5 4"
+                                        fill="transparent"
+                                        dot={false}
+                                    />
+                                </AreaChart>
+                            ) : (
+                                <AreaChart data={evolutionChartData} margin={{ top: 10, right: 12, bottom: 0, left: 6 }}>
+                                    <defs>
+                                        <linearGradient id="evoPrincipalFill" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.22} />
+                                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.04} />
+                                        </linearGradient>
+                                        <linearGradient id="evoGainFill" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
+                                            <stop offset="95%" stopColor="#10b981" stopOpacity={0.05} />
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--card-border)" strokeOpacity={0.7} />
+                                    <XAxis
+                                        dataKey="dateNumber"
+                                        type="number"
+                                        domain={['dataMin', 'dataMax']}
+                                        tickFormatter={(ts) => formatDate(new Date(ts))}
+                                        stroke="var(--text-secondary)"
+                                        fontSize={11}
+                                        minTickGap={38}
+                                        tickLine={false}
+                                        axisLine={false}
+                                    />
+                                    <YAxis
+                                        tickFormatter={(val) => format(val, { notation: 'compact' })}
+                                        stroke="var(--text-secondary)"
+                                        fontSize={11}
+                                        width={68}
+                                        tickLine={false}
+                                        axisLine={false}
+                                    />
+                                    <Tooltip
+                                        content={({ active, payload }) => {
+                                            if (!active || !payload || !payload.length) return null;
+                                            const pt = payload[0].payload;
+                                            return (
+                                                <div className={styles.tooltipBox}>
+                                                    <div className={styles.tooltipDate}>{formatDate(pt.date)}</div>
+                                                    <div className={styles.tooltipRow}>
+                                                        <span>Invested Principal</span>
+                                                        <strong>{format(pt.invested)}</strong>
+                                                    </div>
+                                                    <div className={styles.tooltipRow}>
+                                                        <span>Market Appreciation</span>
+                                                        <strong className={pt.netGain >= 0 ? styles.positiveText : styles.negativeText}>
+                                                            {pt.netGain >= 0 ? '+' : ''}{format(pt.netGain)}
+                                                        </strong>
+                                                    </div>
+                                                    <div className={`${styles.tooltipRow} ${styles.tooltipDivider}`}>
+                                                        <span>Total Portfolio</span>
+                                                        <strong>{format(pt.value)}</strong>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }}
+                                    />
+                                    <Area
+                                        type="monotone"
+                                        dataKey="investedBase"
+                                        stackId="wealth"
+                                        name="Invested Principal"
+                                        stroke="#3b82f6"
+                                        strokeWidth={2}
+                                        fill="url(#evoPrincipalFill)"
+                                        dot={false}
+                                    />
+                                    <Area
+                                        type="monotone"
+                                        dataKey="marketGain"
+                                        stackId="wealth"
+                                        name="Market Appreciation"
+                                        stroke="#10b981"
+                                        strokeWidth={2}
+                                        fill="url(#evoGainFill)"
+                                        dot={false}
+                                    />
+                                </AreaChart>
+                            )}
+                        </ResponsiveContainer>
+                    </div>
+                </section>
+
+                {/* Tier 3: 2-Column Cash Flow & Dividend Velocity Grid */}
+                <section className={styles.velocityGrid} aria-label="Cash flows and dividend income velocity">
+                    {/* Left Card: Capital Contributions & Cash Flows */}
+                    <div className={styles.chartCard}>
+                        <div className={styles.cardHeader}>
+                            <div className={styles.cardTitleGroup}>
+                                <h2 className={styles.cardTitle}>Capital Contributions &amp; Cash Flows</h2>
+                                <div className={styles.flowSummaryRow}>
+                                    <span>In: <strong className={styles.positiveText}>{format(flowStats.inflows, { notation: 'compact' })}</strong></span>
+                                    <span>Out: <strong className={styles.negativeText}>{format(flowStats.outflows, { notation: 'compact' })}</strong></span>
+                                    <span>Net: <strong>{format(flowStats.net, { notation: 'compact' })}</strong></span>
                                 </div>
                             </div>
 
-                            {/* Range Selector */}
-                            <RangeSelector
-                                range={contributionRange}
-                                setRange={setContributionRange}
-                                customStart="" setCustomStart={() => { }}
-                                customEnd="" setCustomEnd={() => { }}
-                            />
+                            <div className={styles.filterGroup} role="group" aria-label="Contribution granularity">
+                                {(['week', 'month', 'year'] as const).map(p => (
+                                    <button
+                                        key={p}
+                                        type="button"
+                                        aria-pressed={contributionPeriod === p}
+                                        className={`${styles.filterButton} ${contributionPeriod === p ? styles.filterButtonActive : ''}`}
+                                        onClick={() => setContributionPeriod(p)}
+                                    >
+                                        {p.charAt(0).toUpperCase() + p.slice(1)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className={styles.subChartBody}>
+                            {loadingFlows && !data.contributions ? (
+                                <div className={styles.loading}>Loading cash flows...</div>
+                            ) : filteredContributions.length > 0 ? (
+                                <ContributionChart data={filteredContributions} period={contributionPeriod} />
+                            ) : (
+                                <div className={styles.loading}>No contribution data for this period</div>
+                            )}
                         </div>
                     </div>
-                    <div style={{ flex: 1, minHeight: 0 }}>
-                        {data?.contributions && data.contributions[contributionPeriod]?.length > 0 ? (
-                            <ContributionChart
-                                data={filterByRange(data.contributions[contributionPeriod], contributionRange)}
-                                period={contributionPeriod}
-                            />
-                        ) : (
-                            <div className={styles.loading}>{loadingFlows ? 'Loading Data...' : 'No contribution data for this period'}</div>
-                        )}
-                    </div>
-                </div>
 
-                {/* 3. Dividend History */}
-                <div className={styles.chartCard} style={{ height: '600px', position: 'relative' }}>
-                    {loadingFlows && !data.dividends && (
-                        <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.1)', zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading Dividends...</div>
-                    )}
-                    <div style={{ marginBottom: '1rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-                                <h3 style={{ margin: 0 }}>Dividend History</h3>
-                                <div className={styles.filterGroup}>
-                                    {['month', 'year'].map(p => (
-                                        <button
-                                            key={p}
-                                            className={`${styles.filterButton} ${dividendPeriod === p ? styles.filterButtonActive : ''}`}
-                                            onClick={() => setDividendPeriod(p as any)}
-                                        >
-                                            {p.charAt(0).toUpperCase() + p.slice(1)}
-                                        </button>
-                                    ))}
+                    {/* Right Card: Dividend Income Velocity */}
+                    <div className={styles.chartCard}>
+                        <div className={styles.cardHeader}>
+                            <div className={styles.cardTitleGroup}>
+                                <h2 className={styles.cardTitle}>Dividend Income Velocity</h2>
+                                <div className={styles.flowSummaryRow}>
+                                    <span>Total: <strong className={styles.violetText}>{format(divStats.total, { maximumFractionDigits: 0 })}</strong></span>
+                                    <span>Avg/{dividendPeriod}: <strong>{format(divStats.avg, { maximumFractionDigits: 0 })}</strong></span>
+                                    <span>Peak: <strong>{format(divStats.peak.amount, { maximumFractionDigits: 0 })}</strong></span>
                                 </div>
                             </div>
 
-                            {/* Range Selector */}
-                            <RangeSelector
-                                range={dividendRange}
-                                setRange={setDividendRange}
-                                customStart="" setCustomStart={() => { }}
-                                customEnd="" setCustomEnd={() => { }}
-                            />
+                            <div className={styles.filterGroup} role="group" aria-label="Dividend granularity">
+                                {(['month', 'year'] as const).map(p => (
+                                    <button
+                                        key={p}
+                                        type="button"
+                                        aria-pressed={dividendPeriod === p}
+                                        className={`${styles.filterButton} ${dividendPeriod === p ? styles.filterButtonActive : ''}`}
+                                        onClick={() => setDividendPeriod(p)}
+                                    >
+                                        {p.charAt(0).toUpperCase() + p.slice(1)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className={styles.subChartBody}>
+                            {loadingFlows && !data.dividends ? (
+                                <div className={styles.loading}>Loading dividend history...</div>
+                            ) : filteredDividends.length > 0 ? (
+                                <DividendChart data={filteredDividends} period={dividendPeriod} />
+                            ) : (
+                                <div className={styles.loading}>No dividend data for this period</div>
+                            )}
                         </div>
                     </div>
-                    <div style={{ flex: 1, minHeight: 0 }}>
-                        {data?.dividends && data.dividends[dividendPeriod]?.length > 0 ? (
-                            <DividendChart
-                                data={filterByRange(data.dividends[dividendPeriod], dividendRange)}
-                                period={dividendPeriod}
-                            />
-                        ) : (
-                            <div className={styles.loading}>{loadingFlows ? 'Loading Data...' : 'No dividend data for this period'}</div>
-                        )}
-                    </div>
-                </div>
+                </section>
             </div>
-
-        </div >
+        </div>
     );
 }

@@ -1,602 +1,1038 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
+    ResponsiveContainer,
     BarChart,
     Bar,
     XAxis,
     YAxis,
-    CartesianGrid,
     Tooltip,
-    Legend,
-    ResponsiveContainer
+    CartesianGrid,
+    ReferenceLine
 } from 'recharts';
-import styles from '@/app/(dashboard)/settings/page.module.css'; // Reusing settings styles for cards
-import localStyles from './page.module.css';
-
-
 import { useCurrency } from '@/context/CurrencyContext';
+import styles from './page.module.css';
 
-// Helper to format currency
-const formatCurrency = (value: number, currency: string) => {
-    return new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: currency,
-        maximumFractionDigits: 0
-    }).format(value);
-};
+type PhaseType = 'Accumulation' | 'Retirement';
+type CalculationMode = 'FIXED_RATE' | 'FIXED_HORIZON';
+type ActiveTab = 'chart' | 'table';
+type PhaseFilter = 'ALL' | PhaseType;
+
+interface YearProjection {
+    year: number;
+    phase: PhaseType;
+    principal: number;
+    gains: number;
+    total: number;
+    withdrawal: number;
+}
+
+const SWR_PRESETS = [3.5, 4.0, 4.5] as const;
+
+function getDefaultFireDate(): string {
+    const d = new Date();
+    const y = d.getFullYear() + 10;
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    return `${y}-${m}`;
+}
+
+function formatMonthYear(yearMonth: string): string {
+    const [yStr, mStr] = yearMonth.split('-');
+    const year = Number(yStr);
+    const month = Number(mStr);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+        return yearMonth;
+    }
+    return new Date(year, month - 1, 15).toLocaleDateString('en-US', {
+        month: 'short',
+        year: 'numeric'
+    });
+}
 
 export default function FireAnalysisPage() {
-    const { currency, format, convert, loading, rates } = useCurrency();
-    const [rawPortfolioValueUSD, setRawPortfolioValueUSD] = useState(0);
-    const [currentPortfolioValue, setCurrentPortfolioValue] = useState(0);
+    const { currency, convert, format, rates, loading: currencyLoading } = useCurrency();
 
-    // Inputs
-    const [fireYear, setFireYear] = useState(new Date().getFullYear() + 10);
-    const [fireMonth, setFireMonth] = useState(new Date().getMonth()); // 0-11
-    const [monthlyContribution, setMonthlyContribution] = useState(2000);
-    const [expectedReturn, setExpectedReturn] = useState(7); // %
-    const [currentMonthlyExpense, setCurrentMonthlyExpense] = useState(2000);
-    const [inflationRate, setInflationRate] = useState(2.5); // %
+    // Theme awareness for chart grid/axis strokes
+    const [isDark, setIsDark] = useState(false);
 
-    // Calculation Mode
-    const [calculationMode, setCalculationMode] = useState<'FIXED_RATE' | 'FIXED_HORIZON'>('FIXED_RATE');
+    // Raw USD portfolio value from /api/portfolio
+    const [rawPortfolioValueUSD, setRawPortfolioValueUSD] = useState<number>(0);
+    const [loadingPortfolio, setLoadingPortfolio] = useState<boolean>(true);
+    const [fetchError, setFetchError] = useState<string | null>(null);
 
-    // Inputs dependent on mode
-    const [withdrawalRate, setWithdrawalRate] = useState(4.0); // %
-    const [withdrawalDuration, setWithdrawalDuration] = useState(30); // Years
+    // Simulation inputs
+    const [fireDate, setFireDate] = useState<string>(getDefaultFireDate);
+    const [monthlyContribution, setMonthlyContribution] = useState<number>(2000);
+    const [expectedReturn, setExpectedReturn] = useState<number>(7.0);
+    const [inflationRate, setInflationRate] = useState<number>(2.5);
+    const [currentMonthlyExpense, setCurrentMonthlyExpense] = useState<number>(2000);
 
-    // Fetch current portfolio value on mount
+    const [calculationMode, setCalculationMode] = useState<CalculationMode>('FIXED_RATE');
+    const [withdrawalRate, setWithdrawalRate] = useState<number>(4.0);
+    const [withdrawalDuration, setWithdrawalDuration] = useState<number>(30);
+
+    // Tab and table filter states
+    const [activeTab, setActiveTab] = useState<ActiveTab>('chart');
+    const [phaseFilter, setPhaseFilter] = useState<PhaseFilter>('ALL');
+
+    const chartTabRef = useRef<HTMLButtonElement>(null);
+    const tableTabRef = useRef<HTMLButtonElement>(null);
+    const prevCurrencyRef = useRef<string>(currency);
+
     useEffect(() => {
-        async function fetchPortfolio() {
-            try {
-                const res = await fetch('/api/portfolio');
-                const data = await res.json();
-                if (data && typeof data.totalValue === 'number') {
-                    setRawPortfolioValueUSD(data.totalValue);
-                } else if (Array.isArray(data)) {
-                    const total = data.reduce((acc: number, curr: any) => acc + (curr.value || 0), 0);
-                    setRawPortfolioValueUSD(total);
-                }
-            } catch (err) {
-                console.error('Failed to fetch portfolio value', err);
-            }
-        }
-        fetchPortfolio();
+        const updateTheme = () => {
+            setIsDark(document.documentElement.getAttribute('data-theme') === 'dark');
+        };
+        updateTheme();
+        const observer = new MutationObserver(updateTheme);
+        observer.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['data-theme']
+        });
+        return () => observer.disconnect();
     }, []);
 
-    const prevCurrencyRef = useRef(currency);
-
-    // Update current value when currency or raw value changes
+    // Fetch current portfolio value (API returns USD by default)
     useEffect(() => {
-        setCurrentPortfolioValue(convert(rawPortfolioValueUSD, 'USD'));
-    }, [rawPortfolioValueUSD, currency, convert]);
+        const controller = new AbortController();
 
-    // Handle Currency Switch for Inputs
+        fetch('/api/portfolio', { signal: controller.signal })
+            .then((res) => {
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                return res.json();
+            })
+            .then((data) => {
+                if (typeof data?.totalValue === 'number' && Number.isFinite(data.totalValue)) {
+                    setRawPortfolioValueUSD(data.totalValue);
+                }
+                setFetchError(null);
+                setLoadingPortfolio(false);
+            })
+            .catch((err: unknown) => {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to fetch portfolio value for FIRE:', err);
+                setFetchError('Unable to load live portfolio balance. Using manual simulation baseline.');
+                setLoadingPortfolio(false);
+            });
+
+        return () => controller.abort();
+    }, []);
+
+    // Convert currency-denominated inputs when active currency changes
     useEffect(() => {
-        if (loading) return;
-        if (!rates || rates[currency] !== 1) return;
-
-        if (prevCurrencyRef.current !== currency) {
+        if (!currencyLoading && rates?.[currency] === 1 && prevCurrencyRef.current !== currency) {
             const oldCurrency = prevCurrencyRef.current;
-            setMonthlyContribution(prev => Math.round(convert(prev, oldCurrency)));
-            setCurrentMonthlyExpense(prev => Math.round(convert(prev, oldCurrency)));
+            setMonthlyContribution((prev) => Math.round(convert(prev, oldCurrency)));
+            setCurrentMonthlyExpense((prev) => Math.round(convert(prev, oldCurrency)));
             prevCurrencyRef.current = currency;
         }
-    }, [currency, loading, convert, rates]);
+    }, [currency, currencyLoading, rates, convert]);
 
-    // --- Simulation Logic ---
-    const simulationResults = useMemo(() => {
-        const data = [];
+    const currentPortfolioValue = useMemo(
+        () => convert(rawPortfolioValueUSD, 'USD'),
+        [rawPortfolioValueUSD, convert]
+    );
+
+    // Run deterministic FIRE accumulation & depletion projection
+    const simulation = useMemo(() => {
         const today = new Date();
         const startYear = today.getFullYear();
-        const startMonth = today.getMonth(); // 0-11
+        const startMonth = today.getMonth();
 
-        // Phase 1: Accumulation (Until FIRE Date)
-        const targetDate = new Date(fireYear, fireMonth);
-        const monthsToAccumulate = (fireYear - startYear) * 12 + (fireMonth - startMonth);
+        const [yStr, mStr] = fireDate.split('-');
+        const parsedYear = Number(yStr);
+        const parsedMonth = Number(mStr);
 
-        // Return Rates
-        const monthlyReturnRate = expectedReturn / 100 / 12;
-        const monthlyInflationRate = inflationRate / 100 / 12;
+        let fireYear =
+            Number.isFinite(parsedYear) && parsedYear >= 1900 && parsedYear <= startYear + 80
+                ? parsedYear
+                : startYear + 10;
+        let fireMonth =
+            Number.isFinite(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12
+                ? parsedMonth - 1
+                : startMonth;
 
-        let currentPrincipal = currentPortfolioValue;
-        let currentTotal = currentPortfolioValue;
+        let isPastDateClamped = false;
+        if (fireYear < startYear || (fireYear === startYear && fireMonth < startMonth)) {
+            fireYear = startYear;
+            fireMonth = startMonth;
+            isPastDateClamped = true;
+        }
+        const effectiveFireDate = `${fireYear}-${String(fireMonth + 1).padStart(2, '0')}`;
+
+        const monthsToAccumulate = Math.max(
+            0,
+            (fireYear - startYear) * 12 + (fireMonth - startMonth)
+        );
+
+        const safeContribution = Math.max(0, Number.isFinite(monthlyContribution) ? monthlyContribution : 0);
+        const safeExpense = Math.max(0, Number.isFinite(currentMonthlyExpense) ? currentMonthlyExpense : 0);
+        const safeReturn = Math.max(-99, Number.isFinite(expectedReturn) ? expectedReturn : 0);
+        const safeInflation = Math.max(-99, Number.isFinite(inflationRate) ? inflationRate : 0);
+        const safeSwr = Math.max(0.1, Number.isFinite(withdrawalRate) ? withdrawalRate : 4.0);
+        const safeHorizonYears = Math.max(1, Math.min(80, Number.isFinite(withdrawalDuration) ? withdrawalDuration : 30));
+
+        const monthlyReturnRate = safeReturn / 100 / 12;
+        const monthlyInflationRate = safeInflation / 100 / 12;
+
+        let currentPrincipal = Math.max(0, currentPortfolioValue);
         let currentInterest = 0;
+        let currentTotal = Math.max(0, currentPortfolioValue);
 
-        // --- Accumulation Loop ---
-        if (monthsToAccumulate > 0) {
-            for (let i = 1; i <= monthsToAccumulate; i++) {
-                currentPrincipal += monthlyContribution;
-                const interestEarned = (currentTotal + monthlyContribution) * monthlyReturnRate;
-                currentInterest += interestEarned;
-                currentTotal += monthlyContribution + interestEarned;
+        const yearlyData: YearProjection[] = [];
 
-                // Snapshot yearly
-                const simDate = new Date(startYear, startMonth + i);
-                if (simDate.getMonth() === 11) {
-                    // Keep snapshots clean, usually we only chart separation after FIRE?
-                    // User wants Chart to match Table. Table typically shows FIRE years?
-                    // Let's show pre-fire years too for context.
-                    data.push({
-                        year: simDate.getFullYear(),
-                        phase: 'Accumulation',
-                        principal: Math.round(currentPrincipal),
-                        gains: Math.round(currentInterest),
-                        total: Math.round(currentTotal),
-                        withdrawal: 0
-                    });
-                }
+        // Phase 1: Accumulation
+        for (let i = 1; i <= monthsToAccumulate; i++) {
+            const simDate = new Date(startYear, startMonth + i, 1);
+            currentPrincipal += safeContribution;
+            const interestEarned = (currentTotal + safeContribution) * monthlyReturnRate;
+            currentInterest += interestEarned;
+            currentTotal = Math.max(0, currentTotal + safeContribution + interestEarned);
+
+            if (simDate.getMonth() === 11) {
+                yearlyData.push({
+                    year: simDate.getFullYear(),
+                    phase: 'Accumulation',
+                    principal: Math.round(currentPrincipal),
+                    gains: Math.round(currentInterest),
+                    total: Math.round(currentTotal),
+                    withdrawal: 0
+                });
             }
         }
 
-        // --- Depletion Init ---
         const projectedFireValue = currentTotal;
+        const projectedPrincipal = currentPrincipal;
+        const projectedGains = currentInterest;
 
-        // Solve for X logic
-        let computedWithdrawalRate = withdrawalRate;
-        let computedHorizon = withdrawalDuration;
+        // Compute initial monthly withdrawal under active strategy (start-of-month / annuity due)
         let initialMonthlyWithdrawal = 0;
+        let computedWithdrawalRate = safeSwr;
 
         if (calculationMode === 'FIXED_HORIZON') {
-            // Solve for Rate needed to last exactly X years
-            // Use Real Annuity Formula
-            const n = withdrawalDuration * 12;
-            // Real Monthly Rate
-            const r_real = (1 + monthlyReturnRate) / (1 + monthlyInflationRate) - 1;
-
-            if (r_real === 0) {
-                initialMonthlyWithdrawal = projectedFireValue / n;
-            } else {
-                initialMonthlyWithdrawal = projectedFireValue * (r_real * Math.pow(1 + r_real, n)) / (Math.pow(1 + r_real, n) - 1);
-            }
-
-            // Back-calculate effective annual rate (Initial Withdrawal / Total)
-            computedWithdrawalRate = (initialMonthlyWithdrawal * 12 / projectedFireValue) * 100;
-
+            const rReal = (1 + monthlyReturnRate) / (1 + monthlyInflationRate) - 1;
+            const n = safeHorizonYears * 12;
+            const monthlyAnnuityFactor =
+                Math.abs(rReal) < 1e-9
+                    ? 1 / n
+                    : (rReal * Math.pow(1 + rReal, n)) /
+                      ((Math.pow(1 + rReal, n) - 1) * (1 + rReal));
+            initialMonthlyWithdrawal = projectedFireValue * monthlyAnnuityFactor;
+            computedWithdrawalRate = monthlyAnnuityFactor * 12 * 100;
         } else {
-            // FIXED_RATE: Known Rate, Solve for Horizon
-            initialMonthlyWithdrawal = (projectedFireValue * (withdrawalRate / 100)) / 12;
-            // computedHorizon will be determined by loop
+            initialMonthlyWithdrawal = (projectedFireValue * (safeSwr / 100)) / 12;
+            computedWithdrawalRate = safeSwr;
         }
 
-        // --- Depletion Loop ---
-        // We simulate year by year for chart and table
-        // Cap simulation at 60 years or until 0
-        const maxYears = 60;
-        const fireDate = new Date(startYear, startMonth + monthsToAccumulate);
-
+        // Phase 2: Retirement Depletion (up to 60 years)
         let depletionTotal = projectedFireValue;
-        let depletionPrincipal = currentPrincipal;
-        let depletionInterest = currentInterest;
+        let depletionPrincipal = projectedPrincipal;
+        let depletionInterest = projectedGains;
         let currentMonthlyWithdrawal = initialMonthlyWithdrawal;
+        let yearWithdrawalAccum = 0;
+        let sustainedMonths = 0;
+        let depletedAtMonth: number | null = null;
+        const maxDepletionMonths = 60 * 12;
 
-        let survivedYears = 0;
-        let depleted = false;
+        for (let m = 1; m <= maxDepletionMonths; m++) {
+            const simDate = new Date(fireYear, fireMonth + m, 1);
+            const targetWithdrawal = Math.max(0, currentMonthlyWithdrawal);
 
-        const depletionData = [];
+            if (depletionTotal > 1e-6) {
+                const wasFullyFunded = depletionTotal >= targetWithdrawal - 0.01;
+                const actualWithdrawal = Math.min(depletionTotal, targetWithdrawal);
+                const principalRatio = Math.min(1, Math.max(0, depletionPrincipal / depletionTotal));
+                depletionPrincipal = Math.max(0, depletionPrincipal - actualWithdrawal * principalRatio);
+                depletionTotal = Math.max(0, depletionTotal - actualWithdrawal);
+                depletionInterest = Math.max(0, depletionTotal - depletionPrincipal);
+                yearWithdrawalAccum += actualWithdrawal;
 
-        // Simulate Monthly for accuracy
-        let monthCounter = 0;
-        while (monthCounter < maxYears * 12) {
-            monthCounter++;
+                const interestEarned = depletionTotal * monthlyReturnRate;
+                depletionInterest += interestEarned;
+                depletionTotal = Math.max(0, depletionTotal + interestEarned);
 
-            // 1. Withdraw
-            if (depletionTotal > 0) {
-                // Pro-rata reduction
-                const pRatio = depletionPrincipal / depletionTotal;
-                const iRatio = depletionInterest / depletionTotal;
-
-                const wPrincipal = Math.min(depletionPrincipal, currentMonthlyWithdrawal * pRatio);
-                const wInterest = Math.min(depletionInterest, currentMonthlyWithdrawal * iRatio);
-
-                // If nearing 0, simply take what's left
-                if (currentMonthlyWithdrawal >= depletionTotal) {
-                    depletionPrincipal = 0;
-                    depletionInterest = 0;
-                    depletionTotal = 0;
-                    depleted = true;
-                } else {
-                    depletionPrincipal -= wPrincipal;
-                    depletionInterest -= wInterest;
-                    depletionTotal -= currentMonthlyWithdrawal;
+                if (wasFullyFunded) {
+                    sustainedMonths = m;
+                } else if (depletedAtMonth === null) {
+                    depletedAtMonth = m - 1;
                 }
-            } else {
-                depleted = true;
+            } else if (depletedAtMonth === null) {
+                depletedAtMonth = m - 1;
             }
 
-            // 2. Growth (if money left)
-            if (depletionTotal > 0) {
-                const growth = depletionTotal * monthlyReturnRate;
-                depletionInterest += growth;
-                depletionTotal += growth;
-            }
+            currentMonthlyWithdrawal *= 1 + monthlyInflationRate;
 
-            // 3. Inflate Withdrawal for NEXT month
-            currentMonthlyWithdrawal *= (1 + monthlyInflationRate);
-
-            // Snapshot Yearly
-            const simDate = new Date(fireDate.getFullYear(), fireDate.getMonth() + monthCounter);
             if (simDate.getMonth() === 11) {
-                // Check if we should stop recording if depleted long ago? 
-                // User wants to see when it hits 0.
-                const yearIndex = Math.ceil(monthCounter / 12);
-                const annualWithdrawal = currentMonthlyWithdrawal * 12; // Approx for display
-
-                depletionData.push({
+                yearlyData.push({
                     year: simDate.getFullYear(),
                     phase: 'Retirement',
-                    principal: Math.max(0, Math.round(depletionPrincipal)),
-                    gains: Math.max(0, Math.round(depletionInterest)),
-                    total: Math.max(0, Math.round(depletionTotal)),
-                    withdrawal: Math.round(annualWithdrawal), // Nominal Amount that year
-                    isDepleted: depleted
+                    principal: Math.round(depletionPrincipal),
+                    gains: Math.round(depletionInterest),
+                    total: Math.round(depletionTotal),
+                    withdrawal: Math.round(yearWithdrawalAccum)
                 });
-
-                if (!depleted) survivedYears = yearIndex;
+                yearWithdrawalAccum = 0;
             }
-
-            // If fixed horizon mode, we can stop strictly at horizon? 
-            // Or show few years after to prove it's 0?
-            // If fixed rate mode, we stop when 0 or maxYears.
         }
 
-        // --- Lifestyle Analysis ---
-        // How long does portfolio last if satisfying currentMonthlyExpense?
-        let lifestyleYear = 0;
-        {
-            // Calculate future monthly expense at FIRE date
-            const yearsToFire = monthsToAccumulate / 12;
-            let neededMonthly = currentMonthlyExpense * Math.pow(1 + inflationRate / 100, yearsToFire);
-
-            // Sim separate loop for lifestyle
-            let lTotal = projectedFireValue;
-            let m = 0;
-            while (lTotal > 0 && m < 1200) { // 100 years max
-                m++;
-                lTotal -= neededMonthly;
-                if (lTotal > 0) lTotal += (lTotal * monthlyReturnRate);
-                neededMonthly *= (1 + monthlyInflationRate);
-            }
-            lifestyleYear = Math.floor(m / 12);
+        // Guarantee fireYear appears in chart data if portfolio started at 0 / fireMonth === 11 edge
+        const hasFireYear = yearlyData.some((row) => row.year === fireYear);
+        if (!hasFireYear) {
+            yearlyData.push({
+                year: fireYear,
+                phase: 'Retirement',
+                principal: Math.round(projectedPrincipal),
+                gains: Math.round(projectedGains),
+                total: Math.round(projectedFireValue),
+                withdrawal: 0
+            });
+            yearlyData.sort((a, b) => a.year - b.year);
         }
+
+        // Lifestyle Expense Longevity Check (inflation-adjusted required expense at FIRE date)
+        const yearsToFire = monthsToAccumulate / 12;
+        const futureMonthlyExpense = safeExpense * Math.pow(1 + safeInflation / 100, yearsToFire);
+
+        let lifestyleBalance = projectedFireValue;
+        let neededMonthly = futureMonthlyExpense;
+        let lifestyleMonths = 0;
+        const maxLifestyleMonths = 1200; // 100 years cap
+
+        for (let m = 1; m <= maxLifestyleMonths; m++) {
+            if (lifestyleBalance <= 0) break;
+            lifestyleBalance = Math.max(0, lifestyleBalance - neededMonthly);
+            lifestyleBalance += lifestyleBalance * monthlyReturnRate;
+            neededMonthly *= 1 + monthlyInflationRate;
+            lifestyleMonths = m;
+        }
+
+        const effectiveSwr =
+            calculationMode === 'FIXED_HORIZON' ? computedWithdrawalRate : safeSwr;
+        const requiredFireNumber =
+            effectiveSwr > 0 ? (futureMonthlyExpense * 12) / (effectiveSwr / 100) : 0;
+
+        const currentProgressPct =
+            requiredFireNumber > 0
+                ? Math.min(100, Math.max(0, (currentPortfolioValue / requiredFireNumber) * 100))
+                : 100;
+        const projectedProgressPct =
+            requiredFireNumber > 0
+                ? Math.min(100, Math.max(0, (projectedFireValue / requiredFireNumber) * 100))
+                : 100;
+
+        const monthlySurplus = initialMonthlyWithdrawal - futureMonthlyExpense;
+        const expenseCoveragePct =
+            futureMonthlyExpense > 0
+                ? Math.min(999, (initialMonthlyWithdrawal / futureMonthlyExpense) * 100)
+                : 100;
+
+        const realReturnPct = ((1 + safeReturn / 100) / (1 + safeInflation / 100) - 1) * 100;
+        const strategyYears = Math.floor((depletedAtMonth ?? sustainedMonths) / 12);
+        const lifestyleYears = Math.floor(lifestyleMonths / 12);
+        const isPerpetual = depletedAtMonth === null && depletionTotal >= projectedFireValue * 0.99;
 
         return {
-            accumulation: data,
-            depletion: depletionData,
-            computedWithdrawalRate,
-            computedHorizon: depleted ? survivedYears : '60+',
+            fireYear,
+            effectiveFireDate,
+            isPastDateClamped,
+            safeHorizonYears,
+            yearsToFire,
+            yearlyData,
+            projectedFireValue,
+            projectedPrincipal,
+            projectedGains,
             initialMonthlyWithdrawal,
-            lifestyleDuration: lifestyleYear
+            effectiveSwr,
+            futureMonthlyExpense,
+            requiredFireNumber,
+            currentProgressPct,
+            projectedProgressPct,
+            monthlySurplus,
+            expenseCoveragePct,
+            realReturnPct,
+            strategyYears,
+            lifestyleYears,
+            isPerpetual,
+            depletedAtMonth
         };
+    }, [
+        fireDate,
+        monthlyContribution,
+        expectedReturn,
+        inflationRate,
+        currentMonthlyExpense,
+        calculationMode,
+        withdrawalRate,
+        withdrawalDuration,
+        currentPortfolioValue
+    ]);
 
-    }, [currentPortfolioValue, fireYear, fireMonth, monthlyContribution, expectedReturn, inflationRate, calculationMode, withdrawalRate, withdrawalDuration, currentMonthlyExpense]);
+    const filteredTableRows = useMemo(() => {
+        if (phaseFilter === 'ALL') return simulation.yearlyData;
+        return simulation.yearlyData.filter((row) => row.phase === phaseFilter);
+    }, [simulation.yearlyData, phaseFilter]);
 
-    const finalData = [...simulationResults.accumulation, ...simulationResults.depletion];
+    const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        const order: ActiveTab[] = ['chart', 'table'];
+        const currentIdx = order.indexOf(activeTab);
+        let nextTab: ActiveTab | null = null;
 
-    // Determine Status
-    const yearsToFire = Math.max(0, (fireYear - new Date().getFullYear()) + (fireMonth - new Date().getMonth()) / 12);
-    const futureMonthlyExpense = currentMonthlyExpense * Math.pow(1 + inflationRate / 100, yearsToFire);
-    const isMaintenancePossible = simulationResults.initialMonthlyWithdrawal >= futureMonthlyExpense;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+            nextTab = order[(currentIdx + 1) % order.length];
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            nextTab = order[(currentIdx - 1 + order.length) % order.length];
+        } else if (e.key === 'Home') {
+            nextTab = order[0];
+        } else if (e.key === 'End') {
+            nextTab = order[order.length - 1];
+        }
 
-    // If Fixed Horizon, check if calculated Rate >= needed Rate? 
-    // Actually simpler: Just check if initial withdrawal covers expenses.
+        if (nextTab) {
+            e.preventDefault();
+            setActiveTab(nextTab);
+            const targetRef = nextTab === 'chart' ? chartTabRef : tableTabRef;
+            targetRef.current?.focus();
+        }
+    };
 
-    // Mobile Config Toggle
-    const [isConfigOpen, setIsConfigOpen] = useState(false);
+    const gridStroke = isDark ? 'rgba(148, 163, 184, 0.14)' : 'rgba(15, 23, 42, 0.08)';
+    const axisStroke = isDark ? '#94a3b8' : '#64748b';
+    const fireMarkerColor = isDark ? '#fbbf24' : '#b45309';
+    const yearsLabel =
+        simulation.yearsToFire < 1
+            ? 'FIRE Target Window'
+            : `${Math.round(simulation.yearsToFire)} Years to FIRE`;
+    const horizonMet =
+        calculationMode === 'FIXED_HORIZON' && simulation.strategyYears >= simulation.safeHorizonYears;
+
+    const formatCompactCurrency = (value: number): string => {
+        const formatted = format(value, { maximumFractionDigits: 0 });
+        if (Math.abs(value) >= 1_000_000) {
+            return format(value, { notation: 'compact', maximumFractionDigits: 1 });
+        }
+        return formatted;
+    };
 
     return (
-        <div style={{ padding: '2rem', width: '100%' }} className={localStyles.container}>
-            <div style={{ marginBottom: '2rem' }}>
-                <h1 className={styles.title} style={{ marginBottom: '0.5rem', fontSize: '2rem', fontWeight: 'bold' }}>FIRE Analysis</h1>
-                <p style={{ color: 'var(--text-secondary)', margin: 0 }}>
-                    Plan your path to financial independence with detailed projections and withdrawal strategies.
-                </p>
-            </div>
+        <div className={styles.container}>
+            <header className={styles.header}>
+                <div className={styles.headerLeft}>
+                    <h1 className={styles.title}>FIRE Independence Planner</h1>
+                    <p className={styles.subtitle}>
+                        Simulate your accumulation trajectory, safe withdrawal sustainability, and inflation-adjusted retirement lifestyle.
+                    </p>
+                </div>
+                <div className={styles.headerBadge}>
+                    <span>Current Baseline:</span>
+                    <span className={styles.headerBadgeStrong}>
+                        {loadingPortfolio ? 'Loading...' : format(currentPortfolioValue, { maximumFractionDigits: 0 })}
+                    </span>
+                </div>
+            </header>
 
-            <button
-                className={localStyles.mobileConfigToggle}
-                onClick={() => setIsConfigOpen(!isConfigOpen)}
-            >
-                <span>Configuration</span>
-                <span>{isConfigOpen ? 'Wait, hide it' : 'Customize it'}</span>
-            </button>
+            {fetchError && (
+                <div className={styles.errorBanner} role="alert">
+                    {fetchError}
+                </div>
+            )}
 
-            <div className={localStyles.grid}>
-
-                {/* Configuration Panel */}
-                <div className={`${localStyles.configSection} ${isConfigOpen ? localStyles.open : ''}`}>
-                    <h2 className={styles.cardTitle}>Configuration</h2>
-
-                    <div className={`${styles.field} ${localStyles.compactField}`}>
-                        <label className={`${styles.label} ${localStyles.compactLabel}`}>FIRE Date</label>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <select value={fireMonth} onChange={(e) => setFireMonth(Number(e.target.value))} className={`${styles.select} ${localStyles.compactInput}`} style={{ flex: 1 }}>
-                                {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => <option key={i} value={i}>{m}</option>)}
-                            </select>
-                            <select value={fireYear} onChange={(e) => setFireYear(Number(e.target.value))} className={`${styles.select} ${localStyles.compactInput}`} style={{ flex: 1 }}>
-                                {Array.from({ length: 50 }, (_, i) => new Date().getFullYear() + i).map(y => <option key={y} value={y}>{y}</option>)}
-                            </select>
+            <div className={styles.pageGrid}>
+                {/* Tier 1: 4-Card FIRE Readiness KPI Strip */}
+                <section className={styles.kpiStrip} aria-label="FIRE readiness summary">
+                    {/* Hero Card: Projected FIRE Nest Egg */}
+                    <article className={styles.heroCard}>
+                        <div className={styles.heroTop}>
+                            <span className={styles.heroLabel}>
+                                Projected FIRE Nest Egg ({formatMonthYear(simulation.effectiveFireDate)})
+                            </span>
+                            <div className={styles.heroValue}>
+                                {format(simulation.projectedFireValue, { maximumFractionDigits: 0 })}
+                            </div>
+                            <span className={styles.heroPill}>{yearsLabel}</span>
                         </div>
-                    </div>
+                        <div className={styles.heroFooter}>
+                            <span>
+                                Principal: <strong>{format(simulation.projectedPrincipal, { maximumFractionDigits: 0 })}</strong>
+                            </span>
+                            <span>
+                                Gains: <strong>{format(simulation.projectedGains, { maximumFractionDigits: 0 })}</strong>
+                            </span>
+                        </div>
+                    </article>
 
-                    <div className={`${styles.field} ${localStyles.compactField}`}>
-                        <label className={`${styles.label} ${localStyles.compactLabel}`}>Expected Return (%)</label>
-                        <input type="number" value={expectedReturn} onChange={(e) => setExpectedReturn(Number(e.target.value))} className={`${styles.input} ${localStyles.compactInput}`} step="0.1" />
-                    </div>
-                    <div className={`${styles.field} ${localStyles.compactField}`}>
-                        <label className={`${styles.label} ${localStyles.compactLabel}`}>Expected Inflation (%)</label>
-                        <input type="number" value={inflationRate} onChange={(e) => setInflationRate(Number(e.target.value))} className={`${styles.input} ${localStyles.compactInput}`} step="0.1" />
-                    </div>
-                    <div className={`${styles.field} ${localStyles.compactField}`}>
-                        <label className={`${styles.label} ${localStyles.compactLabel}`}>Monthly Contribution ({currency})</label>
-                        <input type="number" value={monthlyContribution} onChange={(e) => setMonthlyContribution(Number(e.target.value))} className={`${styles.input} ${localStyles.compactInput}`} />
-                    </div>
+                    {/* Card 2: Monthly Retirement Cash Flow */}
+                    <article className={styles.kpiCard}>
+                        <div>
+                            <div className={styles.kpiHeader}>
+                                <span className={styles.kpiLabel}>Monthly Retirement Cash Flow</span>
+                                <span
+                                    className={`${styles.statusPill} ${
+                                        simulation.monthlySurplus >= 0 ? styles.statusPositive : styles.statusWarning
+                                    }`}
+                                >
+                                    {simulation.expenseCoveragePct.toFixed(0)}% covered
+                                </span>
+                            </div>
+                            <div className={styles.kpiMain}>
+                                <span className={styles.kpiValue}>
+                                    {format(simulation.initialMonthlyWithdrawal, { maximumFractionDigits: 0 })}
+                                </span>
+                                <span className={styles.kpiUnit}>/ mo</span>
+                            </div>
+                            <p className={styles.kpiSub}>
+                                Safe withdrawal ({simulation.effectiveSwr.toFixed(2)}% SWR) vs.{' '}
+                                <span className={styles.kpiStrong}>
+                                    {format(simulation.futureMonthlyExpense, { maximumFractionDigits: 0 })}/mo
+                                </span>{' '}
+                                needed in {simulation.fireYear}.
+                            </p>
+                        </div>
+                        <div className={styles.kpiFooter}>
+                            <span>Monthly Margin</span>
+                            <span className={styles.kpiStrong}>
+                                {simulation.monthlySurplus >= 0 ? '+' : ''}
+                                {format(simulation.monthlySurplus, { maximumFractionDigits: 0 })}/mo
+                            </span>
+                        </div>
+                    </article>
 
-                    <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '1.5rem', marginTop: '0.5rem' }}>
-                        <h3 className={styles.cardTitle} style={{ fontSize: '1rem', marginBottom: '0.5rem', borderBottom: 'none', paddingBottom: 0 }}>Lifestyle Needs</h3>
-                        <div className={`${styles.field} ${localStyles.compactField}`}>
-                            <label className={`${styles.label} ${localStyles.compactLabel}`}>Current Expense ({currency})</label>
-                            <input
-                                type="number"
-                                value={currentMonthlyExpense}
-                                onChange={(e) => setCurrentMonthlyExpense(Number(e.target.value))}
-                                className={`${styles.input} ${localStyles.compactInput}`}
-                                min="0"
+                    {/* Card 3: FIRE Number & Coast Progress */}
+                    <article className={styles.kpiCard}>
+                        <div>
+                            <div className={styles.kpiHeader}>
+                                <span className={styles.kpiLabel}>FIRE Target &amp; Progress</span>
+                                <span
+                                    className={`${styles.statusPill} ${
+                                        simulation.projectedProgressPct >= 100
+                                            ? styles.statusPositive
+                                            : styles.statusWarning
+                                    }`}
+                                >
+                                    {simulation.projectedProgressPct.toFixed(0)}% at FIRE
+                                </span>
+                            </div>
+                            <div className={styles.kpiValue}>
+                                {format(simulation.requiredFireNumber, { maximumFractionDigits: 0 })}
+                            </div>
+                            <p className={styles.kpiSub}>
+                                Capital needed at {simulation.effectiveSwr.toFixed(1)}% SWR to cover inflated lifestyle.
+                            </p>
+                        </div>
+                        <div className={styles.progressTrack} aria-hidden="true">
+                            <div
+                                className={styles.progressFillProjected}
+                                style={{ width: `${simulation.projectedProgressPct}%` }}
+                            />
+                            <div
+                                className={styles.progressFillCurrent}
+                                style={{ width: `${simulation.currentProgressPct}%` }}
                             />
                         </div>
-                    </div>
+                        <div className={styles.kpiFooter}>
+                            <span>
+                                Today: <strong className={styles.kpiStrong}>{simulation.currentProgressPct.toFixed(1)}%</strong>
+                            </span>
+                            <span>
+                                In {simulation.fireYear}:{' '}
+                                <strong className={styles.kpiStrong}>{simulation.projectedProgressPct.toFixed(0)}%</strong>
+                            </span>
+                        </div>
+                    </article>
 
-                    <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                        <h3 className={styles.cardTitle} style={{ fontSize: '1rem', marginBottom: '0rem', borderBottom: 'none', paddingBottom: 0 }}>Withdrawal Strategy</h3>
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                            {/* Toggle Mode */}
-                            <div style={{ display: 'flex', gap: '1rem', background: 'var(--bg-secondary)', padding: '0.25rem', borderRadius: '0.5rem' }}>
-                                <button
-                                    onClick={() => setCalculationMode('FIXED_RATE')}
-                                    style={{
-                                        flex: 1,
-                                        padding: '0.5rem',
-                                        borderRadius: '0.25rem',
-                                        border: 'none',
-                                        background: calculationMode === 'FIXED_RATE' ? 'var(--card-bg)' : 'transparent',
-                                        color: calculationMode === 'FIXED_RATE' ? 'var(--primary-color)' : 'var(--text-secondary)',
-                                        fontWeight: calculationMode === 'FIXED_RATE' ? 'bold' : 'normal',
-                                        cursor: 'pointer',
-                                        boxShadow: calculationMode === 'FIXED_RATE' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
-                                    }}
+                    {/* Card 4: Portfolio Longevity & Sustainability */}
+                    <article className={styles.kpiCard}>
+                        <div>
+                            <div className={styles.kpiHeader}>
+                                <span className={styles.kpiLabel}>Portfolio Longevity</span>
+                                <span
+                                    className={`${styles.statusPill} ${
+                                        simulation.depletedAtMonth === null || horizonMet
+                                            ? styles.statusPositive
+                                            : styles.statusNegative
+                                    }`}
                                 >
-                                    Target Rate
-                                </button>
-                                <button
-                                    onClick={() => setCalculationMode('FIXED_HORIZON')}
-                                    style={{
-                                        flex: 1,
-                                        padding: '0.5rem',
-                                        borderRadius: '0.25rem',
-                                        border: 'none',
-                                        background: calculationMode === 'FIXED_HORIZON' ? 'var(--card-bg)' : 'transparent',
-                                        color: calculationMode === 'FIXED_HORIZON' ? 'var(--primary-color)' : 'var(--text-secondary)',
-                                        fontWeight: calculationMode === 'FIXED_HORIZON' ? 'bold' : 'normal',
-                                        cursor: 'pointer',
-                                        boxShadow: calculationMode === 'FIXED_HORIZON' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
-                                    }}
-                                >
-                                    Target Years
-                                </button>
+                                    {simulation.isPerpetual
+                                        ? 'Perpetual'
+                                        : simulation.depletedAtMonth === null
+                                          ? '60+ Years'
+                                          : horizonMet
+                                            ? `${simulation.safeHorizonYears}y Horizon Met`
+                                            : `Depletes Yr ${simulation.strategyYears}`}
+                                </span>
                             </div>
-
-                            <div className={`${styles.field} ${localStyles.compactField}`}>
-                                <label className={`${styles.label} ${localStyles.compactLabel}`}>Withdrawal Rate (%)</label>
-                                <input
-                                    type="number"
-                                    value={calculationMode === 'FIXED_HORIZON' ? simulationResults.computedWithdrawalRate.toFixed(2) : withdrawalRate}
-                                    onChange={(e) => {
-                                        if (calculationMode === 'FIXED_RATE') setWithdrawalRate(Number(e.target.value));
-                                    }}
-                                    disabled={calculationMode === 'FIXED_HORIZON'}
-                                    className={`${styles.input} ${localStyles.compactInput}`}
-                                    step="0.1"
-                                    style={{ opacity: calculationMode === 'FIXED_HORIZON' ? 0.7 : 1 }}
-                                />
+                            <div className={styles.kpiValue}>
+                                {simulation.depletedAtMonth === null ? '60+ Years' : `${simulation.strategyYears} Years`}
                             </div>
+                            <p className={styles.kpiSub}>
+                                Under {calculationMode === 'FIXED_RATE' ? 'fixed SWR' : `${withdrawalDuration}-year horizon`} plan;
+                                lifestyle expenses last{' '}
+                                <span className={styles.kpiStrong}>
+                                    {simulation.lifestyleYears >= 99 ? '99+ yrs' : `${simulation.lifestyleYears} yrs`}
+                                </span>.
+                            </p>
+                        </div>
+                        <div className={styles.kpiFooter}>
+                            <span>Real Return (Post-Inflation)</span>
+                            <span className={styles.kpiStrong}>{simulation.realReturnPct.toFixed(2)}%</span>
+                        </div>
+                    </article>
+                </section>
 
-                            <div className={`${styles.field} ${localStyles.compactField}`}>
-                                <label className={`${styles.label} ${localStyles.compactLabel}`}>Years to Last</label>
-                                <input
-                                    type="number"
-                                    value={calculationMode === 'FIXED_RATE' ? (typeof simulationResults.computedHorizon === 'number' ? simulationResults.computedHorizon : 60) : withdrawalDuration}
-                                    onChange={(e) => {
-                                        if (calculationMode === 'FIXED_HORIZON') setWithdrawalDuration(Number(e.target.value));
-                                    }}
-                                    disabled={calculationMode === 'FIXED_RATE'}
-                                    className={`${styles.input} ${localStyles.compactInput}`}
-                                    style={{ opacity: calculationMode === 'FIXED_RATE' ? 0.7 : 1 }}
-                                />
-                                {calculationMode === 'FIXED_RATE' && simulationResults.computedHorizon === '60+' && (
-                                    <span style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: '0.25rem', display: 'block' }}>
-                                        Portfolio lasts indefinitely or beyond 60 years.
-                                    </span>
+                {/* Tier 2: Parameter Form (Left) + Tabbed Chart / Table Workspace (Right) */}
+                <div className={styles.workspaceGrid}>
+                    <aside className={styles.panelCard}>
+                        <h2 id="fire-params-heading" className={styles.panelHeading}>
+                            Simulation Parameters
+                        </h2>
+
+                        <form
+                            className={styles.paramForm}
+                            onSubmit={(e) => e.preventDefault()}
+                            aria-labelledby="fire-params-heading"
+                        >
+                            {/* Group 1: Accumulation & Growth */}
+                            <fieldset className={styles.fieldset}>
+                                <legend className={styles.legend}>Accumulation &amp; Growth</legend>
+
+                                <div className={styles.field}>
+                                    <label className={styles.label} htmlFor="fire-target-date">
+                                        Target FIRE Date
+                                    </label>
+                                    <input
+                                        id="fire-target-date"
+                                        name="fireDate"
+                                        type="month"
+                                        className={styles.input}
+                                        value={fireDate}
+                                        aria-describedby={simulation.isPastDateClamped ? 'fire-date-hint' : undefined}
+                                        onChange={(e) => setFireDate(e.target.value)}
+                                    />
+                                    {simulation.isPastDateClamped && (
+                                        <p id="fire-date-hint" className={styles.fieldHint}>
+                                            Adjusted to {formatMonthYear(simulation.effectiveFireDate)} for forward simulation.
+                                        </p>
+                                    )}
+                                </div>
+
+                                <div className={styles.field}>
+                                    <label className={styles.label} htmlFor="fire-monthly-contribution">
+                                        Monthly Contribution ({currency})
+                                    </label>
+                                    <input
+                                        id="fire-monthly-contribution"
+                                        name="monthlyContribution"
+                                        type="number"
+                                        min={0}
+                                        step={100}
+                                        className={styles.input}
+                                        value={monthlyContribution}
+                                        onChange={(e) => setMonthlyContribution(Number(e.target.value))}
+                                    />
+                                </div>
+
+                                <div className={styles.fieldRow}>
+                                    <div className={styles.field}>
+                                        <label className={styles.label} htmlFor="fire-expected-return">
+                                            Return (%)
+                                        </label>
+                                        <input
+                                            id="fire-expected-return"
+                                            name="expectedReturn"
+                                            type="number"
+                                            min={0}
+                                            max={25}
+                                            step={0.1}
+                                            className={styles.input}
+                                            value={expectedReturn}
+                                            onChange={(e) => setExpectedReturn(Number(e.target.value))}
+                                        />
+                                    </div>
+
+                                    <div className={styles.field}>
+                                        <label className={styles.label} htmlFor="fire-inflation-rate">
+                                            Inflation (%)
+                                        </label>
+                                        <input
+                                            id="fire-inflation-rate"
+                                            name="inflationRate"
+                                            type="number"
+                                            min={0}
+                                            max={15}
+                                            step={0.1}
+                                            className={styles.input}
+                                            value={inflationRate}
+                                            onChange={(e) => setInflationRate(Number(e.target.value))}
+                                        />
+                                    </div>
+                                </div>
+                            </fieldset>
+
+                            {/* Group 2: Retirement Lifestyle */}
+                            <fieldset className={styles.fieldset}>
+                                <legend className={styles.legend}>Retirement Lifestyle</legend>
+
+                                <div className={styles.field}>
+                                    <label className={styles.label} htmlFor="fire-monthly-expense">
+                                        Monthly Expenses Today ({currency})
+                                    </label>
+                                    <input
+                                        id="fire-monthly-expense"
+                                        name="currentMonthlyExpense"
+                                        type="number"
+                                        min={0}
+                                        step={100}
+                                        className={styles.input}
+                                        value={currentMonthlyExpense}
+                                        onChange={(e) => setCurrentMonthlyExpense(Number(e.target.value))}
+                                        aria-describedby="fire-expense-hint"
+                                    />
+                                    <p id="fire-expense-hint" className={styles.fieldHint}>
+                                        Inflation-adjusted at FIRE ({simulation.fireYear}):{' '}
+                                        <strong className={styles.kpiStrong}>
+                                            {format(simulation.futureMonthlyExpense, { maximumFractionDigits: 0 })}/mo
+                                        </strong>
+                                    </p>
+                                </div>
+                            </fieldset>
+
+                            {/* Group 3: Withdrawal Strategy */}
+                            <fieldset className={styles.fieldset}>
+                                <legend className={styles.legend}>Withdrawal Strategy</legend>
+
+                                <div className={styles.modeToggle} role="group" aria-label="Withdrawal calculation mode">
+                                    <button
+                                        type="button"
+                                        className={styles.modeBtn}
+                                        aria-pressed={calculationMode === 'FIXED_RATE'}
+                                        onClick={() => setCalculationMode('FIXED_RATE')}
+                                    >
+                                        Fixed Rate (SWR)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={styles.modeBtn}
+                                        aria-pressed={calculationMode === 'FIXED_HORIZON'}
+                                        onClick={() => setCalculationMode('FIXED_HORIZON')}
+                                    >
+                                        Fixed Horizon
+                                    </button>
+                                </div>
+
+                                {calculationMode === 'FIXED_RATE' ? (
+                                    <div className={styles.field}>
+                                        <label className={styles.label} htmlFor="fire-swr-input">
+                                            Safe Withdrawal Rate (%)
+                                        </label>
+                                        <input
+                                            id="fire-swr-input"
+                                            name="withdrawalRate"
+                                            type="number"
+                                            min={0.5}
+                                            max={15}
+                                            step={0.1}
+                                            className={styles.input}
+                                            value={withdrawalRate}
+                                            onChange={(e) => setWithdrawalRate(Number(e.target.value))}
+                                        />
+                                        <div className={styles.presetRow} role="group" aria-label="Common safe withdrawal rate presets">
+                                            {SWR_PRESETS.map((preset) => (
+                                                <button
+                                                    key={preset}
+                                                    type="button"
+                                                    className={styles.presetChip}
+                                                    aria-pressed={Math.abs(withdrawalRate - preset) < 0.05}
+                                                    onClick={() => setWithdrawalRate(preset)}
+                                                >
+                                                    {preset.toFixed(1)}%
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className={styles.field}>
+                                        <label className={styles.label} htmlFor="fire-horizon-input">
+                                            Retirement Duration (Years)
+                                        </label>
+                                        <input
+                                            id="fire-horizon-input"
+                                            name="withdrawalDuration"
+                                            type="number"
+                                            min={5}
+                                            max={80}
+                                            step={1}
+                                            className={styles.input}
+                                            value={withdrawalDuration}
+                                            onChange={(e) => setWithdrawalDuration(Number(e.target.value))}
+                                            aria-describedby="fire-horizon-hint"
+                                        />
+                                        <p id="fire-horizon-hint" className={styles.fieldHint}>
+                                            Implied starting SWR:{' '}
+                                            <strong className={styles.kpiStrong}>
+                                                {simulation.effectiveSwr.toFixed(2)}%
+                                            </strong>
+                                        </p>
+                                    </div>
                                 )}
+                            </fieldset>
+                        </form>
+                    </aside>
+
+                    {/* Right Tabbed Projection Chart / Breakdown Table */}
+                    <section className={styles.panelCard} aria-label="FIRE projection visualizations">
+                        <div className={styles.tabHeaderRow}>
+                            <div className={styles.tabListWrap}>
+                                <div
+                                    role="tablist"
+                                    aria-label="FIRE projection views"
+                                    className={styles.tabList}
+                                    onKeyDown={handleTabKeyDown}
+                                >
+                                    <button
+                                        ref={chartTabRef}
+                                        type="button"
+                                        role="tab"
+                                        id="tab-fire-chart"
+                                        aria-selected={activeTab === 'chart'}
+                                        tabIndex={activeTab === 'chart' ? 0 : -1}
+                                        className={styles.tabBtn}
+                                        onClick={() => setActiveTab('chart')}
+                                    >
+                                        Projection Chart
+                                    </button>
+                                    <button
+                                        ref={tableTabRef}
+                                        type="button"
+                                        role="tab"
+                                        id="tab-fire-table"
+                                        aria-selected={activeTab === 'table'}
+                                        tabIndex={activeTab === 'table' ? 0 : -1}
+                                        className={styles.tabBtn}
+                                        onClick={() => setActiveTab('table')}
+                                    >
+                                        Yearly Breakdown Table
+                                    </button>
+                                </div>
                             </div>
+
+                            {activeTab === 'chart' && (
+                                <div className={styles.legendStrip}>
+                                    <span className={styles.legendItem}>
+                                        <span className={styles.dotBlue} aria-hidden="true" />
+                                        Principal
+                                    </span>
+                                    <span className={styles.legendItem}>
+                                        <span className={styles.dotGreen} aria-hidden="true" />
+                                        Compounded Gains
+                                    </span>
+                                    <span className={styles.legendItem}>
+                                        <span className={styles.dotAmber} aria-hidden="true" />
+                                        FIRE ({simulation.fireYear})
+                                    </span>
+                                </div>
+                            )}
                         </div>
-                    </div>
 
-                </div>
+                        {/* Tab Panel 1: Stacked Trajectory BarChart */}
+                        <div
+                            role="tabpanel"
+                            id="panel-fire-chart"
+                            aria-labelledby="tab-fire-chart"
+                            hidden={activeTab !== 'chart'}
+                            tabIndex={activeTab === 'chart' ? 0 : undefined}
+                        >
+                            {activeTab === 'chart' && (
+                                <div className={styles.panelInner}>
+                                    <div className={styles.chartWrap}>
+                                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                            <BarChart
+                                                data={simulation.yearlyData}
+                                                margin={{ top: 28, right: 20, left: 6, bottom: 8 }}
+                                            >
+                                                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
+                                                <XAxis
+                                                    dataKey="year"
+                                                    stroke={axisStroke}
+                                                    fontSize={12}
+                                                    tickLine={false}
+                                                    axisLine={false}
+                                                    minTickGap={24}
+                                                />
+                                                <YAxis
+                                                    stroke={axisStroke}
+                                                    fontSize={12}
+                                                    tickLine={false}
+                                                    axisLine={false}
+                                                    width={72}
+                                                    tickFormatter={formatCompactCurrency}
+                                                />
+                                                <Tooltip
+                                                    cursor={{ fill: isDark ? 'rgba(148, 163, 184, 0.08)' : 'rgba(15, 23, 42, 0.05)' }}
+                                                    content={({ active, payload }) => {
+                                                        if (!active || !payload || payload.length === 0) return null;
+                                                        const point = payload[0]?.payload as YearProjection | undefined;
+                                                        if (!point) return null;
 
-                {/* Analysis Area */}
-                <div className={localStyles.analysisSection}>
-
-                    {/* Summary Cards */}
-                    <div className={styles.grid} style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-                        <div className={styles.card} style={{ padding: '1.5rem', textAlign: 'center' }}>
-                            <div className={styles.label}>Minimum Required Monthly Income</div>
-                            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--primary-color)' }}>
-                                {format(futureMonthlyExpense)}
-                            </div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-                                Calculated based on your current expense plus inflation, assuming you retain your current lifestyle until you die.
-                            </div>
-                        </div>
-
-                        <div className={styles.card} style={{ padding: '1.5rem', textAlign: 'center' }}>
-                            <div className={styles.label}>Available Monthly Withdrawal</div>
-                            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--primary-color)' }}>
-                                {format(simulationResults.initialMonthlyWithdrawal)}
-                            </div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-                                Based on a {simulationResults.computedWithdrawalRate.toFixed(2)}% withdrawal rate{typeof simulationResults.computedHorizon === 'number' ? ` lasting ${simulationResults.computedHorizon} years` : ' lasting 60+ years'}.
-                            </div>
-                        </div>
-
-                        <div className={styles.card} style={{ padding: '1.5rem', textAlign: 'center' }}>
-                            <div className={styles.label}>Lifestyle Coverage</div>
-                            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: isMaintenancePossible ? 'var(--success)' : 'var(--error)' }}>
-                                {simulationResults.lifestyleDuration >= 60 ? '60+' : simulationResults.lifestyleDuration} Years
-                            </div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-                                Duration if withdrawing exactly <strong>{format(futureMonthlyExpense)}</strong>/mo (inflation adjusted) to match current lifestyle.
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Chart */}
-                    <div className={styles.card} style={{ height: '400px', display: 'flex', flexDirection: 'column' }}>
-                        <h2 className={styles.cardTitle}>Portfolio Projection</h2>
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={finalData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                                <XAxis dataKey="year" stroke="#9ca3af" fontSize={12} />
-                                <YAxis
-                                    tickFormatter={(val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: currency, notation: 'compact' }).format(val)}
-                                    stroke="#9ca3af"
-                                    fontSize={12}
-                                />
-                                <Tooltip
-                                    content={({ active, payload, label }) => {
-                                        if (active && payload && payload.length) {
-                                            const principal = payload.find(p => p.dataKey === 'principal')?.value as number || 0;
-                                            const gains = payload.find(p => p.dataKey === 'gains')?.value as number || 0;
-                                            const total = principal + gains;
-
-                                            const data = payload[0].payload;
-                                            const annualWithdrawal = data.withdrawal || 0;
-                                            const monthlyWithdrawal = Math.round(annualWithdrawal / 12);
-
-                                            return (
-                                                <div className={styles.tooltip} style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--card-border)', padding: '0.75rem', borderRadius: '0.5rem', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-                                                    <p style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Year: {label}</p>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                                                        <span style={{ color: '#3b82f6' }}>Invested: {formatCurrency(principal, currency)}</span>
-                                                        <span style={{ color: '#10b981' }}>Gains: {formatCurrency(gains, currency)}</span>
-                                                        <div style={{ borderTop: '1px solid var(--card-border)', marginTop: '0.25rem', paddingTop: '0.25rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>
-                                                            Total: {formatCurrency(total, currency)}
-                                                        </div>
-                                                        {monthlyWithdrawal > 0 && (
-                                                            <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--card-border)', paddingTop: '0.5rem', color: 'var(--error)' }}>
-                                                                Monthly Withdrawal: {formatCurrency(monthlyWithdrawal, currency)}
+                                                        return (
+                                                            <div className={styles.tooltipBox}>
+                                                                <div className={styles.tooltipHead}>
+                                                                    <span>Year {point.year}</span>
+                                                                    <span className={styles.tooltipPhase}>{point.phase}</span>
+                                                                </div>
+                                                                <div className={styles.tooltipRow}>
+                                                                    <span>Principal</span>
+                                                                    <span>{format(point.principal, { maximumFractionDigits: 0 })}</span>
+                                                                </div>
+                                                                <div className={styles.tooltipRow}>
+                                                                    <span>Compounded Gains</span>
+                                                                    <span>{format(point.gains, { maximumFractionDigits: 0 })}</span>
+                                                                </div>
+                                                                {point.withdrawal > 0 && (
+                                                                    <div className={styles.tooltipRow}>
+                                                                        <span>Annual Withdrawal</span>
+                                                                        <span>{format(point.withdrawal, { maximumFractionDigits: 0 })}</span>
+                                                                    </div>
+                                                                )}
+                                                                <div className={`${styles.tooltipRow} ${styles.tooltipTotalRow}`}>
+                                                                    <span>Total Value</span>
+                                                                    <span>{format(point.total, { maximumFractionDigits: 0 })}</span>
+                                                                </div>
                                                             </div>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            );
-                                        }
-                                        return null;
-                                    }}
-                                />
-                                <Legend />
-                                <Bar dataKey="principal" name="Principal" stackId="a" fill="#3b82f6" />
-                                <Bar dataKey="gains" name="Gains" stackId="a" fill="#10b981" />
-                            </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-
-                    {/* Detailed Table */}
-                    <div className={styles.card}>
-                        <h2 className={styles.cardTitle}>Yearly Breakdown</h2>
-                        <div className={localStyles.tableWrapper}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-                                <thead>
-                                    <tr style={{ borderBottom: '1px solid var(--card-border)', textAlign: 'left' }}>
-                                        <th style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>Year</th>
-                                        <th style={{ padding: '0.75rem', color: 'var(--text-secondary)' }}>Phase</th>
-                                        <th style={{ padding: '0.75rem', color: 'var(--text-secondary)', textAlign: 'right' }}>Invested</th>
-                                        <th style={{ padding: '0.75rem', color: 'var(--text-secondary)', textAlign: 'right' }}>Gains</th>
-                                        <th style={{ padding: '0.75rem', color: 'var(--text-secondary)', textAlign: 'right' }}>Withdrawal</th>
-                                        <th style={{ padding: '0.75rem', color: 'var(--text-secondary)', textAlign: 'right' }}>Total Balance</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {finalData.map((row) => (
-                                        <tr key={row.year} style={{ borderBottom: '1px solid var(--bg-secondary)' }}>
-                                            <td style={{ padding: '0.75rem' }}>{row.year}</td>
-                                            <td style={{ padding: '0.75rem' }}>
-                                                <span style={{
-                                                    padding: '0.25rem 0.5rem',
-                                                    borderRadius: '99px',
-                                                    background: row.phase === 'Accumulation' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(16, 185, 129, 0.1)',
-                                                    color: row.phase === 'Accumulation' ? '#3b82f6' : '#10b981',
-                                                    fontSize: '0.8rem'
-                                                }}>
-                                                    {row.phase}
-                                                </span>
-                                            </td>
-                                            <td style={{ padding: '0.75rem', textAlign: 'right' }}>{format(row.principal)}</td>
-                                            <td style={{ padding: '0.75rem', textAlign: 'right' }}>{format(row.gains)}</td>
-                                            <td style={{ padding: '0.75rem', textAlign: 'right', color: row.withdrawal > 0 ? 'var(--error)' : 'var(--text-secondary)' }}>
-                                                {row.withdrawal > 0 ? format(row.withdrawal) : '-'}
-                                            </td>
-                                            <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: 'bold' }}>{format(row.total)}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                                                        );
+                                                    }}
+                                                />
+                                                <ReferenceLine
+                                                    x={simulation.fireYear}
+                                                    stroke={fireMarkerColor}
+                                                    strokeWidth={2}
+                                                    strokeDasharray="5 5"
+                                                    label={{
+                                                        value: `FIRE Target (${simulation.fireYear})`,
+                                                        position: 'top',
+                                                        fill: fireMarkerColor,
+                                                        fontSize: 12,
+                                                        fontWeight: 700
+                                                    }}
+                                                />
+                                                <Bar
+                                                    dataKey="principal"
+                                                    name="Principal"
+                                                    stackId="wealth"
+                                                    fill="#2563eb"
+                                                    radius={[0, 0, 0, 0]}
+                                                />
+                                                <Bar
+                                                    dataKey="gains"
+                                                    name="Compounded Gains"
+                                                    stackId="wealth"
+                                                    fill="#10b981"
+                                                    radius={[3, 3, 0, 0]}
+                                                />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
-                        {/* Mobile List */}
-                        <div className={localStyles.mobileList}>
-                            {finalData.map((row) => (
-                                <div key={row.year} className={localStyles.mobileCard}>
-                                    <div className={localStyles.cardHeader}>
-                                        <span>{row.year}</span>
-                                        <span style={{
-                                            fontSize: '0.75rem',
-                                            color: row.phase === 'Accumulation' ? '#3b82f6' : '#10b981',
-                                            background: row.phase === 'Accumulation' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(16, 185, 129, 0.1)',
-                                            padding: '0.125rem 0.5rem',
-                                            borderRadius: '1rem'
-                                        }}>
-                                            {row.phase}
+                        {/* Tab Panel 2: Contained Responsive Yearly Breakdown Table */}
+                        <div
+                            role="tabpanel"
+                            id="panel-fire-table"
+                            aria-labelledby="tab-fire-table"
+                            hidden={activeTab !== 'table'}
+                        >
+                            {activeTab === 'table' && (
+                                <div className={styles.panelInner}>
+                                    <div className={styles.tableToolbar}>
+                                        <div className={styles.filterGroup} role="group" aria-label="Filter breakdown by phase">
+                                            {(['ALL', 'Accumulation', 'Retirement'] as const).map((option) => (
+                                                <button
+                                                    key={option}
+                                                    type="button"
+                                                    className={styles.filterBtn}
+                                                    aria-pressed={phaseFilter === option}
+                                                    onClick={() => setPhaseFilter(option)}
+                                                >
+                                                    {option === 'ALL' ? 'All Years' : option}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <span className={styles.rowCount}>
+                                            Showing {filteredTableRows.length} simulated years
                                         </span>
                                     </div>
-                                    <div className={localStyles.cardBody}>
-                                        <div className={localStyles.cardRow}>
-                                            <span className={localStyles.cardLabel}>Invested</span>
-                                            <span className={localStyles.cardValue}>{format(row.principal)}</span>
-                                        </div>
-                                        <div className={localStyles.cardRow}>
-                                            <span className={localStyles.cardLabel}>Gains</span>
-                                            <span className={localStyles.cardValue} style={{ color: '#10b981' }}>{format(row.gains)}</span>
-                                        </div>
-                                        {row.withdrawal > 0 && (
-                                            <div className={localStyles.cardRow}>
-                                                <span className={localStyles.cardLabel}>Withdrawal</span>
-                                                <span className={localStyles.cardValue} style={{ color: 'var(--error)' }}>{format(row.withdrawal)}</span>
-                                            </div>
-                                        )}
-                                        <div className={localStyles.cardRow}>
-                                            <span className={localStyles.cardLabel}>Total Balance</span>
-                                            <span className={localStyles.cardValue} style={{ fontWeight: 'bold' }}>{format(row.total)}</span>
+
+                                    <div className={styles.tableContainer}>
+                                        <div
+                                            className={styles.tableScroll}
+                                            tabIndex={0}
+                                            role="region"
+                                            aria-labelledby="fire-table-caption"
+                                        >
+                                            <table className={styles.table}>
+                                                <caption id="fire-table-caption" className={styles.srOnly}>
+                                                    Yearly FIRE projection breakdown showing principal, compounded gains, total balance, and annual withdrawal by phase
+                                                </caption>
+                                                <thead>
+                                                    <tr>
+                                                        <th scope="col">Year</th>
+                                                        <th scope="col">Phase</th>
+                                                        <th scope="col" className={styles.numCol}>Principal</th>
+                                                        <th scope="col" className={styles.numCol}>Compounded Gains</th>
+                                                        <th scope="col" className={styles.numCol}>Total Value</th>
+                                                        <th scope="col" className={styles.numCol}>Annual Withdrawal</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {filteredTableRows.map((row) => (
+                                                        <tr
+                                                            key={row.year}
+                                                            className={row.year === simulation.fireYear ? styles.rowFireMarker : undefined}
+                                                        >
+                                                            <th scope="row">
+                                                                {row.year}
+                                                                {row.year === simulation.fireYear ? ' (FIRE)' : ''}
+                                                            </th>
+                                                            <td>
+                                                                <span
+                                                                    className={`${styles.phaseBadge} ${
+                                                                        row.phase === 'Accumulation'
+                                                                            ? styles.phaseAccum
+                                                                            : styles.phaseRetire
+                                                                    }`}
+                                                                >
+                                                                    {row.phase}
+                                                                </span>
+                                                            </td>
+                                                            <td className={styles.numCol}>
+                                                                {format(row.principal, { maximumFractionDigits: 0 })}
+                                                            </td>
+                                                            <td className={styles.numCol}>
+                                                                {format(row.gains, { maximumFractionDigits: 0 })}
+                                                            </td>
+                                                            <td className={`${styles.numCol} ${styles.totalCell}`}>
+                                                                {format(row.total, { maximumFractionDigits: 0 })}
+                                                            </td>
+                                                            <td className={styles.numCol}>
+                                                                {row.withdrawal > 0
+                                                                    ? format(row.withdrawal, { maximumFractionDigits: 0 })
+                                                                    : '—'}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
                                         </div>
                                     </div>
                                 </div>
-                            ))}
+                            )}
                         </div>
-                    </div>
-
+                    </section>
                 </div>
             </div>
-        </div >
+        </div>
     );
 }
