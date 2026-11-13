@@ -38,6 +38,7 @@ export interface CountryContributor {
     name: string;
     allocatedValue: number;
     holdingValue: number;
+    weightInHolding: number;
     weightInSector: number;
     isLookThrough: boolean;
 }
@@ -151,217 +152,203 @@ export function normalizeCountryName(rawCountry?: string | null): string {
     return rawCountry.trim();
 }
 
+const CURRENCY_COUNTRY_MAP: Record<string, string> = {
+    USD: 'United States',
+    CAD: 'Canada',
+    INR: 'India',
+    EUR: 'Europe',
+    GBP: 'United Kingdom'
+};
+
+interface DimensionContribution {
+    category: string;
+    allocatedValue: number;
+    weightInHolding: number;
+    isLookThrough: boolean;
+}
+
+interface InternalContributor {
+    symbol: string;
+    name: string;
+    allocatedValue: number;
+    holdingValue: number;
+    weightInHolding: number;
+    isLookThrough: boolean;
+}
+
+type DimensionMap = Map<string, {
+    value: number;
+    contributors: Map<string, InternalContributor>;
+}>;
+
+function decomposeDimension(
+    value: number,
+    allocations: Array<{ [key: string]: number }> | null | undefined,
+    directLabel: string | null | undefined,
+    normalize: (raw?: string | null) => string,
+    residualLabel: string,
+    getFallbackLabel: () => string
+): DimensionContribution[] {
+    if (typeof value !== 'number' || value < 0.01) return [];
+    const results: DimensionContribution[] = [];
+
+    if (allocations && Array.isArray(allocations) && allocations.length > 0) {
+        let allocatedWeightSum = 0;
+        for (const obj of allocations) {
+            if (!obj || typeof obj !== 'object') continue;
+            for (const [key, fraction] of Object.entries(obj)) {
+                const numFraction = typeof fraction === 'number' ? fraction : Number(fraction);
+                if (!isNaN(numFraction) && numFraction > 0) {
+                    const allocatedVal = Math.round(value * numFraction * 100) / 100;
+                    allocatedWeightSum += numFraction;
+                    if (allocatedVal >= 0.01) {
+                        results.push({
+                            category: normalize(key),
+                            allocatedValue: allocatedVal,
+                            weightInHolding: numFraction,
+                            isLookThrough: true
+                        });
+                    }
+                }
+            }
+        }
+
+        if (allocatedWeightSum < 0.99 && allocatedWeightSum >= 0) {
+            const remainingFraction = Math.max(0, 1.0 - allocatedWeightSum);
+            const remainingValue = Math.round(value * remainingFraction * 100) / 100;
+            if (remainingValue >= 0.01) {
+                results.push({
+                    category: residualLabel,
+                    allocatedValue: remainingValue,
+                    weightInHolding: remainingFraction,
+                    isLookThrough: true
+                });
+            }
+        }
+        return results;
+    }
+
+    if (directLabel && directLabel.trim()) {
+        results.push({
+            category: normalize(directLabel),
+            allocatedValue: value,
+            weightInHolding: 1.0,
+            isLookThrough: false
+        });
+        return results;
+    }
+
+    results.push({
+        category: getFallbackLabel(),
+        allocatedValue: value,
+        weightInHolding: 1.0,
+        isLookThrough: false
+    });
+    return results;
+}
+
+function getConstituentSectorContributions(c: LookThroughConstituent): DimensionContribution[] {
+    if (!c) return [];
+    return decomposeDimension(
+        c.value,
+        c.sectorAllocations,
+        c.sector,
+        normalizeSectorName,
+        'Cash & Reserves',
+        () => {
+            const upperType = c.type?.toUpperCase() || '';
+            if (upperType === 'CRYPTO') return 'Crypto / Digital Assets';
+            if (upperType === 'CASH') return 'Cash & Equivalents';
+            return 'Other / Unclassified';
+        }
+    );
+}
+
+function getConstituentCountryContributions(c: LookThroughConstituent): DimensionContribution[] {
+    if (!c) return [];
+    return decomposeDimension(
+        c.value,
+        c.countryAllocations,
+        c.country,
+        normalizeCountryName,
+        'Global / Other',
+        () => {
+            const upperType = c.type?.toUpperCase() || '';
+            if (upperType === 'CRYPTO') return 'Global / Decentralized';
+            if (c.currency && CURRENCY_COUNTRY_MAP[c.currency]) {
+                return CURRENCY_COUNTRY_MAP[c.currency];
+            }
+            return 'Unspecified';
+        }
+    );
+}
+
+function recordContribution(targetMap: DimensionMap, c: LookThroughConstituent, contrib: DimensionContribution) {
+    if (contrib.allocatedValue < 0.01) return;
+    let entry = targetMap.get(contrib.category);
+    if (!entry) {
+        entry = { value: 0, contributors: new Map() };
+        targetMap.set(contrib.category, entry);
+    }
+    entry.value += contrib.allocatedValue;
+
+    const existing = entry.contributors.get(c.symbol);
+    if (existing) {
+        existing.allocatedValue += contrib.allocatedValue;
+        existing.weightInHolding += contrib.weightInHolding;
+    } else {
+        entry.contributors.set(c.symbol, {
+            symbol: c.symbol,
+            name: c.name || c.symbol,
+            allocatedValue: contrib.allocatedValue,
+            holdingValue: c.value,
+            weightInHolding: contrib.weightInHolding,
+            isLookThrough: contrib.isLookThrough
+        });
+    }
+}
+
+function buildBreakdownDetails(targetMap: DimensionMap, totalValue: number): SectorBreakdown[] {
+    return Array.from(targetMap.entries())
+        .map(([name, data]) => {
+            const contributors = Array.from(data.contributors.values())
+                .map(contrib => ({
+                    ...contrib,
+                    weightInSector: data.value > 0 ? (contrib.allocatedValue / data.value) * 100 : 0
+                }))
+                .sort((a, b) => b.allocatedValue - a.allocatedValue);
+
+            return {
+                name,
+                value: data.value,
+                percentage: totalValue > 0 ? (data.value / totalValue) * 100 : 0,
+                contributors
+            };
+        })
+        .sort((a, b) => b.value - a.value);
+}
+
 /**
  * Calculates look-through sector and country allocations across a collection of portfolio constituents.
  */
 export function calculateLookThrough(constituents: LookThroughConstituent[]): LookThroughResult {
-    const activeConstituents = constituents.filter(c => c && typeof c.value === 'number' && c.value > 0);
+    const activeConstituents = constituents.filter(c => c && typeof c.value === 'number' && c.value >= 0.01);
     const totalValue = activeConstituents.reduce((sum, c) => sum + c.value, 0);
 
-    // Map for Sector -> Contributor Map
-    const sectorMap = new Map<string, {
-        value: number;
-        contributors: Map<string, {
-            symbol: string;
-            name: string;
-            allocatedValue: number;
-            holdingValue: number;
-            weightInHolding: number;
-            isLookThrough: boolean;
-        }>;
-    }>();
-
-    // Map for Country -> Contributor Map
-    const countryMap = new Map<string, {
-        value: number;
-        contributors: Map<string, {
-            symbol: string;
-            name: string;
-            allocatedValue: number;
-            holdingValue: number;
-            weightInHolding: number;
-            isLookThrough: boolean;
-        }>;
-    }>();
-
-    const addSectorContribution = (
-        sector: string,
-        c: LookThroughConstituent,
-        allocatedVal: number,
-        weightInHolding: number,
-        isLookThrough: boolean
-    ) => {
-        if (allocatedVal <= 0) return;
-        let entry = sectorMap.get(sector);
-        if (!entry) {
-            entry = { value: 0, contributors: new Map() };
-            sectorMap.set(sector, entry);
-        }
-        entry.value += allocatedVal;
-
-        const existingContrib = entry.contributors.get(c.symbol);
-        if (existingContrib) {
-            existingContrib.allocatedValue += allocatedVal;
-            existingContrib.weightInHolding += weightInHolding;
-        } else {
-            entry.contributors.set(c.symbol, {
-                symbol: c.symbol,
-                name: c.name || c.symbol,
-                allocatedValue: allocatedVal,
-                holdingValue: c.value,
-                weightInHolding,
-                isLookThrough
-            });
-        }
-    };
-
-    const addCountryContribution = (
-        country: string,
-        c: LookThroughConstituent,
-        allocatedVal: number,
-        weightInHolding: number,
-        isLookThrough: boolean
-    ) => {
-        if (allocatedVal <= 0) return;
-        let entry = countryMap.get(country);
-        if (!entry) {
-            entry = { value: 0, contributors: new Map() };
-            countryMap.set(country, entry);
-        }
-        entry.value += allocatedVal;
-
-        const existingContrib = entry.contributors.get(c.symbol);
-        if (existingContrib) {
-            existingContrib.allocatedValue += allocatedVal;
-            existingContrib.weightInHolding += weightInHolding;
-        } else {
-            entry.contributors.set(c.symbol, {
-                symbol: c.symbol,
-                name: c.name || c.symbol,
-                allocatedValue: allocatedVal,
-                holdingValue: c.value,
-                weightInHolding,
-                isLookThrough
-            });
-        }
-    };
+    const sectorMap: DimensionMap = new Map();
+    const countryMap: DimensionMap = new Map();
 
     for (const c of activeConstituents) {
-        // --- 1. Sector Allocation Decomposition ---
-        if (c.sectorAllocations && Array.isArray(c.sectorAllocations) && c.sectorAllocations.length > 0) {
-            let allocatedWeightSum = 0;
-            for (const sectorObj of c.sectorAllocations) {
-                if (!sectorObj || typeof sectorObj !== 'object') continue;
-                for (const [key, fraction] of Object.entries(sectorObj)) {
-                    const numFraction = typeof fraction === 'number' ? fraction : Number(fraction);
-                    if (!isNaN(numFraction) && numFraction > 0) {
-                        const normSector = normalizeSectorName(key);
-                        const allocatedVal = Math.round(c.value * numFraction * 100) / 100;
-                        allocatedWeightSum += numFraction;
-                        addSectorContribution(normSector, c, allocatedVal, numFraction, true);
-                    }
-                }
-            }
-
-            // If ETF has residual weight not assigned to any sector (e.g. 3% cash reserves)
-            if (allocatedWeightSum < 0.99 && allocatedWeightSum >= 0) {
-                const remainingFraction = Math.max(0, 1.0 - allocatedWeightSum);
-                const remainingValue = Math.round(c.value * remainingFraction * 100) / 100;
-                addSectorContribution('Cash & Reserves', c, remainingValue, remainingFraction, true);
-            }
-        } else if (c.sector && c.sector.trim()) {
-            // Direct Equity / Stock with known sector
-            const normSector = normalizeSectorName(c.sector);
-            addSectorContribution(normSector, c, c.value, 1.0, false);
-        } else {
-            // Fallback based on asset type
-            let normSector = 'Other / Unclassified';
-            const upperType = c.type?.toUpperCase() || '';
-            if (upperType === 'CRYPTO') normSector = 'Crypto / Digital Assets';
-            else if (upperType === 'CASH') normSector = 'Cash & Equivalents';
-            addSectorContribution(normSector, c, c.value, 1.0, false);
+        for (const contrib of getConstituentSectorContributions(c)) {
+            recordContribution(sectorMap, c, contrib);
         }
-
-        // --- 2. Country / Geographic Decomposition ---
-        if (c.countryAllocations && Array.isArray(c.countryAllocations) && c.countryAllocations.length > 0) {
-            let allocatedWeightSum = 0;
-            for (const countryObj of c.countryAllocations) {
-                if (!countryObj || typeof countryObj !== 'object') continue;
-                for (const [key, fraction] of Object.entries(countryObj)) {
-                    const numFraction = typeof fraction === 'number' ? fraction : Number(fraction);
-                    if (!isNaN(numFraction) && numFraction > 0) {
-                        const normCountry = normalizeCountryName(key);
-                        const allocatedVal = Math.round(c.value * numFraction * 100) / 100;
-                        allocatedWeightSum += numFraction;
-                        addCountryContribution(normCountry, c, allocatedVal, numFraction, true);
-                    }
-                }
-            }
-            if (allocatedWeightSum < 0.99 && allocatedWeightSum >= 0) {
-                const remainingFraction = Math.max(0, 1.0 - allocatedWeightSum);
-                const remainingValue = Math.round(c.value * remainingFraction * 100) / 100;
-                addCountryContribution('Global / Other', c, remainingValue, remainingFraction, true);
-            }
-        } else if (c.country && c.country.trim()) {
-            const normCountry = normalizeCountryName(c.country);
-            addCountryContribution(normCountry, c, c.value, 1.0, false);
-        } else {
-            let normCountry = 'Unspecified';
-            const upperType = c.type?.toUpperCase() || '';
-            if (upperType === 'CRYPTO') {
-                normCountry = 'Global / Decentralized';
-            } else if (c.currency === 'USD') {
-                normCountry = 'United States';
-            } else if (c.currency === 'CAD') {
-                normCountry = 'Canada';
-            } else if (c.currency === 'INR') {
-                normCountry = 'India';
-            } else if (c.currency === 'EUR') {
-                normCountry = 'Europe';
-            } else if (c.currency === 'GBP') {
-                normCountry = 'United Kingdom';
-            }
-            addCountryContribution(normCountry, c, c.value, 1.0, false);
+        for (const contrib of getConstituentCountryContributions(c)) {
+            recordContribution(countryMap, c, contrib);
         }
     }
 
-    // Build Sector Details
-    const sectorDetails: SectorBreakdown[] = Array.from(sectorMap.entries())
-        .map(([name, data]) => {
-            const contributors: SectorContributor[] = Array.from(data.contributors.values())
-                .map(contrib => ({
-                    ...contrib,
-                    weightInSector: data.value > 0 ? (contrib.allocatedValue / data.value) * 100 : 0
-                }))
-                .sort((a, b) => b.allocatedValue - a.allocatedValue);
-
-            return {
-                name,
-                value: data.value,
-                percentage: totalValue > 0 ? (data.value / totalValue) * 100 : 0,
-                contributors
-            };
-        })
-        .sort((a, b) => b.value - a.value);
-
-    // Build Country Details
-    const countryDetails: CountryBreakdown[] = Array.from(countryMap.entries())
-        .map(([name, data]) => {
-            const contributors: CountryContributor[] = Array.from(data.contributors.values())
-                .map(contrib => ({
-                    ...contrib,
-                    weightInSector: data.value > 0 ? (contrib.allocatedValue / data.value) * 100 : 0
-                }))
-                .sort((a, b) => b.allocatedValue - a.allocatedValue);
-
-            return {
-                name,
-                value: data.value,
-                percentage: totalValue > 0 ? (data.value / totalValue) * 100 : 0,
-                contributors
-            };
-        })
-        .sort((a, b) => b.value - a.value);
+    const sectorDetails: SectorBreakdown[] = buildBreakdownDetails(sectorMap, totalValue);
+    const countryDetails: CountryBreakdown[] = buildBreakdownDetails(countryMap, totalValue);
 
     const bySector = sectorDetails.map(s => ({ name: s.name, value: s.value }));
     const byCountry = countryDetails.map(c => ({ name: c.name, value: c.value }));
@@ -380,23 +367,7 @@ export function calculateLookThrough(constituents: LookThroughConstituent[]): Lo
  */
 export function constituentHasSectorExposure(constituent: LookThroughConstituent, targetSector: string): boolean {
     if (!targetSector) return true;
-    if (constituent.sector && normalizeSectorName(constituent.sector) === targetSector) {
-        return true;
-    }
-    if (constituent.sectorAllocations && Array.isArray(constituent.sectorAllocations)) {
-        for (const sectorObj of constituent.sectorAllocations) {
-            if (!sectorObj || typeof sectorObj !== 'object') continue;
-            for (const [key, fraction] of Object.entries(sectorObj)) {
-                if (normalizeSectorName(key) === targetSector && Number(fraction) > 0) {
-                    return true;
-                }
-            }
-        }
-    }
-    const upperType = constituent.type?.toUpperCase() || '';
-    if (targetSector === 'Crypto / Digital Assets' && upperType === 'CRYPTO') return true;
-    if (targetSector === 'Cash & Equivalents' && upperType === 'CASH') return true;
-    return false;
+    return getConstituentSectorContributions(constituent).some(item => item.category === targetSector);
 }
 
 /**
@@ -404,24 +375,5 @@ export function constituentHasSectorExposure(constituent: LookThroughConstituent
  */
 export function constituentHasCountryExposure(constituent: LookThroughConstituent, targetCountry: string): boolean {
     if (!targetCountry) return true;
-    if (constituent.country && normalizeCountryName(constituent.country) === targetCountry) {
-        return true;
-    }
-    if (constituent.countryAllocations && Array.isArray(constituent.countryAllocations)) {
-        for (const countryObj of constituent.countryAllocations) {
-            if (!countryObj || typeof countryObj !== 'object') continue;
-            for (const [key, fraction] of Object.entries(countryObj)) {
-                if (normalizeCountryName(key) === targetCountry && Number(fraction) > 0) {
-                    return true;
-                }
-            }
-        }
-    }
-    if (targetCountry === 'United States' && constituent.currency === 'USD') return true;
-    if (targetCountry === 'Canada' && constituent.currency === 'CAD') return true;
-    if (targetCountry === 'India' && constituent.currency === 'INR') return true;
-    if (targetCountry === 'Europe' && constituent.currency === 'EUR') return true;
-    if (targetCountry === 'United Kingdom' && constituent.currency === 'GBP') return true;
-    if (targetCountry === 'Global / Decentralized' && constituent.type?.toUpperCase() === 'CRYPTO') return true;
-    return false;
+    return getConstituentCountryContributions(constituent).some(item => item.category === targetCountry);
 }

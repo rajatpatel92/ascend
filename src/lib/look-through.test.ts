@@ -218,6 +218,51 @@ describe('look-through utility', () => {
             assert.strictEqual(result.sectorDetails[0].contributors.length, 1);
             assert.strictEqual(result.sectorDetails[0].contributors[0].symbol, 'POS');
         });
+
+        test('filters out sub-cent floating-point dust holdings and exposes weightInHolding on country contributors', () => {
+            const constituents: LookThroughConstituent[] = [
+                {
+                    symbol: 'DUST',
+                    name: 'Sold Dust Position',
+                    value: 0.000001,
+                    sector: 'Technology',
+                    country: 'Canada'
+                },
+                {
+                    symbol: 'REAL_ETF',
+                    name: 'Real ETF',
+                    type: 'ETF',
+                    value: 1000,
+                    sectorAllocations: [
+                        { technology: 0.5 },
+                        { energy: 0.000001 }
+                    ],
+                    countryAllocations: [
+                        { canada: 0.75 },
+                        { united_states: 0.25 }
+                    ]
+                }
+            ];
+
+            const result = calculateLookThrough(constituents);
+            assert.strictEqual(result.totalValue, 1000);
+
+            const tech = result.sectorDetails.find(s => s.name === 'Technology');
+            assert.ok(tech);
+            assert.strictEqual(tech.contributors.length, 1);
+            assert.strictEqual(tech.contributors[0].symbol, 'REAL_ETF');
+
+            // Sub-cent sector allocation (1000 * 0.000001 = 0.001 < 0.01) should not create an Energy entry
+            const energy = result.sectorDetails.find(s => s.name === 'Energy');
+            assert.strictEqual(energy, undefined);
+
+            // Country contributors should include weightInHolding and exclude DUST
+            const canada = result.countryDetails.find(c => c.name === 'Canada');
+            assert.ok(canada);
+            assert.strictEqual(canada.contributors.length, 1);
+            assert.strictEqual(canada.contributors[0].symbol, 'REAL_ETF');
+            assert.strictEqual(canada.contributors[0].weightInHolding, 0.75);
+        });
     });
 
     describe('constituentHasSectorExposure', () => {
@@ -254,6 +299,22 @@ describe('look-through utility', () => {
             assert.strictEqual(constituentHasSectorExposure(crypto, 'Crypto / Digital Assets'), true);
             assert.strictEqual(constituentHasSectorExposure(crypto, 'Technology'), false);
         });
+
+        test('matches residual Cash & Reserves and Other / Unclassified fallbacks', () => {
+            const partialEtf: LookThroughConstituent = {
+                symbol: 'PARTIAL',
+                value: 1000,
+                sectorAllocations: [{ technology: 0.85 }]
+            };
+            assert.strictEqual(constituentHasSectorExposure(partialEtf, 'Cash & Reserves'), true);
+
+            const unclassified: LookThroughConstituent = {
+                symbol: 'ZMMK.TO',
+                value: 1000,
+                type: 'CASH_EQUIV'
+            };
+            assert.strictEqual(constituentHasSectorExposure(unclassified, 'Other / Unclassified'), true);
+        });
     });
 
     describe('constituentHasCountryExposure', () => {
@@ -274,7 +335,28 @@ describe('look-through utility', () => {
             assert.strictEqual(constituentHasCountryExposure(cadStock, 'Canada'), true);
         });
 
-        test('matches ETF country allocations', () => {
+        test('does not fall back to currency when country or countryAllocations are defined', () => {
+            const tsm: LookThroughConstituent = {
+                symbol: 'TSM',
+                value: 2000,
+                country: 'Taiwan',
+                currency: 'USD'
+            };
+            assert.strictEqual(constituentHasCountryExposure(tsm, 'Taiwan'), true);
+            assert.strictEqual(constituentHasCountryExposure(tsm, 'United States'), false);
+
+            const vxus: LookThroughConstituent = {
+                symbol: 'VXUS',
+                value: 3000,
+                currency: 'USD',
+                countryAllocations: [{ japan: 0.15 }, { uk: 0.10 }]
+            };
+            assert.strictEqual(constituentHasCountryExposure(vxus, 'Japan'), true);
+            assert.strictEqual(constituentHasCountryExposure(vxus, 'Global / Other'), true);
+            assert.strictEqual(constituentHasCountryExposure(vxus, 'United States'), false);
+        });
+
+        test('matches ETF country allocations and Unspecified fallback', () => {
             const globalEtf: LookThroughConstituent = {
                 symbol: 'VXUS',
                 value: 3000,
@@ -286,6 +368,12 @@ describe('look-through utility', () => {
             assert.strictEqual(constituentHasCountryExposure(globalEtf, 'Japan'), true);
             assert.strictEqual(constituentHasCountryExposure(globalEtf, 'United Kingdom'), true);
             assert.strictEqual(constituentHasCountryExposure(globalEtf, 'Canada'), false);
+
+            const unknown: LookThroughConstituent = {
+                symbol: 'MISC',
+                value: 500
+            };
+            assert.strictEqual(constituentHasCountryExposure(unknown, 'Unspecified'), true);
         });
     });
 

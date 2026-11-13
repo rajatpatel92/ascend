@@ -1,6 +1,8 @@
 'use client';
 
+import React, { useState } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
 import { useCurrency } from '@/context/CurrencyContext';
 import styles from './AllocationChart.module.css';
 
@@ -11,6 +13,9 @@ interface DataPoint {
 
 interface AllocationChartProps {
     title: string;
+    subtitle?: string;
+    badgeText?: string;
+    embedded?: boolean;
     data: DataPoint[];
     onSelect?: (name: string | null, event?: React.MouseEvent) => void;
     selectedName?: string | null;
@@ -36,97 +41,226 @@ const COLORS = [
     '#0ea5e9'  // Sky Blue
 ];
 
-export default function AllocationChart(props: AllocationChartProps) {
-    const { title, data, onSelect, selectedName } = props;
-    const { format, convert } = useCurrency();
+const MAX_VISIBLE_CATEGORIES = 7;
 
-    const chartData = data.map(item => ({
-        ...item,
-        value: (props.isPreConverted ? item.value : convert(item.value, 'USD'))
-    })).filter(item => item.value > 0);
+export default function AllocationChart(props: AllocationChartProps) {
+    const {
+        title,
+        subtitle,
+        badgeText,
+        embedded = false,
+        data,
+        onSelect,
+        selectedName,
+        isPreConverted
+    } = props;
+    const { format, convert } = useCurrency();
+    const [showAllCategories, setShowAllCategories] = useState(false);
+
+    const chartData = data
+        .map(item => ({
+            ...item,
+            value: isPreConverted ? item.value : convert(item.value, 'USD')
+        }))
+        .filter(item => item.value >= 0.01)
+        .sort((a, b) => b.value - a.value);
 
     const totalValue = chartData.reduce((sum, item) => sum + item.value, 0);
+    const selectedIndex = selectedName ? chartData.findIndex(item => item.name === selectedName) : -1;
+    const selectedEntry = selectedIndex >= 0 ? chartData[selectedIndex] : null;
+    const hasActiveSelection = Boolean(selectedEntry);
+    const selectedPercent = selectedEntry && totalValue > 0 ? (selectedEntry.value / totalValue) * 100 : 0;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const handleClick = (data: any, index: number, e: React.MouseEvent) => {
+    const isAutoExpanded = selectedIndex >= MAX_VISIBLE_CATEGORIES;
+    const isExpanded = showAllCategories || isAutoExpanded;
+    const visibleItems = isExpanded || chartData.length <= MAX_VISIBLE_CATEGORIES
+        ? chartData
+        : chartData.slice(0, MAX_VISIBLE_CATEGORIES);
+
+    const handleSelect = (name: string, e?: React.MouseEvent) => {
         if (onSelect) {
-            onSelect(data.name === selectedName ? null : data.name, e);
+            onSelect(name === selectedName ? null : name, e);
         }
     };
 
-    if (chartData.length === 0) {
-        return (
-            <div className={styles.container}>
-                <h3 className={styles.title}>{title}</h3>
-                <div className={styles.empty}>No data available</div>
-            </div>
-        );
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handlePieClick = (entry: any, _index: number, e: React.MouseEvent) => {
+        if (entry?.name) {
+            handleSelect(entry.name, e);
+        }
+    };
 
     return (
-        <div className={styles.container}>
-            <h3 className={styles.title}>{title}</h3>
-
-            <div className={styles.chartArea}>
-                <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                        <Pie
-                            data={chartData}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={50}
-                            outerRadius={90}
-                            paddingAngle={2}
-                            dataKey="value"
-                            onClick={handleClick}
-                            cursor="pointer"
-                        >
-                            {chartData.map((entry, index) => (
-                                <Cell
-                                    key={`cell-${index}`}
-                                    fill={COLORS[index % COLORS.length]}
-                                    opacity={selectedName && selectedName !== entry.name ? 0.3 : 1}
-                                    stroke={selectedName === entry.name ? 'var(--text-primary)' : 'none'}
-                                    strokeWidth={selectedName === entry.name ? 2 : 0}
-                                />
-                            ))}
-                        </Pie>
-                        <Tooltip
-                            formatter={(value: number) => format(value)}
-                            contentStyle={{
-                                backgroundColor: 'var(--card-bg)',
-                                border: '1px solid var(--card-border)',
-                                borderRadius: '0.5rem',
-                                color: 'var(--text-primary)'
-                            }}
-                            itemStyle={{ color: 'var(--text-primary)' }}
-                        />
-                    </PieChart>
-                </ResponsiveContainer>
-            </div>
-
-            <div className={styles.legendContainer}>
-                {chartData.map((entry, index) => {
-                    const isActive = !selectedName || selectedName === entry.name;
-                    const percent = totalValue > 0 ? (entry.value / totalValue) * 100 : 0;
-
-                    return (
-                        <div
-                            key={`legend-${index}`}
-                            className={`${styles.legendItem} ${isActive ? styles.active : styles.inactive}`}
-                            onClick={(e) => handleClick(entry, index, e)}
-                        >
-                            <div
-                                className={styles.legendColor}
-                                style={{ backgroundColor: COLORS[index % COLORS.length] }}
-                            />
-                            <span>
-                                {entry.name} <span style={{ opacity: 0.7 }}>({percent.toFixed(1)}%)</span>
+        <section
+            className={`${styles.container} ${embedded ? styles.embedded : ''}`}
+            aria-label={title}
+        >
+            <div className={styles.cardHeader}>
+                <div className={styles.titleBlock}>
+                    <div className={styles.titleRow}>
+                        <h2 className={styles.title}>{title}</h2>
+                        {badgeText && (
+                            <span className={styles.xrayBadge}>
+                                <Sparkles size={12} aria-hidden="true" />
+                                {badgeText}
                             </span>
-                        </div>
-                    );
-                })}
+                        )}
+                    </div>
+                    {subtitle && <p className={styles.subtitle}>{subtitle}</p>}
+                </div>
+
+                {selectedEntry && onSelect && (
+                    <button
+                        type="button"
+                        className={styles.clearSelectionBtn}
+                        onClick={(e) => onSelect(null, e)}
+                    >
+                        Reset selection
+                    </button>
+                )}
             </div>
-        </div>
+
+            {chartData.length === 0 ? (
+                <div className={styles.empty}>No allocation data available for current filters.</div>
+            ) : (
+                <div className={styles.masterDetail}>
+                    {/* Left Pane: Donut Chart + Center Summary */}
+                    <div className={styles.chartPane}>
+                        <div className={styles.chartArea}>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                    <Pie
+                                        data={chartData}
+                                        cx="50%"
+                                        cy="50%"
+                                        innerRadius={72}
+                                        outerRadius={104}
+                                        paddingAngle={chartData.length > 1 ? 2 : 0}
+                                        dataKey="value"
+                                        onClick={handlePieClick}
+                                        cursor="pointer"
+                                        stroke="none"
+                                    >
+                                        {chartData.map((entry, index) => {
+                                            const isSelected = selectedName === entry.name;
+                                            return (
+                                                <Cell
+                                                    key={`cell-${entry.name}`}
+                                                    fill={COLORS[index % COLORS.length]}
+                                                    opacity={hasActiveSelection && !isSelected ? 0.28 : 1}
+                                                    stroke={isSelected ? 'var(--text-primary)' : 'none'}
+                                                    strokeWidth={isSelected ? 2 : 0}
+                                                />
+                                            );
+                                        })}
+                                    </Pie>
+                                    <Tooltip
+                                        formatter={(value: number) => format(value)}
+                                        wrapperStyle={{ zIndex: 20 }}
+                                        contentStyle={{
+                                            backgroundColor: 'var(--card-bg)',
+                                            border: '1px solid var(--card-border)',
+                                            borderRadius: '0.5rem',
+                                            color: 'var(--text-primary)',
+                                            boxShadow: '0 8px 20px rgba(0, 0, 0, 0.25)'
+                                        }}
+                                        itemStyle={{ color: 'var(--text-primary)' }}
+                                    />
+                                </PieChart>
+                            </ResponsiveContainer>
+
+                            <div className={styles.centerOverlay}>
+                                <span className={styles.centerLabel}>
+                                    {selectedEntry ? selectedEntry.name : 'Total Allocation'}
+                                </span>
+                                <span className={styles.centerValue}>
+                                    {format(selectedEntry ? selectedEntry.value : totalValue)}
+                                </span>
+                                <span className={styles.centerSublabel}>
+                                    {selectedEntry
+                                        ? `${selectedPercent.toFixed(1)}% of Portfolio`
+                                        : `${chartData.length} ${chartData.length === 1 ? 'Category' : 'Categories'}`}
+                                </span>
+                            </div>
+                        </div>
+
+                        <p className={styles.interactionHint}>
+                            Click any slice or category row to filter holdings
+                            {badgeText ? ' & inspect X-Ray decomposition' : ''}.
+                        </p>
+                    </div>
+
+                    {/* Right Pane: Ranked Breakdown List (Zero Scrollbars) */}
+                    <div className={styles.breakdownPane}>
+                        <ul className={styles.breakdownList} aria-label={`${title} categories`}>
+                            {visibleItems.map((entry, index) => {
+                                const isSelected = selectedName === entry.name;
+                                const isDimmed = hasActiveSelection && !isSelected;
+                                const percent = totalValue > 0 ? (entry.value / totalValue) * 100 : 0;
+                                const color = COLORS[index % COLORS.length];
+
+                                return (
+                                    <li key={entry.name} className={styles.breakdownListItem}>
+                                        <button
+                                            type="button"
+                                            aria-pressed={isSelected}
+                                            className={`${styles.breakdownRow} ${isSelected ? styles.rowSelected : ''} ${isDimmed ? styles.rowDimmed : ''}`}
+                                            onClick={(e) => handleSelect(entry.name, e)}
+                                        >
+                                            <span className={styles.rowIdentity}>
+                                                <span
+                                                    className={styles.legendColor}
+                                                    style={{ backgroundColor: color }}
+                                                    aria-hidden="true"
+                                                />
+                                                <span className={styles.categoryName}>
+                                                    <span>{entry.name}</span>
+                                                </span>
+                                            </span>
+
+                                            <span className={styles.barTrack} aria-hidden="true">
+                                                <span
+                                                    className={styles.barFill}
+                                                    style={{
+                                                        width: `${Math.max(percent, 1.5)}%`,
+                                                        backgroundColor: color
+                                                    }}
+                                                />
+                                            </span>
+
+                                            <span className={styles.rowMetrics}>
+                                                <span className={styles.rowValue}>{format(entry.value)}</span>
+                                                <span className={styles.rowPercent}>{percent.toFixed(1)}%</span>
+                                            </span>
+                                        </button>
+                                    </li>
+                                );
+                            })}
+                        </ul>
+
+                        {chartData.length > MAX_VISIBLE_CATEGORIES && !isAutoExpanded && (
+                            <button
+                                type="button"
+                                className={styles.showMoreBtn}
+                                onClick={() => setShowAllCategories(prev => !prev)}
+                                aria-expanded={showAllCategories}
+                            >
+                                {showAllCategories ? (
+                                    <>
+                                        Show fewer
+                                        <ChevronUp size={15} aria-hidden="true" />
+                                    </>
+                                ) : (
+                                    <>
+                                        Show all {chartData.length} categories (+{chartData.length - MAX_VISIBLE_CATEGORIES} more)
+                                        <ChevronDown size={15} aria-hidden="true" />
+                                    </>
+                                )}
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+        </section>
     );
 }

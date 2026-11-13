@@ -1,7 +1,7 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import ConstituentsGrid from '@/components/ConstituentsGrid';
@@ -17,7 +17,7 @@ import {
     SectorBreakdown,
     CountryBreakdown
 } from '@/lib/look-through';
-import { Sparkles, Building2, Layers } from 'lucide-react';
+import { PieChart, Globe, Layers, Landmark, Wallet } from 'lucide-react';
 
 interface PortfolioSummary {
     allocationByType: { name: string; value: number }[];
@@ -31,7 +31,87 @@ interface PortfolioSummary {
     constituents: any[];
 }
 
-type ViewMode = 'xray' | 'structure' | 'all';
+type ActiveDimension = 'sector' | 'country' | 'type' | 'accountType' | 'account';
+
+interface InteractiveFilters {
+    investmentType: string | null;
+    accountType: string | null;
+    accountName: string | null;
+    sector: string | null;
+    country: string | null;
+}
+
+const EMPTY_INTERACTIVE_FILTERS: InteractiveFilters = {
+    investmentType: null,
+    accountType: null,
+    accountName: null,
+    sector: null,
+    country: null
+};
+
+const QUANTITY_EPSILON = 0.000001;
+const VALUE_EPSILON = 0.01;
+
+const DIMENSIONS: ReadonlyArray<{
+    id: ActiveDimension;
+    label: string;
+    title: string;
+    subtitle: string;
+    badgeText?: string;
+    filterKey: keyof InteractiveFilters;
+    icon: React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>;
+}> = [
+    {
+        id: 'sector',
+        label: 'Sector',
+        title: 'By Sector',
+        subtitle: 'Look-through sector exposure combining direct holdings and underlying ETF weights.',
+        badgeText: 'Look-Through X-Ray',
+        filterKey: 'sector',
+        icon: PieChart
+    },
+    {
+        id: 'country',
+        label: 'Geography',
+        title: 'By Geography',
+        subtitle: 'Country exposure combining direct holdings and underlying ETF geographic weights.',
+        badgeText: 'Look-Through X-Ray',
+        filterKey: 'country',
+        icon: Globe
+    },
+    {
+        id: 'type',
+        label: 'Asset Type',
+        title: 'By Investment Type',
+        subtitle: 'Distribution across asset classes such as ETFs, equities, cash, and crypto.',
+        filterKey: 'investmentType',
+        icon: Layers
+    },
+    {
+        id: 'accountType',
+        label: 'Account Type',
+        title: 'By Account Type',
+        subtitle: 'Allocation grouped by tax-advantaged and taxable account categories.',
+        filterKey: 'accountType',
+        icon: Landmark
+    },
+    {
+        id: 'account',
+        label: 'Account',
+        title: 'By Account & Platform',
+        subtitle: 'Portfolio distribution across your individual brokerage accounts.',
+        filterKey: 'accountName',
+        icon: Wallet
+    }
+];
+
+const FILTER_BADGE_LABELS: ReadonlyArray<{ key: keyof InteractiveFilters; label: string }> = [
+    { key: 'sector', label: 'Sector' },
+    { key: 'country', label: 'Geography' },
+    { key: 'investmentType', label: 'Asset Type' },
+    { key: 'accountType', label: 'Account Type' },
+    { key: 'accountName', label: 'Account' }
+];
 
 export default function AnalysisPage() {
     const [summary, setSummary] = useState<PortfolioSummary | null>(() => {
@@ -43,26 +123,15 @@ export default function AnalysisPage() {
             return null;
         }
     });
-    const [viewMode, setViewMode] = useState<ViewMode>('xray');
+    const [activeDimension, setActiveDimension] = useState<ActiveDimension>('sector');
+    const tabRefs = useRef<Partial<Record<ActiveDimension, HTMLButtonElement | null>>>({});
     const { currency, format } = useCurrency();
 
     // Global Filters (Layer 1)
     const [globalFilters, setGlobalFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('allocation_filters', null);
 
     // Interactive Chart Filters (Layer 2)
-    const [interactiveFilters, setInteractiveFilters] = useState<{
-        investmentType: string | null;
-        accountType: string | null;
-        accountName: string | null;
-        sector: string | null;
-        country: string | null;
-    }>({
-        investmentType: null,
-        accountType: null,
-        accountName: null,
-        sector: null,
-        country: null
-    });
+    const [interactiveFilters, setInteractiveFilters] = useState<InteractiveFilters>(EMPTY_INTERACTIVE_FILTERS);
 
     useEffect(() => {
         fetch(`/api/portfolio?currency=${currency}`)
@@ -78,49 +147,42 @@ export default function AnalysisPage() {
             .catch(err => console.error('Failed to fetch portfolio', err));
     }, [currency]);
 
-    const handleInvestmentSelect = (type: string | null, e?: React.MouseEvent) => {
+    const handleDimensionSelect = (filterKey: keyof InteractiveFilters, value: string | null, e?: React.MouseEvent) => {
+        if (value === null) {
+            setInteractiveFilters(prev => ({ ...prev, [filterKey]: null }));
+            return;
+        }
         const isMulti = e?.ctrlKey || e?.metaKey;
         setInteractiveFilters(prev => {
-            const next = isMulti ? { ...prev } : { investmentType: null, accountType: null, accountName: null, sector: null, country: null };
-            next.investmentType = type === prev.investmentType ? null : type;
+            const next = isMulti ? { ...prev } : { ...EMPTY_INTERACTIVE_FILTERS };
+            next[filterKey] = value === prev[filterKey] ? null : value;
             return next;
         });
     };
 
-    const handleAccountTypeSelect = (type: string | null, e?: React.MouseEvent) => {
-        const isMulti = e?.ctrlKey || e?.metaKey;
-        setInteractiveFilters(prev => {
-            const next = isMulti ? { ...prev } : { investmentType: null, accountType: null, accountName: null, sector: null, country: null };
-            next.accountType = type === prev.accountType ? null : type;
-            return next;
-        });
+    const selectDimensionTab = (dimId: ActiveDimension, focusTab = false) => {
+        setActiveDimension(dimId);
+        const tabEl = tabRefs.current[dimId];
+        if (tabEl) {
+            if (focusTab) tabEl.focus();
+            tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
     };
 
-    const handleAccountNameSelect = (name: string | null, e?: React.MouseEvent) => {
-        const isMulti = e?.ctrlKey || e?.metaKey;
-        setInteractiveFilters(prev => {
-            const next = isMulti ? { ...prev } : { investmentType: null, accountType: null, accountName: null, sector: null, country: null };
-            next.accountName = name === prev.accountName ? null : name;
-            return next;
-        });
-    };
+    const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        const currentIndex = DIMENSIONS.findIndex(d => d.id === activeDimension);
+        if (currentIndex === -1) return;
 
-    const handleSectorSelect = (sector: string | null, e?: React.MouseEvent) => {
-        const isMulti = e?.ctrlKey || e?.metaKey;
-        setInteractiveFilters(prev => {
-            const next = isMulti ? { ...prev } : { investmentType: null, accountType: null, accountName: null, sector: null, country: null };
-            next.sector = sector === prev.sector ? null : sector;
-            return next;
-        });
-    };
+        let nextIndex: number | null = null;
+        if (e.key === 'ArrowRight') nextIndex = (currentIndex + 1) % DIMENSIONS.length;
+        else if (e.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + DIMENSIONS.length) % DIMENSIONS.length;
+        else if (e.key === 'Home') nextIndex = 0;
+        else if (e.key === 'End') nextIndex = DIMENSIONS.length - 1;
 
-    const handleCountrySelect = (country: string | null, e?: React.MouseEvent) => {
-        const isMulti = e?.ctrlKey || e?.metaKey;
-        setInteractiveFilters(prev => {
-            const next = isMulti ? { ...prev } : { investmentType: null, accountType: null, accountName: null, sector: null, country: null };
-            next.country = country === prev.country ? null : country;
-            return next;
-        });
+        if (nextIndex !== null) {
+            e.preventDefault();
+            selectDimensionTab(DIMENSIONS[nextIndex].id, true);
+        }
     };
 
     // --- Layer 1: Global Filter Processing ---
@@ -207,13 +269,18 @@ export default function AnalysisPage() {
             .filter(Boolean);
     }, [summary, globalFilters]);
 
-    // --- Dynamic Allocations for Charts (Based on Layer 1) ---
+    // --- Dynamic Allocations for Charts (Based on Layer 1 Active Holdings) ---
     const chartAllocations = useMemo(() => {
         const byType = new Map<string, number>();
         const byAccountType = new Map<string, number>();
         const byAccount = new Map<string, number>();
 
-        globalConstituents.forEach((item: any) => {
+        const activeChartConstituents = globalConstituents.filter((item: any) => {
+            const targetValue = item.valueTarget ?? (item.value * (item.conversionRate || 1));
+            return item.quantity >= QUANTITY_EPSILON && targetValue >= VALUE_EPSILON;
+        });
+
+        activeChartConstituents.forEach((item: any) => {
             const itemTargetValue = item.valueTarget ?? (item.value * (item.conversionRate || 1));
             byType.set(item.type, (byType.get(item.type) || 0) + itemTargetValue);
 
@@ -221,6 +288,7 @@ export default function AnalysisPage() {
                 const conversionRate = item.conversionRate || 1;
                 Object.values(item.accountsBreakdown).forEach((acc: any) => {
                     const targetValue = (acc.valueNative ?? 0) * conversionRate;
+                    if (targetValue < VALUE_EPSILON) return;
                     byAccountType.set(acc.accountType, (byAccountType.get(acc.accountType) || 0) + targetValue);
                     const compositeKey = `${acc.name} - ${acc.platformName}`;
                     byAccount.set(compositeKey, (byAccount.get(compositeKey) || 0) + targetValue);
@@ -228,7 +296,7 @@ export default function AnalysisPage() {
             }
         });
 
-        const lookThroughConstituents = globalConstituents.map((item: any) => ({
+        const lookThroughConstituents = activeChartConstituents.map((item: any) => ({
             symbol: item.symbol,
             name: item.name,
             type: item.type,
@@ -255,20 +323,29 @@ export default function AnalysisPage() {
         };
     }, [globalConstituents]);
 
-    // Currently focused sector for detailed Look-Through Breakdown Card
-    const focusedSectorName = interactiveFilters.sector || chartAllocations.allocationBySector[0]?.name || null;
+    // On-demand X-Ray breakdowns (only resolved when user selects a Sector or Country)
     const activeSectorBreakdown = useMemo(() => {
-        if (!focusedSectorName) return null;
-        return chartAllocations.sectorLookThrough.find(s => s.name === focusedSectorName) || null;
-    }, [focusedSectorName, chartAllocations.sectorLookThrough]);
+        if (!interactiveFilters.sector) return null;
+        return chartAllocations.sectorLookThrough.find(s => s.name === interactiveFilters.sector) || null;
+    }, [interactiveFilters.sector, chartAllocations.sectorLookThrough]);
+
+    const activeCountryBreakdown = useMemo(() => {
+        if (!interactiveFilters.country) return null;
+        return chartAllocations.countryLookThrough.find(c => c.name === interactiveFilters.country) || null;
+    }, [interactiveFilters.country, chartAllocations.countryLookThrough]);
 
     // --- Layer 2: Interactive Filter Processing (For Table) ---
     const finalConstituents = useMemo(() => {
         return globalConstituents
             .filter((item: any) => {
                 if (interactiveFilters.investmentType && item.type !== interactiveFilters.investmentType) return false;
-                if (interactiveFilters.sector && !constituentHasSectorExposure(item, interactiveFilters.sector)) return false;
-                if (interactiveFilters.country && !constituentHasCountryExposure(item, interactiveFilters.country)) return false;
+                if (interactiveFilters.sector || interactiveFilters.country) {
+                    const targetValue = item.valueTarget ?? (item.value * (item.conversionRate || 1));
+                    if (item.quantity < QUANTITY_EPSILON || targetValue < VALUE_EPSILON) return false;
+                    const lookThroughItem = { ...item, value: targetValue };
+                    if (interactiveFilters.sector && !constituentHasSectorExposure(lookThroughItem, interactiveFilters.sector)) return false;
+                    if (interactiveFilters.country && !constituentHasCountryExposure(lookThroughItem, interactiveFilters.country)) return false;
+                }
 
                 let matchesInteractiveAccount = true;
                 if (interactiveFilters.accountType || interactiveFilters.accountName) {
@@ -365,11 +442,58 @@ export default function AnalysisPage() {
 
     if (!summary) return <AnalysisSkeleton />;
 
-    const hasInteractiveFilters = interactiveFilters.investmentType ||
-        interactiveFilters.accountType ||
-        interactiveFilters.accountName ||
-        interactiveFilters.sector ||
-        interactiveFilters.country;
+    const dimensionDataMap: Record<ActiveDimension, { name: string; value: number }[]> = {
+        sector: chartAllocations.allocationBySector,
+        country: chartAllocations.allocationByCountry,
+        type: chartAllocations.allocationByType,
+        accountType: chartAllocations.allocationByAccountType,
+        account: chartAllocations.allocationByAccount
+    };
+
+    const currentDimConfig = DIMENSIONS.find(d => d.id === activeDimension) ?? DIMENSIONS[0];
+    const activeFilterBadges = FILTER_BADGE_LABELS.filter(b => Boolean(interactiveFilters[b.key]));
+
+    const showXrayPanel =
+        (activeDimension === 'sector' && activeSectorBreakdown) ||
+        (activeDimension === 'country' && activeCountryBreakdown);
+
+    const activeXrayBreakdown = activeDimension === 'country' ? activeCountryBreakdown : activeSectorBreakdown;
+    const activeXrayLabel = activeDimension === 'country' ? 'Country' : 'Sector';
+
+    const dimensionTabs = (
+        <div
+            role="tablist"
+            aria-label="Allocation dimensions"
+            className={styles.tablist}
+            onKeyDown={handleTabKeyDown}
+        >
+            {DIMENSIONS.map(dim => {
+                const isSelected = activeDimension === dim.id;
+                const Icon = dim.icon;
+                const hasActiveFilter = Boolean(interactiveFilters[dim.filterKey]);
+
+                return (
+                    <button
+                        key={dim.id}
+                        ref={el => {
+                            tabRefs.current[dim.id] = el;
+                        }}
+                        type="button"
+                        role="tab"
+                        id={`allocation-tab-${dim.id}`}
+                        aria-selected={isSelected}
+                        tabIndex={isSelected ? 0 : -1}
+                        className={styles.tabBtn}
+                        onClick={() => selectDimensionTab(dim.id)}
+                    >
+                        <Icon size={15} aria-hidden={true} />
+                        <span>{dim.label}</span>
+                        {hasActiveFilter && <span className={styles.tabFilterDot} aria-hidden="true" />}
+                    </button>
+                );
+            })}
+        </div>
+    );
 
     return (
         <div className={styles.container}>
@@ -378,7 +502,7 @@ export default function AnalysisPage() {
                     <div>
                         <h1 className={styles.title}>Portfolio Analysis</h1>
                         <p className={styles.subtitle}>
-                            Deep dive into your asset allocation, ETF look-through decomposition, and performance metrics.
+                            Explore asset allocation across dimensions, inspect ETF look-through exposure, and track position performance.
                         </p>
                     </div>
                     {isFiltersLoaded && (
@@ -386,147 +510,66 @@ export default function AnalysisPage() {
                     )}
                 </div>
 
-                {/* View Switcher Controls */}
-                <div className={styles.viewSwitcher}>
-                    <button
-                        type="button"
-                        className={`${styles.viewBtn} ${viewMode === 'xray' ? styles.viewBtnActive : ''}`}
-                        onClick={() => setViewMode('xray')}
-                    >
-                        <Sparkles size={15} />
-                        <span className={styles.btnLabelDesktop}>Macro X-Ray (Sectors & Geography)</span>
-                        <span className={styles.btnLabelMobile}>Macro X-Ray</span>
-                    </button>
-                    <button
-                        type="button"
-                        className={`${styles.viewBtn} ${viewMode === 'structure' ? styles.viewBtnActive : ''}`}
-                        onClick={() => setViewMode('structure')}
-                    >
-                        <Building2 size={15} />
-                        <span className={styles.btnLabelDesktop}>Structure & Accounts</span>
-                        <span className={styles.btnLabelMobile}>Structure</span>
-                    </button>
-                    <button
-                        type="button"
-                        className={`${styles.viewBtn} ${viewMode === 'all' ? styles.viewBtnActive : ''}`}
-                        onClick={() => setViewMode('all')}
-                    >
-                        <Layers size={15} />
-                        <span className={styles.btnLabelDesktop}>All Dimensions</span>
-                        <span className={styles.btnLabelMobile}>All</span>
-                    </button>
-                </div>
-
-                {hasInteractiveFilters && (
+                {activeFilterBadges.length > 0 && (
                     <div className={styles.filterBadges}>
-                        {interactiveFilters.sector && (
-                            <span className={styles.badge}>
-                                Sector: {interactiveFilters.sector}
-                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, sector: null }))}>&times;</button>
+                        {activeFilterBadges.map(({ key, label }) => (
+                            <span key={key} className={styles.badge}>
+                                <span className={styles.badgeLabel}>{label}: {interactiveFilters[key]}</span>
+                                <button
+                                    type="button"
+                                    aria-label={`Remove ${label} filter`}
+                                    onClick={() => setInteractiveFilters(prev => ({ ...prev, [key]: null }))}
+                                >
+                                    &times;
+                                </button>
                             </span>
-                        )}
-                        {interactiveFilters.country && (
-                            <span className={styles.badge}>
-                                Geography: {interactiveFilters.country}
-                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, country: null }))}>&times;</button>
-                            </span>
-                        )}
-                        {interactiveFilters.investmentType && (
-                            <span className={styles.badge}>
-                                Type: {interactiveFilters.investmentType}
-                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, investmentType: null }))}>&times;</button>
-                            </span>
-                        )}
-                        {interactiveFilters.accountType && (
-                            <span className={styles.badge}>
-                                Account Type: {interactiveFilters.accountType}
-                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, accountType: null }))}>&times;</button>
-                            </span>
-                        )}
-                        {interactiveFilters.accountName && (
-                            <span className={styles.badge}>
-                                Account: {interactiveFilters.accountName}
-                                <button type="button" onClick={() => setInteractiveFilters(prev => ({ ...prev, accountName: null }))}>&times;</button>
-                            </span>
-                        )}
+                        ))}
                         <button
                             type="button"
-                            onClick={() => setInteractiveFilters({ investmentType: null, accountType: null, accountName: null, sector: null, country: null })}
+                            onClick={() => setInteractiveFilters(EMPTY_INTERACTIVE_FILTERS)}
                             className={styles.clearBtn}
                         >
-                            Clear Chart Filters
+                            Clear Filters
                         </button>
                     </div>
                 )}
             </header>
 
             <div className={styles.analysisGrid}>
-                {/* Mode 1: Macro X-Ray (Look-Through Sectors & Geography) */}
-                {(viewMode === 'xray' || viewMode === 'all') && (
-                    <div className={styles.chartsRow}>
+                <div className={styles.explorerCard}>
+                    <div className={styles.tablistBar}>
+                        {dimensionTabs}
+                    </div>
+                    <div
+                        role="tabpanel"
+                        aria-labelledby={`allocation-tab-${activeDimension}`}
+                        className={styles.tabpanel}
+                    >
                         <AllocationChart
-                            title="By Sector (Look-Through X-Ray)"
-                            data={chartAllocations.allocationBySector}
-                            onSelect={handleSectorSelect}
-                            selectedName={interactiveFilters.sector}
-                            isPreConverted={true}
-                        />
-                        <AllocationChart
-                            title="By Geography (Country Exposure)"
-                            data={chartAllocations.allocationByCountry}
-                            onSelect={handleCountrySelect}
-                            selectedName={interactiveFilters.country}
-                            isPreConverted={true}
-                        />
-                        <AllocationChart
-                            title="By Investment Type"
-                            data={chartAllocations.allocationByType}
-                            onSelect={handleInvestmentSelect}
-                            selectedName={interactiveFilters.investmentType}
+                            key={activeDimension}
+                            title={currentDimConfig.title}
+                            subtitle={currentDimConfig.subtitle}
+                            badgeText={currentDimConfig.badgeText}
+                            embedded={true}
+                            data={dimensionDataMap[activeDimension]}
+                            onSelect={(value, e) => handleDimensionSelect(currentDimConfig.filterKey, value, e)}
+                            selectedName={interactiveFilters[currentDimConfig.filterKey]}
                             isPreConverted={true}
                         />
                     </div>
-                )}
+                </div>
 
-                {/* Mode 2: Structure & Accounts */}
-                {(viewMode === 'structure' || viewMode === 'all') && (
-                    <div className={styles.chartsRow}>
-                        {viewMode === 'structure' && (
-                            <AllocationChart
-                                title="By Investment Type"
-                                data={chartAllocations.allocationByType}
-                                onSelect={handleInvestmentSelect}
-                                selectedName={interactiveFilters.investmentType}
-                                isPreConverted={true}
-                            />
-                        )}
-                        <AllocationChart
-                            title="By Account Type"
-                            data={chartAllocations.allocationByAccountType}
-                            onSelect={handleAccountTypeSelect}
-                            selectedName={interactiveFilters.accountType}
-                            isPreConverted={true}
-                        />
-                        <AllocationChart
-                            title="By Account & Platform"
-                            data={chartAllocations.allocationByAccount}
-                            onSelect={handleAccountNameSelect}
-                            selectedName={interactiveFilters.accountName}
-                            isPreConverted={true}
-                        />
-                    </div>
-                )}
-
-                {/* Interactive Sector Decomposition Card (Portfolio X-Ray) */}
-                {(viewMode === 'xray' || viewMode === 'all') && activeSectorBreakdown && (
+                {/* On-Demand Portfolio X-Ray Drill-Down Panel */}
+                {showXrayPanel && activeXrayBreakdown && (
                     <SectorBreakdownCard
-                        breakdown={activeSectorBreakdown}
-                        sectors={chartAllocations.allocationBySector}
-                        selectedSector={interactiveFilters.sector}
-                        onSelectSector={(sectorName) => setInteractiveFilters(prev => ({
-                            ...prev,
-                            sector: sectorName
-                        }))}
+                        breakdown={activeXrayBreakdown}
+                        dimensionLabel={activeXrayLabel}
+                        onClose={() =>
+                            setInteractiveFilters(prev => ({
+                                ...prev,
+                                [activeDimension === 'country' ? 'country' : 'sector']: null
+                            }))
+                        }
                         format={format}
                     />
                 )}

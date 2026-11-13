@@ -1,30 +1,30 @@
 'use client';
 
 import React from 'react';
+import { PieChart, X } from 'lucide-react';
+import { SectorBreakdown, CountryBreakdown } from '@/lib/look-through';
 import styles from './SectorBreakdownCard.module.css';
-import { SectorBreakdown } from '@/lib/look-through';
-import { PieChart } from 'lucide-react';
 
 interface SectorBreakdownCardProps {
-    breakdown: SectorBreakdown;
-    sectors: { name: string; value: number }[];
-    selectedSector: string | null;
-    onSelectSector: (sectorName: string | null) => void;
+    breakdown: SectorBreakdown | CountryBreakdown;
+    dimensionLabel?: 'Sector' | 'Country';
+    onClose: () => void;
     format: (val: number) => string;
 }
 
 export default function SectorBreakdownCard({
     breakdown,
-    sectors,
-    selectedSector,
-    onSelectSector,
+    dimensionLabel = 'Sector',
+    onClose,
     format
 }: SectorBreakdownCardProps) {
-    const directValue = breakdown.contributors
+    const visibleContributors = breakdown.contributors.filter(c => c.allocatedValue >= 0.01);
+
+    const directValue = visibleContributors
         .filter(c => !c.isLookThrough)
         .reduce((sum, c) => sum + c.allocatedValue, 0);
 
-    const lookThroughValue = breakdown.contributors
+    const lookThroughValue = visibleContributors
         .filter(c => c.isLookThrough)
         .reduce((sum, c) => sum + c.allocatedValue, 0);
 
@@ -33,95 +33,93 @@ export default function SectorBreakdownCard({
     const lookThroughPercent = totalValue > 0 ? (lookThroughValue / totalValue) * 100 : 0;
 
     return (
-        <div className={styles.card}>
+        <section
+            className={styles.card}
+            aria-label={`${breakdown.name} ${dimensionLabel} X-Ray Decomposition`}
+        >
             <div className={styles.header}>
                 <div className={styles.titleGroup}>
                     <span className={styles.badge}>
-                        <PieChart size={12} />
-                        Portfolio X-Ray Decomposition
+                        <PieChart size={12} aria-hidden="true" />
+                        Portfolio X-Ray Decomposition &bull; {dimensionLabel}
                     </span>
-                    <h2 className={styles.title}>{breakdown.name}</h2>
+                    <div className={styles.titleLine}>
+                        <h2 className={styles.title}>{breakdown.name}</h2>
+                        <span className={styles.inlineMetric}>
+                            {format(breakdown.value)}
+                            <span className={styles.inlinePercent}>
+                                &bull; {breakdown.percentage.toFixed(1)}% of Portfolio
+                            </span>
+                        </span>
+                    </div>
                     <p className={styles.subtitle}>
-                        Aggregate exposure across direct equities and underlying ETF holdings.
+                        Aggregate exposure across direct holdings and underlying ETF look-through weights.
                     </p>
                 </div>
-                <div className={styles.metric}>
-                    <div className={styles.metricValue}>{format(breakdown.value)}</div>
-                    <div className={styles.metricPercent}>
-                        {breakdown.percentage.toFixed(1)}% of Portfolio
-                    </div>
-                </div>
+
+                <button
+                    type="button"
+                    className={styles.closeBtn}
+                    onClick={onClose}
+                    aria-label="Close X-Ray breakdown"
+                >
+                    <X size={16} aria-hidden="true" />
+                    <span>Close</span>
+                </button>
             </div>
 
-            {/* Quick Sector Selector Pills */}
-            <div className={styles.sectorPills}>
-                {sectors.map(s => {
-                    const isActive = s.name === breakdown.name;
-                    return (
-                        <button
-                            key={s.name}
-                            type="button"
-                            className={`${styles.sectorPill} ${isActive ? styles.sectorPillActive : ''}`}
-                            onClick={() => onSelectSector(isActive && selectedSector ? null : s.name)}
-                        >
-                            {s.name} ({format(s.value)})
-                        </button>
-                    );
-                })}
-            </div>
-
-            {/* Direct Stock vs ETF Decomposition Split */}
-            <div className={styles.splitOverview}>
-                <div className={styles.splitCard}>
-                    <span className={styles.splitLabel}>
-                        <span className={styles.dotDirect} />
-                        Direct Stock Holdings
+            {/* Compact Single-Row Direct vs ETF Look-Through Summary Strip */}
+            <div className={styles.summaryStrip}>
+                <div className={styles.summaryItem}>
+                    <span className={styles.summaryLabel}>
+                        <span className={styles.dotDirect} aria-hidden="true" />
+                        Direct Holdings
                     </span>
-                    <span className={styles.splitValue}>{format(directValue)}</span>
-                    <span className={styles.splitSubtext}>{directPercent.toFixed(1)}% of {breakdown.name}</span>
-                </div>
-
-                <div className={styles.splitCard}>
-                    <span className={styles.splitLabel}>
-                        <span className={styles.dotLookThrough} />
-                        ETF Look-Through Decomposition
+                    <span className={styles.summaryValue}>
+                        {format(directValue)}
+                        <span className={styles.summaryPct}>({directPercent.toFixed(1)}%)</span>
                     </span>
-                    <span className={styles.splitValue}>{format(lookThroughValue)}</span>
-                    <span className={styles.splitSubtext}>{lookThroughPercent.toFixed(1)}% of {breakdown.name}</span>
                 </div>
-            </div>
 
-            {/* Dual Progress Bar */}
-            <div className={styles.splitProgressContainer}>
-                <div className={styles.splitProgressBar}>
-                    <div className={styles.barDirect} style={{ width: `${directPercent}%` }} />
-                    <div className={styles.barLookThrough} style={{ width: `${lookThroughPercent}%` }} />
+                <div className={styles.dualBarWrapper} aria-hidden="true">
+                    <div className={styles.splitProgressBar}>
+                        <div className={styles.barDirect} style={{ width: `${directPercent}%` }} />
+                        <div className={styles.barLookThrough} style={{ width: `${lookThroughPercent}%` }} />
+                    </div>
                 </div>
-                <div className={styles.splitLegend}>
-                    <div className={styles.splitLegendItem}>
-                        <span className={styles.dotDirect} /> Direct Equities ({directPercent.toFixed(1)}%)
-                    </div>
-                    <div className={styles.splitLegendItem}>
-                        <span className={styles.dotLookThrough} /> ETF Look-Through ({lookThroughPercent.toFixed(1)}%)
-                    </div>
+
+                <div className={`${styles.summaryItem} ${styles.summaryItemRight}`}>
+                    <span className={styles.summaryLabel}>
+                        <span className={styles.dotLookThrough} aria-hidden="true" />
+                        ETF Look-Through
+                    </span>
+                    <span className={styles.summaryValue}>
+                        {format(lookThroughValue)}
+                        <span className={styles.summaryPct}>({lookThroughPercent.toFixed(1)}%)</span>
+                    </span>
                 </div>
             </div>
 
             {/* Desktop Table View */}
-            <div className={styles.desktopTableWrapper}>
+            <div
+                tabIndex={0}
+                role="region"
+                aria-label={`${breakdown.name} contributors`}
+                className={styles.desktopTableWrapper}
+            >
                 <table className={styles.table}>
                     <thead>
                         <tr>
-                            <th>Holding</th>
-                            <th>Source Type</th>
-                            <th>Holding Value</th>
-                            <th>Weight In Holding</th>
-                            <th>Sector Exposure</th>
-                            <th>Share of Sector</th>
+                            <th scope="col">Holding</th>
+                            <th scope="col">Source</th>
+                            <th scope="col" className={styles.right}>Position Value</th>
+                            <th scope="col" className={styles.right}>Weight in Holding</th>
+                            <th scope="col" className={styles.right}>{dimensionLabel} Exposure</th>
+                            <th scope="col">Share of {dimensionLabel}</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {breakdown.contributors.map(contrib => (
+                        {visibleContributors.map(contrib => (
                             <tr key={contrib.symbol}>
                                 <td>
                                     <div className={styles.holdingSymbol}>{contrib.symbol}</div>
@@ -129,17 +127,19 @@ export default function SectorBreakdownCard({
                                 </td>
                                 <td>
                                     {contrib.isLookThrough ? (
-                                        <span className={styles.badgeETF}>ETF Decomposition</span>
+                                        <span className={styles.badgeETF}>ETF Look-Through</span>
                                     ) : (
-                                        <span className={styles.badgeDirect}>Direct Equity</span>
+                                        <span className={styles.badgeDirect}>Direct Holding</span>
                                     )}
                                 </td>
-                                <td>{format(contrib.holdingValue)}</td>
-                                <td>{(contrib.weightInHolding * 100).toFixed(1)}%</td>
-                                <td><strong>{format(contrib.allocatedValue)}</strong></td>
+                                <td className={styles.right}>{format(contrib.holdingValue)}</td>
+                                <td className={styles.right}>{(contrib.weightInHolding * 100).toFixed(1)}%</td>
+                                <td className={styles.right}>
+                                    <strong>{format(contrib.allocatedValue)}</strong>
+                                </td>
                                 <td>
                                     <div className={styles.shareCell}>
-                                        <div className={styles.shareBarBg}>
+                                        <div className={styles.shareBarBg} aria-hidden="true">
                                             <div
                                                 className={styles.shareBarFill}
                                                 style={{ width: `${Math.min(100, contrib.weightInSector)}%` }}
@@ -154,9 +154,9 @@ export default function SectorBreakdownCard({
                 </table>
             </div>
 
-            {/* Mobile Card List View (No Horizontal Table Overflow on Phones) */}
+            {/* Mobile Card List View */}
             <div className={styles.mobileCardsList}>
-                {breakdown.contributors.map(contrib => (
+                {visibleContributors.map(contrib => (
                     <div key={contrib.symbol} className={styles.mobileCard}>
                         <div className={styles.mobileCardHeader}>
                             <div className={styles.mobileCardTitle}>
@@ -166,21 +166,21 @@ export default function SectorBreakdownCard({
                             {contrib.isLookThrough ? (
                                 <span className={styles.badgeETF}>ETF Look-Through</span>
                             ) : (
-                                <span className={styles.badgeDirect}>Direct Stock</span>
+                                <span className={styles.badgeDirect}>Direct Holding</span>
                             )}
                         </div>
 
                         <div className={styles.mobileCardStats}>
                             <div>
-                                <div className={styles.mobileExposureLabel}>Effective Exposure</div>
+                                <div className={styles.mobileExposureLabel}>{dimensionLabel} Exposure</div>
                                 <div className={styles.mobileExposureValue}>{format(contrib.allocatedValue)}</div>
                             </div>
                             <span className={styles.mobileShareTag}>
-                                {contrib.weightInSector.toFixed(1)}% of Sector
+                                {contrib.weightInSector.toFixed(1)}% of {dimensionLabel}
                             </span>
                         </div>
 
-                        <div className={styles.shareBarBg}>
+                        <div className={styles.shareBarBg} aria-hidden="true">
                             <div
                                 className={styles.shareBarFill}
                                 style={{ width: `${Math.min(100, contrib.weightInSector)}%` }}
@@ -189,11 +189,11 @@ export default function SectorBreakdownCard({
 
                         <div className={styles.mobileCardMeta}>
                             <span>Position: {format(contrib.holdingValue)}</span>
-                            <span>Weight in Fund: {(contrib.weightInHolding * 100).toFixed(1)}%</span>
+                            <span>Weight: {(contrib.weightInHolding * 100).toFixed(1)}%</span>
                         </div>
                     </div>
                 ))}
             </div>
-        </div>
+        </section>
     );
 }
