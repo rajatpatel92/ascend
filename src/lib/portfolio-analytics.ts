@@ -278,7 +278,7 @@ export class PortfolioAnalytics {
         }
 
         const lookback = new Date(firstActivityDate);
-        lookback.setDate(lookback.getDate() - 7);
+        lookback.setDate(lookback.getDate() - 14);
         log(`[PortfolioAnalytics] Fetching Data from ${lookback.toISOString().split('T')[0]}`);
 
         const priceMaps: Record<string, Record<string, number>> = {};
@@ -363,16 +363,21 @@ export class PortfolioAnalytics {
 
         // 3. Replay Engine
         const dailyPerf: DailyPerformance[] = [];
+        const isIsoDateKey = (k: string) => /^\d{4}-\d{2}-\d{2}$/.test(k);
 
-        const currentDate = new Date(startDate);
+        const startIso = startDate.toISOString().split('T')[0];
         const endDate = new Date(); // To Today
+        const endIso = endDate.toISOString().split('T')[0];
+        const currentDate = new Date(`${startIso}T00:00:00.000Z`);
 
         let holdings: Record<string, number> = {};
         let units = 0;
         let nav = 100; // Start at 100
         let prevMarketValue = 0;
 
-        const initialActivities = activities.filter(a => new Date(a.date) < startDate);
+        const initialActivities = activities.filter(
+            a => new Date(a.date).toISOString().split('T')[0] < startIso
+        );
         holdings = this.computeHoldingsState(initialActivities);
 
         // Accumulate dividends from initial activities prior to startDate
@@ -390,7 +395,7 @@ export class PortfolioAnalytics {
                         fx = fxMap[d];
                     } else if (fxMap) {
                         // Find closest previous FX
-                        const dateKeys = Object.keys(fxMap).sort();
+                        const dateKeys = Object.keys(fxMap).filter(isIsoDateKey).sort();
                         let closestDate = null;
                         for (const dateKey of dateKeys) {
                             if (dateKey <= d) closestDate = dateKey;
@@ -413,13 +418,38 @@ export class PortfolioAnalytics {
         const lastKnownPrices: Record<string, number> = {};
         const lastKnownFx: Record<string, number> = {};
 
-        // Seed State
-        const startIso = startDate.toISOString().split('T')[0];
-
-        // Seed Prices
+        // Seed Prices using the closest available price on or before startIso so
+        // non-trading start dates (e.g. YTD Jan 1 or weekends) start with prior closing prices.
         Object.keys(priceMaps).forEach(sym => {
             const map = priceMaps[sym];
-            if (map[startIso]) lastKnownPrices[sym] = map[startIso];
+            // # Reason: cached market history may include summary keys ('1W', '1M', '1Y', 'YTD')
+            // alongside YYYY-MM-DD entries; filter strictly to ISO dates so sort order is chronological.
+            const dateKeys = Object.keys(map).filter(isIsoDateKey).sort();
+            let closestDate: string | null = null;
+            for (const d of dateKeys) {
+                if (d <= startIso && map[d] > 0) closestDate = d;
+                else if (d > startIso) break;
+            }
+            if (closestDate) {
+                lastKnownPrices[sym] = map[closestDate];
+            } else if ((holdings[sym] || 0) > 0) {
+                const firstValidDate = dateKeys.find(d => map[d] > 0);
+                if (firstValidDate) {
+                    lastKnownPrices[sym] = map[firstValidDate];
+                } else {
+                    const lastPreStartTrade = [...initialActivities]
+                        .reverse()
+                        .find(
+                            a =>
+                                a.investment.symbol === sym &&
+                                a.price > 0 &&
+                                !['DIVIDEND', 'TRANSFER_IN', 'TRANSFER_OUT'].includes(a.type)
+                        );
+                    if (lastPreStartTrade) {
+                        lastKnownPrices[sym] = lastPreStartTrade.price;
+                    }
+                }
+            }
         });
 
         // [FIX] Initialize FX Rates for the loop
@@ -427,24 +457,26 @@ export class PortfolioAnalytics {
         // rather than defaulting to 1.0 inside the loop, which causes massive drops.
         relevantCurrencies.forEach(c => {
             if (fxMaps[c]) {
-                const dateKeys = Object.keys(fxMaps[c]).sort();
+                const dateKeys = Object.keys(fxMaps[c]).filter(isIsoDateKey).sort();
                 // Find closest date <= startDate
                 // Since dateKeys are ISO strings, string comparison works for YYYY-MM-DD
-                const startStr = startDate.toISOString().split('T')[0];
                 let closestDate = null;
                 for (const d of dateKeys) {
-                    if (d <= startStr) closestDate = d;
-                    else break;
+                    if (d <= startIso && fxMaps[c][d] > 0) closestDate = d;
+                    else if (d > startIso) break;
                 }
                 // If found, seed it. Any later dates will update it in the loop.
                 // If not found (startDate is before any history?), we rely on the first available? 
                 // Or fallback to 1.0 (unavoidable if no history).
                 if (closestDate) {
                     lastKnownFx[c] = fxMaps[c][closestDate];
-                } else if (dateKeys.length > 0) {
+                } else {
                     // If no prior history, use the EARLIEST history available as the best guess
                     // This prevents 1.0 default if logic starts before data
-                    lastKnownFx[c] = fxMaps[c][dateKeys[0]];
+                    const firstValidDate = dateKeys.find(d => fxMaps[c][d] > 0);
+                    if (firstValidDate) {
+                        lastKnownFx[c] = fxMaps[c][firstValidDate];
+                    }
                 }
             }
         });
@@ -473,9 +505,9 @@ export class PortfolioAnalytics {
         if (prevMarketValue > 0) units = prevMarketValue / nav;
 
         // Iterate Day by Day
-        while (currentDate <= endDate) {
+        while (currentDate.toISOString().split('T')[0] <= endIso) {
             const dateStr = currentDate.toISOString().split('T')[0];
-            const isLastDay = dateStr === endDate.toISOString().split('T')[0];
+            const isLastDay = dateStr === endIso;
 
             // 1. Identify Activities ON this day
             // [FIX] STOCK SPLIT HANDLING
@@ -586,16 +618,16 @@ export class PortfolioAnalytics {
                 // causing a massive fake "inflow" equal to the entire position value.
                 let priceUpdated = false;
                 if (priceMaps[symbol]) {
-                    if (priceMaps[symbol][dateStr] !== undefined) {
+                    if (priceMaps[symbol][dateStr] !== undefined && priceMaps[symbol][dateStr] > 0) {
                         lastKnownPrices[symbol] = priceMaps[symbol][dateStr];
                         priceUpdated = true;
                     } else {
                         // Find closest previous price if today's is missing
-                        const dateKeys = Object.keys(priceMaps[symbol]).sort();
+                        const dateKeys = Object.keys(priceMaps[symbol]).filter(isIsoDateKey).sort();
                         let closestDate = null;
                         for (const d of dateKeys) {
-                            if (d <= dateStr) closestDate = d;
-                            else break;
+                            if (d <= dateStr && priceMaps[symbol][d] > 0) closestDate = d;
+                            else if (d > dateStr) break;
                         }
                         if (closestDate) {
                             lastKnownPrices[symbol] = priceMaps[symbol][closestDate];
@@ -619,16 +651,18 @@ export class PortfolioAnalytics {
             // Accumulate dividends
             accDividends += dailyDividends;
 
-            // Adjust passive MV to include the dividends received today for NAV calculation?
-            // "Price Return" usually ignores dividends. "Total Return" includes them.
-            // If we add dividends to 'passiveMV' effectively we simulate reinvesting them or just holding cash.
-            const adjustablePassiveMV = passiveMV + dailyDividends;
+            // Adjust passive MV to include the dividends received today for NAV calculation
+            // while excluding discoveryFlow (previously unpriced holding getting its first market price)
+            // so missing prior price history cannot cause an artificial NAV spike.
+            const adjustablePassiveMV = Math.max(0, passiveMV - discoveryFlow + dailyDividends);
 
             // [FIX] Epsilon Start Protection
             // Use a threshold (0.01) to avoid division by floating point dust (e.g. 1e-15)
             if (prevMarketValue > 0.01) {
-                const growth = adjustablePassiveMV / prevMarketValue;
-                nav = nav * growth;
+                if (discoveryFlow === 0 || passiveMV > discoveryFlow || dailyDividends > 0) {
+                    const growth = adjustablePassiveMV / prevMarketValue;
+                    nav = nav * growth;
+                }
             } else if (netFlow > 0 && nav === 100) {
                 // First deposit
                 nav = 100;
@@ -669,7 +703,7 @@ export class PortfolioAnalytics {
             });
 
             prevMarketValue = finalMV;
-            currentDate.setDate(currentDate.getDate() + 1);
+            currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
 
         // Process Benchmark (Normalize to 100)
@@ -680,6 +714,17 @@ export class PortfolioAnalytics {
         // So we keep benchmark raw.
         const benchHist = priceMaps[benchmarkSymbol] || {};
         let lastBenchVal = 0;
+        if (dailyPerf.length > 0) {
+            const firstPerfDate = dailyPerf[0].date;
+            const benchDates = Object.keys(benchHist).filter(isIsoDateKey).sort();
+            for (const d of benchDates) {
+                if (d <= firstPerfDate) {
+                    if (benchHist[d] > 0) lastBenchVal = benchHist[d];
+                } else {
+                    break;
+                }
+            }
+        }
 
         const benchmarkData = dailyPerf.map(d => {
             let val = benchHist[d.date];
@@ -728,16 +773,15 @@ export class PortfolioAnalytics {
 
         // Calculate Top/Bottom Performers (Personal ROI Impact over period)
         const performanceMap: { symbol: string, return: number }[] = [];
-        const endIso = endDate.toISOString().split('T')[0];
         const startHoldings = this.computeHoldingsState(initialActivities);
 
         const getClosestValue = (map: Record<string, number>, targetDate: string) => {
             if (!map) return 0;
-            const dates = Object.keys(map).sort();
+            const dates = Object.keys(map).filter(isIsoDateKey).sort();
             let closest = 0;
             for (const d of dates) {
-                if (d <= targetDate) closest = map[d];
-                else break;
+                if (d <= targetDate && map[d] > 0) closest = map[d];
+                else if (d > targetDate) break;
             }
             return closest;
         };
@@ -762,8 +806,8 @@ export class PortfolioAnalytics {
             const endValue = endQty * endPrice * endFx;
 
             const periodActivities = activities.filter(a => {
-                const d = new Date(a.date).getTime();
-                return d >= startDate.getTime() && d <= endDate.getTime() && a.investment.symbol === sym;
+                const aIso = new Date(a.date).toISOString().split('T')[0];
+                return aIso >= startIso && aIso <= endIso && a.investment.symbol === sym;
             });
 
             let totalBuys = 0;

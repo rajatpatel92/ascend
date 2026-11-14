@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
 import { requireAuth } from '@/lib/api-auth';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: Request) {
     const authResult = await requireAuth(req, ['ADMIN', 'EDITOR', 'VIEWER'], true);
     if (!authResult.authorized) return authResult.response;
@@ -12,8 +14,9 @@ export async function POST(req: Request) {
         const body = await req.json();
         const { timeRange, benchmarkSymbol, filters } = body;
 
-        // Determine Start Date
-        let startDate = new Date();
+        // Determine Start Date using UTC midnight so ISO date partitioning stays exact
+        const now = new Date();
+        let startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
         if (timeRange === 'ALL') {
             const firstActivity = await prisma.activity.findFirst({
                 orderBy: { date: 'asc' },
@@ -22,18 +25,18 @@ export async function POST(req: Request) {
             if (firstActivity) {
                 startDate = new Date(firstActivity.date);
             } else {
-                startDate.setFullYear(startDate.getFullYear() - 1); // Default if no data
+                startDate.setUTCFullYear(startDate.getUTCFullYear() - 1); // Default if no data
             }
         } else {
             switch (timeRange) {
-                case '1M': startDate.setMonth(startDate.getMonth() - 1); break;
-                case '6M': startDate.setMonth(startDate.getMonth() - 6); break;
-                case 'YTD': startDate.setMonth(0, 1); break;
-                case '1Y': startDate.setFullYear(startDate.getFullYear() - 1); break;
-                case '2Y': startDate.setFullYear(startDate.getFullYear() - 2); break;
-                case '3Y': startDate.setFullYear(startDate.getFullYear() - 3); break;
-                case '5Y': startDate.setFullYear(startDate.getFullYear() - 5); break;
-                default: startDate.setFullYear(startDate.getFullYear() - 1);
+                case '1M': startDate.setUTCMonth(startDate.getUTCMonth() - 1); break;
+                case '6M': startDate.setUTCMonth(startDate.getUTCMonth() - 6); break;
+                case 'YTD': startDate.setUTCMonth(0, 1); break;
+                case '1Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 1); break;
+                case '2Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 2); break;
+                case '3Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 3); break;
+                case '5Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 5); break;
+                default: startDate.setUTCFullYear(startDate.getUTCFullYear() - 1);
             }
         }
 

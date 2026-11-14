@@ -257,4 +257,182 @@ test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
         assert.ok(debugDividendLog);
         assert.ok(debugDividendLog.includes('32.5'));
     });
+
+    await t.test('seeds prior closing prices on non-trading startDate and ignores summary keys', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'AAPL') {
+                    return {
+                        '1M': 0,
+                        '1W': 195,
+                        'YTD': 0,
+                        '2025-12-31': 200,
+                        // '2026-01-01' omitted (market closed on New Year's Day)
+                        '2026-01-02': 202,
+                    };
+                }
+                if (sym === 'BTC-CAD') {
+                    return {
+                        '2025-12-31': 100000,
+                        '2026-01-01': 100000,
+                        '2026-01-02': 101000,
+                    };
+                }
+                if (sym === 'USDCAD=X') {
+                    return {
+                        '1M': 0,
+                        '2025-12-31': 1.4,
+                        '2026-01-01': 1.4,
+                        '2026-01-02': 1.4,
+                    };
+                }
+                if (sym === '^GSPC') {
+                    return {
+                        'YTD': 0,
+                        '2025-12-31': 5800,
+                        // '2026-01-01' omitted (holiday)
+                        '2026-01-02': 5858,
+                    };
+                }
+                return {};
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 100,
+                    price: 180,
+                    fee: 0,
+                    date: new Date('2025-10-01T00:00:00.000Z'),
+                    investment: { symbol: 'AAPL', currency: 'USD' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 0.01,
+                    price: 90000,
+                    fee: 0,
+                    date: new Date('2025-10-01T00:00:00.000Z'),
+                    investment: { symbol: 'BTC-CAD', currency: 'CAD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const res = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'CAD'
+            );
+
+            const day1 = res.portfolio.find(p => p.date === '2026-01-01');
+            const day2 = res.portfolio.find(p => p.date === '2026-01-02');
+            assert.ok(day1 && day2);
+
+            // Day 1 includes AAPL at 2025-12-31 close (100 * 200 * 1.4 = 28000) + BTC-CAD (1000)
+            assert.ok(Math.abs(day1.marketValue - 29000) < 0.01);
+            assert.strictEqual(day1.nav, 100);
+
+            // Day 2 only reflects actual +1% market appreciation (no +2900% spike)
+            assert.strictEqual(day2.discoveryFlow, 0);
+            assert.ok(Math.abs(day2.marketValue - 29290) < 0.01);
+            assert.ok(Math.abs(day2.nav - 101) < 0.01);
+
+            const benchDay1 = res.benchmark.find(b => b.date === '2026-01-01');
+            const benchDay2 = res.benchmark.find(b => b.date === '2026-01-02');
+            assert.ok(benchDay1 && benchDay2);
+            assert.strictEqual(benchDay1.value, 5800);
+            assert.strictEqual(benchDay1.normalized, 100);
+            assert.ok(Math.abs(benchDay2.normalized - 101) < 0.01);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
+
+    await t.test('excludes discoveryFlow from NAV growth when a holding receives its first price mid-period', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'AAPL') {
+                    return {
+                        '2026-01-01': 100,
+                        '2026-01-02': 100,
+                        '2026-01-03': 102,
+                    };
+                }
+                if (sym === 'NEWCO') {
+                    return {
+                        '2026-01-03': 50,
+                    };
+                }
+                if (sym === '^GSPC') {
+                    return {
+                        '2026-01-01': 1000,
+                        '2026-01-02': 1000,
+                        '2026-01-03': 1000,
+                    };
+                }
+                return {};
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-12-15T00:00:00.000Z'),
+                    investment: { symbol: 'AAPL', currency: 'CAD' }
+                },
+                {
+                    type: 'TRANSFER_IN',
+                    quantity: 100,
+                    price: 50,
+                    fee: 0,
+                    date: new Date('2026-01-02T00:00:00.000Z'),
+                    investment: { symbol: 'NEWCO', currency: 'CAD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const res = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'CAD'
+            );
+
+            const day3 = res.portfolio.find(p => p.date === '2026-01-03');
+            assert.ok(day3);
+            assert.strictEqual(day3.discoveryFlow, 5000);
+            // Only AAPL moved from 100 to 102 (+2%), so NAV must be 102 rather than spiking from NEWCO discovery
+            assert.ok(Math.abs(day3.nav - 102) < 0.01);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
+
+    await t.test('does not double-count start-day activity when startDate has non-midnight timestamp', async () => {
+        const activities = [
+            {
+                type: 'BUY',
+                quantity: 10,
+                price: 150,
+                fee: 0,
+                date: new Date('2023-01-01T00:00:00.000Z'),
+                investment: { symbol: 'AAPL', currency: 'USD' }
+            }
+        ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+        const res = await PortfolioAnalytics.calculateComparisonHistory(
+            activities,
+            '^GSPC',
+            new Date('2023-01-01T18:30:00.000Z'),
+            'USD'
+        );
+
+        const day1 = res.portfolio.find(p => p.date === '2023-01-01');
+        assert.ok(day1);
+        // 10 shares * 150 = 1500 (not 20 shares = 3000)
+        assert.strictEqual(day1.marketValue, 1500);
+        assert.strictEqual(day1.netFlow, 1500);
+    });
 });
