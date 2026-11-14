@@ -743,6 +743,11 @@ test('PortfolioAnalytics.calculateFlows & out-of-pocket principal', async (t) =>
             const evoInvested = compRes.portfolio.reduce((s, d) => s + d.netFlow, 0);
             assert.ok(Math.abs(evoInvested - 12700) < 0.01);
 
+            const lastCompPoint = compRes.portfolio[compRes.portfolio.length - 1];
+            assert.ok(Math.abs((lastCompPoint.unreinvestedDividends ?? -1) - 100) < 0.01);
+            const totalChartProfit = (lastCompPoint.marketValue - evoInvested) + (lastCompPoint.unreinvestedDividends ?? 0);
+            assert.ok(Math.abs(totalChartProfit - 900) < 0.01);
+
             const schdAttr = compRes.performers.top.find(p => p.symbol === 'SCHD');
             assert.ok(schdAttr);
             // SCHD price stayed flat at $100, so total profit from SCHD = $500 + $300 + $100 = $900 (NOT $1,400 double-counted)

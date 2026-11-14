@@ -9,6 +9,7 @@ export interface DailyPerformance {
     netFlow: number;
     units: number;
     dividend: number;
+    unreinvestedDividends?: number;
     discoveryFlow?: number;
 }
 
@@ -928,6 +929,11 @@ export class PortfolioAnalytics {
                 log(`[Final Day ${dateStr}] FinalMV: ${finalMV}, PassiveMV: ${passiveMV}, NetFlow: ${netFlow}, Discovery: ${discoveryFlow}, Nav: ${nav}, Dividends: ${accDividends}`);
             }
 
+            const unreinvestedDividends = Object.values(dividendCashPool).reduce(
+                (sum, val) => sum + Math.max(0, val),
+                0
+            );
+
             dailyPerf.push({
                 date: dateStr,
                 marketValue: finalMV,
@@ -935,7 +941,8 @@ export class PortfolioAnalytics {
                 netFlow: netFlow, // Store USER flows only. Discovery flow is excluded from Contribution stats.
                 discoveryFlow: discoveryFlow,
                 units,
-                dividend: dailyDividends // Daily dividend (in target currency)
+                dividend: dailyDividends, // Daily dividend (in target currency)
+                unreinvestedDividends
             });
 
             prevMarketValue = finalMV;

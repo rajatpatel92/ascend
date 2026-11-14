@@ -127,7 +127,8 @@ export async function GET(request: Request) {
                         value: p.marketValue,
                         nav: 100 * (p.marketValue / openValue), // Intraday NAV
                         invested: openValue, // Flat line for 1D comparison
-                        dividend: 0
+                        dividend: 0,
+                        unreinvestedDividend: 0
                     }));
 
                     // [CACHE] Set Cache
@@ -156,7 +157,8 @@ export async function GET(request: Request) {
                 value: p.marketValue,
                 nav: p.nav,
                 invested: cumulativeFlow,
-                dividend: cumulativeDividends
+                dividend: cumulativeDividends,
+                unreinvestedDividend: p.unreinvestedDividends ?? 0
             };
         });
 

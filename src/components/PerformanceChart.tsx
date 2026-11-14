@@ -15,15 +15,9 @@ import styles from './PortfolioChart.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
 import DateInput from './DateInput';
+import { computePerformanceChartMetrics, HistoryPointInput } from '@/lib/performance-chart';
 
-interface HistoryPoint {
-    date: string;
-    value: number;
-    invested: number;
-    nav?: number;
-    marketValue?: number;
-    dividend?: number;
-}
+type HistoryPoint = HistoryPointInput;
 
 interface PerformanceChartProps {
     range: string;
@@ -41,14 +35,6 @@ interface PerformanceChartProps {
 type ChartMode = 'value' | 'return';
 
 const RANGES = ['1D', '1W', '1M', '3M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', '10Y', 'ALL'];
-
-function parseHistoryTimestamp(dateStr: string): number {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-        const [y, m, d] = dateStr.split('-').map(Number);
-        return new Date(y, m - 1, d, 12, 0, 0).getTime();
-    }
-    return new Date(dateStr).getTime();
-}
 
 function getRangeLabel(r: string): string {
     switch (r) {
@@ -104,7 +90,7 @@ export default function PerformanceChart({
 
         const fetchData = async () => {
             const filterKey = `${(filterInvestmentTypes || []).slice().sort().join('-')}_${(filterAccountTypes || []).slice().sort().join('-')}`;
-            const cacheKey = `portfolio-history-${range}-${currency}-${customStart}-${customEnd}-${filterKey}-v6`;
+            const cacheKey = `portfolio-history-${range}-${currency}-${customStart}-${customEnd}-${filterKey}-v7`;
 
             const cached = ClientCache.get<HistoryPoint[]>(cacheKey);
             if (cached && Array.isArray(cached) && cached.length > 0) {
@@ -155,101 +141,10 @@ export default function PerformanceChart({
         minMarketValue,
         maxMarketValue,
         maxAbsReturn
-    } = useMemo(() => {
-        const totalInvested = data.reduce((sum, point) => sum + point.invested, 0);
-        const avgInv = data.length > 0 ? totalInvested / data.length : 0;
-
-        const points = data.map(point => {
-            const value = point.value;
-            const invested = point.invested;
-            let returnPercent = 0;
-
-            if (point.nav !== undefined) {
-                const startNav = data[0]?.nav || 100;
-                if (startNav > 0) {
-                    returnPercent = ((point.nav / startNav) - 1) * 100;
-                }
-            } else {
-                const profit = value - invested;
-                returnPercent = avgInv !== 0 ? (profit / avgInv) * 100 : 0;
-            }
-
-            return {
-                date: point.date,
-                dateNumber: parseHistoryTimestamp(point.date),
-                value: returnPercent,
-                invested,
-                marketValue: value,
-                dividend: point.dividend || 0
-            };
-        });
-
-        let retChange = 0;
-        let valChange = 0;
-        let contrib = 0;
-        let avgContrib = 0;
-        let months = 0;
-        let minVal = 0;
-        let maxVal = 0;
-        let maxRet = 0;
-
-        if (points.length > 0) {
-            const firstPoint = points[0];
-            const lastPoint = points[points.length - 1];
-
-            if (
-                range === '1D' &&
-                typeof overrideChange === 'number' &&
-                Number.isFinite(overrideChange) &&
-                typeof overrideChangePercent === 'number' &&
-                Number.isFinite(overrideChangePercent)
-            ) {
-                valChange = overrideChange;
-                retChange = overrideChangePercent;
-            } else if (range === 'ALL' || range === 'MAX') {
-                retChange = lastPoint.value;
-                valChange = (lastPoint.marketValue || 0) - (lastPoint.invested || 0) + (lastPoint.dividend || 0);
-            } else {
-                retChange = lastPoint.value - firstPoint.value;
-                const startVal = firstPoint.marketValue || 0;
-                const endVal = lastPoint.marketValue || 0;
-                const startInv = firstPoint.invested || 0;
-                const endInv = lastPoint.invested || 0;
-                const startDiv = firstPoint.dividend || 0;
-                const endDiv = lastPoint.dividend || 0;
-                valChange = (endVal - startVal) - (endInv - startInv) + (endDiv - startDiv);
-            }
-
-            if (range === 'ALL' || range === 'MAX') {
-                contrib = lastPoint.invested;
-            } else {
-                contrib = lastPoint.invested - firstPoint.invested;
-            }
-
-            const diffDays = Math.ceil(Math.abs(lastPoint.dateNumber - firstPoint.dateNumber) / (1000 * 60 * 60 * 24));
-            months = diffDays / 30.44;
-            if (months >= 1) {
-                avgContrib = contrib / months;
-            }
-
-            const mvArr = points.map(p => p.marketValue);
-            minVal = Math.min(...mvArr);
-            maxVal = Math.max(...mvArr);
-            maxRet = Math.max(...points.map(p => Math.abs(p.value)));
-        }
-
-        return {
-            chartData: points,
-            returnChange: retChange,
-            valueChange: valChange,
-            totalContribution: contrib,
-            avgContribution: avgContrib,
-            periodMonths: months,
-            minMarketValue: minVal,
-            maxMarketValue: maxVal,
-            maxAbsReturn: maxRet
-        };
-    }, [data, range, overrideChange, overrideChangePercent]);
+    } = useMemo(
+        () => computePerformanceChartMetrics({ data, range, overrideChange, overrideChangePercent }),
+        [data, range, overrideChange, overrideChangePercent]
+    );
 
     const isPositive = returnChange >= 0;
     const marketRangeSpan = maxMarketValue - minMarketValue;
@@ -421,7 +316,7 @@ export default function PerformanceChart({
                                     {valueChange > 0 ? '+' : ''}{format(valueChange)}
                                 </span>
                                 <span className={`${styles.metricPill} ${isPositive ? styles.metricPillPos : styles.metricPillNeg}`}>
-                                    {returnChange > 0 ? '+' : ''}{returnChange.toFixed(2)}% ({getRangeLabel(range)})
+                                    {returnChange > 0 ? '+' : ''}{returnChange.toFixed(2)}% {range === '1D' ? '' : 'TWR '}({getRangeLabel(range)})
                                 </span>
                             </div>
 
