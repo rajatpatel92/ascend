@@ -451,4 +451,147 @@ test('GET /api/portfolio', async (t) => {
         // Sold CASH.TO YTD dividend (Jan 1 UTC) is still counted in Received YTD
         assert.ok(Math.abs(data.dividendsYTD - 490) < 1e-6);
     });
+
+    await t.test('estimates upcoming and projected dividends from recorded activity history when Yahoo omits dividend data', async () => {
+        const todayMidnightUTC = new Date();
+        todayMidnightUTC.setUTCHours(0, 0, 0, 0);
+
+        const buyDate = new Date(todayMidnightUTC.getTime() - 100 * 24 * 60 * 60 * 1000);
+        const div1Date = new Date(todayMidnightUTC.getTime() - 45 * 24 * 60 * 60 * 1000);
+        const div2Date = new Date(todayMidnightUTC.getTime() - 15 * 24 * 60 * 60 * 1000);
+        // div2Date + 30d = today + 15d (inside 45-day upcoming window)
+
+        const declaredFarFuture = new Date(todayMidnightUTC.getTime() + 65 * 24 * 60 * 60 * 1000);
+
+        mockGlobals.__mockPrisma.activityType.findMany = async () => [
+            { name: 'BUY', behavior: 'ADD' },
+            { name: 'DIVIDEND', behavior: 'NEUTRAL' }
+        ];
+        mockGlobals.__mockPrisma.activity.findMany = async () => [
+            // ZMMK.TO: Yahoo gives only price=50, no dividend fields -> must fall back to recorded payouts ($0.15/sh monthly)
+            {
+                id: 'zmmk-buy',
+                type: 'BUY',
+                date: buyDate,
+                quantity: 200,
+                price: 50,
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'ZMMK.TO', name: 'BMO Money Market Fund', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'TFSA' }
+            },
+            {
+                id: 'zmmk-div1',
+                type: 'DIVIDEND',
+                date: div1Date,
+                quantity: 200,
+                price: 0.15,
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'ZMMK.TO', name: 'BMO Money Market Fund', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'TFSA' }
+            },
+            {
+                id: 'zmmk-div2',
+                type: 'DIVIDEND',
+                date: div2Date,
+                quantity: 1,
+                price: 30, // Lump-sum convention (qty=1, payout=$30 across 200 shares = $0.15/sh)
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'ZMMK.TO', name: 'BMO Money Market Fund', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'TFSA' }
+            },
+            // AAPL: Yahoo declared exDividendDate 65 days out -> local activities must NOT invent a <45d upcoming row
+            {
+                id: 'aapl-buy',
+                type: 'BUY',
+                date: buyDate,
+                quantity: 10,
+                price: 150,
+                fee: 0,
+                currency: 'USD',
+                investment: { symbol: 'AAPL', name: 'Apple Inc.', type: 'EQUITY' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'RRSP' }
+            },
+            {
+                id: 'aapl-div1',
+                type: 'DIVIDEND',
+                date: div1Date,
+                quantity: 10,
+                price: 0.25,
+                fee: 0,
+                currency: 'USD',
+                investment: { symbol: 'AAPL', name: 'Apple Inc.', type: 'EQUITY' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'RRSP' }
+            },
+            {
+                id: 'aapl-div2',
+                type: 'DIVIDEND',
+                date: div2Date,
+                quantity: 10,
+                price: 0.25,
+                fee: 0,
+                currency: 'USD',
+                investment: { symbol: 'AAPL', name: 'Apple Inc.', type: 'EQUITY' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'RRSP' }
+            }
+        ];
+
+        mockGlobals.__mockMarketDataService.getPrice = async (symbol: string) => {
+            if (symbol === 'ZMMK.TO') {
+                return {
+                    price: 50,
+                    currency: 'CAD',
+                    regularMarketChange: 0,
+                    regularMarketChangePercent: 0
+                };
+            }
+            if (symbol === 'AAPL') {
+                return {
+                    price: 150,
+                    currency: 'USD',
+                    regularMarketChange: 0,
+                    regularMarketChangePercent: 0,
+                    dividendRate: 1.0,
+                    dividendYield: 0.0067,
+                    exDividendDate: declaredFarFuture.toISOString(),
+                    estNextDividendAmount: 0.25
+                };
+            }
+            return null;
+        };
+
+        mockGlobals.__mockMarketDataService.getExchangeRate = async (from: string, to: string) => {
+            if (from === 'CAD' && to === 'USD') return 0.7;
+            if (from === 'USD' && to === 'CAD') return 1 / 0.7;
+            return 1;
+        };
+
+        const request = new Request('http://localhost/api/portfolio?currency=CAD');
+        const response = await GET(request as Parameters<typeof GET>[0]);
+        assert.strictEqual(response.status, 200);
+
+        const data = await response.json();
+
+        // Only ZMMK.TO should appear in upcomingDividends, marked isEstimated: true
+        assert.strictEqual(data.upcomingDividends.length, 1);
+        assert.strictEqual(data.upcomingDividends[0].symbol, 'ZMMK.TO');
+        assert.strictEqual(data.upcomingDividends[0].isEstimated, true);
+        // 0.15 CAD * 200 = 30 CAD
+        assert.ok(Math.abs(data.upcomingDividends[0].estimatedAmount - 30) < 1e-6);
+
+        // Projected annual includes annualized ZMMK.TO (0.15 * 12 * 200 = 360 CAD) + AAPL (10 USD = 14.2857 CAD)
+        const expectedProjectedCAD = 360 + (10 / 0.7);
+        assert.ok(Math.abs(data.projectedDividends - expectedProjectedCAD) < 1e-4);
+
+        const zmmkConstituent = data.constituents.find((c: { symbol: string }) => c.symbol === 'ZMMK.TO');
+        assert.ok(Math.abs(zmmkConstituent.dividendYield - (1.8 / 50)) < 1e-6);
+    });
 });

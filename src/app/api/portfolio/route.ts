@@ -4,6 +4,11 @@ import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { calculateXIRR, Transaction } from '@/lib/xirr';
 import { calculateLookThrough } from '@/lib/look-through';
+import {
+    analyzeDividendHistory,
+    buildPerShareDividendEventsFromActivities,
+    type PortfolioActivityLike
+} from '@/lib/dividend-estimator';
 import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
@@ -69,7 +74,8 @@ export async function GET(request: NextRequest) {
             quantity: number,
             investment: any,
             platforms: Map<string, number>,
-            accounts: Map<string, { name: string, quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>
+            accounts: Map<string, { name: string, quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>,
+            rawActivities: PortfolioActivityLike[]
         }>();
 
         const currentUtcYear = new Date().getUTCFullYear();
@@ -81,11 +87,19 @@ export async function GET(request: NextRequest) {
                     quantity: 0,
                     investment: activity.investment,
                     platforms: new Map(),
-                    accounts: new Map()
+                    accounts: new Map(),
+                    rawActivities: []
                 });
             }
 
             const current = holdingsMap.get(symbol)!;
+            current.rawActivities.push({
+                type: activity.type,
+                date: activity.date,
+                quantity: activity.quantity,
+                price: activity.price,
+                fee: activity.fee
+            });
             const platformName = activity.platform?.name || 'Unknown';
 
             // Resolve Account Name to Display Name if available
@@ -335,29 +349,77 @@ export async function GET(request: NextRequest) {
 
                 // Upcoming Dividends (only for currently held positions with a positive estimated payout)
                 let upcomingDividend = null;
-                if (hasActiveHolding && marketData?.exDividendDate) {
-                    const exDate = new Date(marketData.exDividendDate);
-                    const startOfToday = new Date(now);
-                    startOfToday.setUTCHours(0, 0, 0, 0);
-                    const cutoff = new Date(startOfToday);
-                    cutoff.setUTCDate(cutoff.getUTCDate() + 45); // Next 45 days (~1.5 months)
+                const startOfToday = new Date(now);
+                startOfToday.setUTCHours(0, 0, 0, 0);
+                const cutoff = new Date(startOfToday);
+                cutoff.setUTCDate(cutoff.getUTCDate() + 45); // Next 45 days (~1.5 months)
 
-                    if (exDate >= startOfToday && exDate <= cutoff) {
-                        // Estimate Amount: Use exact estimate if available, else assume Quarterly (Rate/4) as fallback
-                        const estimatedAmountPerShare =
-                            marketData.estNextDividendAmount && marketData.estNextDividendAmount > 0
-                                ? marketData.estNextDividendAmount
-                                : ((marketData.dividendRate || 0) / 4);
+                const marketExDate = marketData?.exDividendDate ? new Date(marketData.exDividendDate) : null;
+                const hasDeclaredFutureExDate = Boolean(marketExDate && !Number.isNaN(marketExDate.getTime()) && marketExDate >= startOfToday);
+                const hasMarketFutureExDateInWindow = Boolean(hasDeclaredFutureExDate && marketExDate! <= cutoff);
+                const hasMarketDividendRate = Boolean(marketData?.dividendRate && marketData.dividendRate > 0);
+                const hasMarketNextAmount = Boolean(marketData?.estNextDividendAmount && marketData.estNextDividendAmount > 0);
+
+                // # Reason: If Yahoo Finance omits dividend data or lags behind (common for Canadian money-market
+                // ETFs like ZMMK.TO), infer cadence, annual run-rate, and next payout from recorded DIVIDEND activities.
+                const needsActivityFallback = hasActiveHolding && (!hasMarketDividendRate || !hasDeclaredFutureExDate || !hasMarketNextAmount);
+                const activityDivEvents = needsActivityFallback
+                    ? buildPerShareDividendEventsFromActivities(data.rawActivities, behaviorMap)
+                    : [];
+                const localDivEstimate = activityDivEvents.length > 0
+                    ? analyzeDividendHistory(activityDivEvents, {
+                        now: startOfToday,
+                        filterLastYearFromNow: true,
+                        rollForward: true,
+                        annualizeShortHistory: true
+                    })
+                    : undefined;
+
+                const effectiveDividendRate = hasMarketDividendRate
+                    ? marketData!.dividendRate!
+                    : (localDivEstimate?.annualizedRate || localDivEstimate?.trailingAnnualRate || 0);
+                const effectiveDividendYield = (marketData?.dividendYield && marketData.dividendYield > 0)
+                    ? marketData.dividendYield
+                    : (effectiveDividendRate > 0 && price > 0 ? effectiveDividendRate / price : 0);
+
+                if (hasActiveHolding) {
+                    if (hasMarketFutureExDateInWindow && marketExDate) {
+                        const estimatedAmountPerShare = hasMarketNextAmount
+                            ? marketData!.estNextDividendAmount!
+                            : (localDivEstimate?.nextAmount && localDivEstimate.nextAmount > 0
+                                ? localDivEstimate.nextAmount
+                                : effectiveDividendRate / 4);
                         const estimatedAmountUSD = estimatedAmountPerShare * data.quantity * rateToUSD;
 
                         if (estimatedAmountUSD > 0) {
                             upcomingDividend = {
                                 symbol,
-                                exDate: exDate.toISOString(),
-                                rate: marketData.dividendRate || 0,
+                                exDate: marketExDate.toISOString(),
+                                rate: effectiveDividendRate,
                                 quantity: data.quantity,
-                                estimatedAmount: estimatedAmountUSD
+                                estimatedAmount: estimatedAmountUSD,
+                                isEstimated: false
                             };
+                        }
+                    } else if (!hasDeclaredFutureExDate && localDivEstimate?.nextDate) {
+                        const estExDate = localDivEstimate.nextDate;
+                        if (estExDate >= startOfToday && estExDate <= cutoff) {
+                            const estimatedAmountPerShare =
+                                (localDivEstimate.nextAmount && localDivEstimate.nextAmount > 0)
+                                    ? localDivEstimate.nextAmount
+                                    : effectiveDividendRate / 4;
+                            const estimatedAmountUSD = estimatedAmountPerShare * data.quantity * rateToUSD;
+
+                            if (estimatedAmountUSD > 0) {
+                                upcomingDividend = {
+                                    symbol,
+                                    exDate: estExDate.toISOString(),
+                                    rate: effectiveDividendRate,
+                                    quantity: data.quantity,
+                                    estimatedAmount: estimatedAmountUSD,
+                                    isEstimated: true
+                                };
+                            }
                         }
                     }
                 }
@@ -378,7 +440,7 @@ export async function GET(request: NextRequest) {
                     symbolCashFlows,
                     dividendsYTD: localDividendsYTD * rateToUSD,
                     lifetimeDividends: localLifetimeDividends * rateToUSD,
-                    projectedDividends: ((hasActiveHolding && marketData?.dividendRate) ? (marketData.dividendRate * data.quantity) : 0) * rateToUSD,
+                    projectedDividends: ((hasActiveHolding && effectiveDividendRate > 0) ? (effectiveDividendRate * data.quantity) : 0) * rateToUSD,
                     constituent: (hasActiveHolding || localLifetimeDividends > 0 || Math.abs(realizedGainNative) > 0.01) ? {
                         symbol,
                         name: data.investment.name,
@@ -404,7 +466,7 @@ export async function GET(request: NextRequest) {
                         changeYTD,
                         inceptionChange,
                         xirr,
-                        dividendYield: marketData?.dividendYield || 0,
+                        dividendYield: effectiveDividendYield,
                         lifetimeDividends: localLifetimeDividends * rateToUSD,
                         lifetimeDividendsNative: localLifetimeDividends,
                         dividendsYTD: localDividendsYTD * rateToUSD,

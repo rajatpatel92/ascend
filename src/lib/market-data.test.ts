@@ -616,6 +616,51 @@ test('MarketDataService.getPrice', async (t) => {
         assert.strictEqual(result.exDividendDate, undefined);
         assert.strictEqual(result.estNextDividendAmount, undefined);
     });
+
+    await t.test('uses chart dividend events and rolls lagging monthly payout date into future window', async (subT) => {
+        const now = new Date();
+        const d1 = new Date(now);
+        d1.setUTCDate(d1.getUTCDate() - 75);
+        const d2 = new Date(d1);
+        d2.setUTCDate(d2.getUTCDate() + 30); // ~45 days ago -> 1-step (+30d) is 15 days ago -> must roll forward again (+30d = +15d future)
+
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 50,
+            regularMarketChange: 0,
+            regularMarketChangePercent: 0,
+            currency: 'CAD',
+            quoteType: 'ETF',
+            longName: 'BMO Money Market ETF'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: {},
+            topHoldings: {},
+            calendarEvents: {},
+            defaultKeyStatistics: {}
+        }));
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            events: {
+                dividends: [
+                    { date: d1, amount: 0.15 },
+                    { date: d2, amount: 0.15 }
+                ]
+            }
+        }));
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+
+        const result = await MarketDataService.getPrice('ZMMK.TO', true);
+
+        assert.ok(result);
+        assert.ok(Math.abs((result.dividendRate || 0) - 0.30) < 1e-6);
+        assert.strictEqual(result.estNextDividendAmount, 0.15);
+        assert.ok(result.exDividendDate);
+
+        const startOfToday = new Date(now);
+        startOfToday.setUTCHours(0, 0, 0, 0);
+        assert.ok(result.exDividendDate >= startOfToday);
+    });
 });
 
 test('MarketDataService.getExchangeRate', async (t) => {

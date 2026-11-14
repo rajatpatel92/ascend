@@ -64,6 +64,7 @@ export default function DividendSummary({
     }, [upcomingDividends, activeSymbolSet]);
 
     const [userSelectedTab, setUserSelectedTab] = useState<PulseTab | null>(null);
+    const [showAllUpcoming, setShowAllUpcoming] = useState(false);
     const activeTab: PulseTab = userSelectedTab ?? (topHoldings.length > 0 ? 'holdings' : 'dividends');
 
     const tabs: { id: PulseTab; label: string; count?: number }[] = [
@@ -107,6 +108,10 @@ export default function DividendSummary({
     }
 
     const projectedYield = totalValue > 0 ? ((projectedDividends / totalValue) * 100).toFixed(2) : '0.00';
+    const hasMoreUpcoming = activeUpcomingDividends.length > 4;
+    const visibleUpcomingDividends = showAllUpcoming
+        ? activeUpcomingDividends
+        : activeUpcomingDividends.slice(0, 4);
 
     return (
         <div className={styles.card}>
@@ -233,10 +238,22 @@ export default function DividendSummary({
                     </div>
 
                     <div className={styles.upcomingSection}>
-                        <h3 className={styles.subtitle}>Upcoming (Ex-Date) — Est. Payout</h3>
+                        <div className={styles.upcomingHeader}>
+                            <h3 className={styles.subtitle}>Upcoming (Ex-Date) — Est. Payout</h3>
+                            {hasMoreUpcoming && (
+                                <button
+                                    type="button"
+                                    className={styles.showMoreBtn}
+                                    onClick={() => setShowAllUpcoming(prev => !prev)}
+                                    aria-expanded={showAllUpcoming}
+                                >
+                                    {showAllUpcoming ? 'Show less' : `Show all (${activeUpcomingDividends.length})`}
+                                </button>
+                            )}
+                        </div>
                         {activeUpcomingDividends.length > 0 ? (
                             <ul className={styles.list}>
-                                {activeUpcomingDividends.slice(0, 4).map((div, i) => (
+                                {visibleUpcomingDividends.map((div, i) => (
                                     <li key={`${div.symbol}-${div.exDate}-${i}`} className={styles.item}>
                                         <Link
                                             href={{
@@ -248,7 +265,10 @@ export default function DividendSummary({
                                         >
                                             <div className={styles.symbolRow}>
                                                 <span className={styles.symbol}>{div.symbol}</span>
-                                                <span className={styles.date}>{formatDate(div.exDate)}</span>
+                                                <span className={styles.date}>
+                                                    {formatDate(div.exDate)}
+                                                    {div.isEstimated && ' · Est.'}
+                                                </span>
                                             </div>
                                             <div className={styles.amount}>
                                                 {format(div.estimatedAmount)}

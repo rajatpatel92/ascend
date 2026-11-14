@@ -1,9 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import YahooFinance from 'yahoo-finance2';
 import { prisma } from './prisma.ts';
+import { analyzeDividendHistory, type DividendEventPoint } from './dividend-estimator.ts';
 
 export const yahooFinance = new YahooFinance({
-    suppressNotices: ['yahooSurvey'],
+    suppressNotices: ['yahooSurvey', 'ripHistorical'],
 });
 
 // Throttler to prevent 429 Errors
@@ -125,80 +126,65 @@ function shouldEstimateDividends(symbol: string, quoteType?: string): boolean {
 }
 
 // Helper to analyze trailing 12M dividend history and estimate next payout
-export async function estimateDividendDetails(symbol: string): Promise<DividendEstimateDetails | undefined> {
+export async function estimateDividendDetails(
+    symbol: string,
+    options: { rollForwardTo?: Date } = {}
+): Promise<DividendEstimateDetails | undefined> {
     try {
-        const endDate = new Date();
-        const startDate = new Date();
+        const endDate = options.rollForwardTo ? new Date(Math.max(Date.now(), options.rollForwardTo.getTime())) : new Date();
+        const startDate = new Date(endDate);
         startDate.setFullYear(endDate.getFullYear() - 1); // Last 12 months
 
-        const events = await apiThrottler.add(() => yahooFinance.historical(symbol, {
-            period1: startDate,
-            period2: endDate,
-            events: 'dividends'
-        }));
+        let rawEvents: DividendEventPoint[] = [];
 
-        if (!Array.isArray(events) || events.length === 0) return undefined;
+        try {
+            const chartResult = await apiThrottler.add(() => yahooFinance.chart(symbol, {
+                period1: startDate,
+                period2: endDate,
+                interval: '1d',
+                events: 'div'
+            })) as any;
 
-        const validEvents = events
-            .map((e: any) => {
-                const dateObj = new Date(e?.date);
-                const amount = Number(e?.dividends);
-                return { dateObj, amount };
-            })
-            .filter(e => !Number.isNaN(e.dateObj.getTime()) && Number.isFinite(e.amount) && e.amount > 0)
-            .sort((a, b) => b.dateObj.getTime() - a.dateObj.getTime());
-
-        if (validEvents.length === 0) return undefined;
-
-        // # Reason: A 365-day window can catch an extra edge-date payment (e.g. 13 monthly or 5 quarterly
-        // payouts) when ex-dates shift by a day or two YoY; trim the extra boundary payout for regular cadences.
-        let annualEvents = validEvents;
-        if (validEvents.length >= 2) {
-            const intervals: number[] = [];
-            for (let i = 0; i < validEvents.length - 1; i++) {
-                const gapDays = (validEvents[i].dateObj.getTime() - validEvents[i + 1].dateObj.getTime()) / (1000 * 60 * 60 * 24);
-                intervals.push(gapDays);
+            const chartDividends = chartResult?.events?.dividends;
+            if (Array.isArray(chartDividends) && chartDividends.length > 0) {
+                rawEvents = chartDividends.map((d: any) => ({
+                    date: d?.date,
+                    perShareAmount: Number(d?.amount)
+                }));
             }
-            const isMonthlySeries = validEvents.length === 13 && intervals.every(d => d >= 20 && d <= 40);
-            const isQuarterlySeries = validEvents.length === 5 && intervals.every(d => d >= 75 && d <= 105);
-            if (isMonthlySeries) {
-                annualEvents = validEvents.slice(0, 12);
-            } else if (isQuarterlySeries) {
-                annualEvents = validEvents.slice(0, 4);
+        } catch {
+            // Fallback to historical() below if chart dividend feed fails
+        }
+
+        if (rawEvents.length === 0) {
+            const events = await apiThrottler.add(() => yahooFinance.historical(symbol, {
+                period1: startDate,
+                period2: endDate,
+                events: 'dividends'
+            }));
+
+            if (Array.isArray(events) && events.length > 0) {
+                rawEvents = events.map((e: any) => ({
+                    date: e?.date,
+                    perShareAmount: Number(e?.dividends)
+                }));
             }
         }
 
-        const trailingAnnualRate = annualEvents.reduce((sum, e) => sum + e.amount, 0);
+        if (rawEvents.length === 0) return undefined;
 
-        if (validEvents.length < 2) {
-            return { trailingAnnualRate };
-        }
-
-        const lastDiv = validEvents[0].dateObj;
-        const prevDiv = validEvents[1].dateObj;
-
-        // Calculate interval in days
-        const diffTime = Math.abs(lastDiv.getTime() - prevDiv.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        const projectedDate = new Date(lastDiv);
-
-        // Simple logic: if ~30 days, add 30. If ~90, add 91.
-        if (diffDays >= 25 && diffDays <= 35) {
-            projectedDate.setDate(lastDiv.getDate() + 30);
-        } else if (diffDays >= 85 && diffDays <= 95) {
-            projectedDate.setDate(lastDiv.getDate() + 91);
-        } else if (diffDays >= 360) {
-            projectedDate.setFullYear(lastDiv.getFullYear() + 1);
-        } else {
-            // Irregular or unknown cadence, default to last known interval
-            projectedDate.setDate(lastDiv.getDate() + diffDays);
-        }
+        const analyzed = analyzeDividendHistory(
+            rawEvents,
+            options.rollForwardTo
+                ? { now: options.rollForwardTo, rollForward: true }
+                : {}
+        );
+        if (!analyzed) return undefined;
 
         return {
-            nextDate: projectedDate,
-            nextAmount: validEvents[0].amount,
-            trailingAnnualRate
+            nextDate: analyzed.nextDate,
+            nextAmount: analyzed.nextAmount,
+            trailingAnnualRate: analyzed.trailingAnnualRate
         };
     } catch {
         return undefined;
@@ -413,7 +399,7 @@ export class MarketDataService {
                 shouldEstimateDividends(symbol, quoteType) &&
                 (!data.dividendRate || !data.exDividendDate || data.exDividendDate < startOfToday || !data.estNextDividendAmount)
             ) {
-                const details = await estimateDividendDetails(symbol);
+                const details = await estimateDividendDetails(symbol, { rollForwardTo: startOfToday });
                 if (details) {
                     if (!data.dividendRate && details.trailingAnnualRate) {
                         data.dividendRate = details.trailingAnnualRate;
@@ -1023,7 +1009,7 @@ export class MarketDataService {
                         shouldEstimateDividends(symbol, quoteType) &&
                         (!priceData.dividendRate || !priceData.exDividendDate || priceData.exDividendDate < startOfToday || !priceData.estNextDividendAmount)
                     ) {
-                        const details = await estimateDividendDetails(symbol);
+                        const details = await estimateDividendDetails(symbol, { rollForwardTo: startOfToday });
                         if (details) {
                             if (!priceData.dividendRate && details.trailingAnnualRate) {
                                 priceData.dividendRate = details.trailingAnnualRate;
