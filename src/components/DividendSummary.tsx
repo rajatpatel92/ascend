@@ -45,12 +45,30 @@ export default function DividendSummary({
             .slice(0, 5);
     }, [constituents, convert]);
 
+    const activeSymbolSet = useMemo(() => {
+        if (!constituents || constituents.length === 0) return null;
+        return new Set(
+            constituents
+                .filter(c => c.quantity > 0.00001)
+                .map(c => c.symbol)
+        );
+    }, [constituents]);
+
+    const activeUpcomingDividends = useMemo(() => {
+        return (upcomingDividends || []).filter(div => {
+            if (typeof div.quantity === 'number' && div.quantity <= 0.00001) return false;
+            if (activeSymbolSet && !activeSymbolSet.has(div.symbol)) return false;
+            if (typeof div.estimatedAmount === 'number' && div.estimatedAmount <= 0) return false;
+            return true;
+        });
+    }, [upcomingDividends, activeSymbolSet]);
+
     const [userSelectedTab, setUserSelectedTab] = useState<PulseTab | null>(null);
     const activeTab: PulseTab = userSelectedTab ?? (topHoldings.length > 0 ? 'holdings' : 'dividends');
 
     const tabs: { id: PulseTab; label: string; count?: number }[] = [
         { id: 'holdings', label: 'Top Holdings' },
-        { id: 'dividends', label: 'Dividends', count: upcomingDividends.length }
+        { id: 'dividends', label: 'Dividends', count: activeUpcomingDividends.length }
     ];
 
     const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -75,7 +93,7 @@ export default function DividendSummary({
         dividendsYTD === 0 &&
         projectedDividends === 0 &&
         lifetimeDividends === 0 &&
-        upcomingDividends.length === 0 &&
+        activeUpcomingDividends.length === 0 &&
         topHoldings.length === 0
     ) {
         return (
@@ -216,9 +234,9 @@ export default function DividendSummary({
 
                     <div className={styles.upcomingSection}>
                         <h3 className={styles.subtitle}>Upcoming (Ex-Date) — Est. Payout</h3>
-                        {upcomingDividends.length > 0 ? (
+                        {activeUpcomingDividends.length > 0 ? (
                             <ul className={styles.list}>
-                                {upcomingDividends.slice(0, 4).map((div, i) => (
+                                {activeUpcomingDividends.slice(0, 4).map((div, i) => (
                                     <li key={`${div.symbol}-${div.exDate}-${i}`} className={styles.item}>
                                         <Link
                                             href={{

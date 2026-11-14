@@ -180,4 +180,42 @@ test('GET /api/holdings', async (t) => {
             console.error = originalConsoleError;
         }
     });
+
+    await t.test('clamps floating-point dust on sold positions to 0 and applies STOCK_SPLIT', async () => {
+        prismaDelegate.currentMock = {
+            activity: {
+                findMany: async () => [
+                    { type: 'BUY', quantity: 0.1 },
+                    { type: 'BUY', quantity: 0.2 },
+                    { type: 'SELL', quantity: 0.3 }
+                ]
+            },
+            activityType: {
+                findMany: async () => []
+            }
+        };
+
+        const dustRes = await GET(new Request('http://localhost/api/holdings?symbol=CASH.TO'));
+        assert.strictEqual(dustRes.status, 200);
+        const dustData = await dustRes.json();
+        assert.strictEqual(dustData.quantity, 0);
+
+        prismaDelegate.currentMock = {
+            activity: {
+                findMany: async () => [
+                    { type: 'BUY', quantity: 5 },
+                    { type: 'STOCK_SPLIT', quantity: 2 },
+                    { type: 'SELL', quantity: 4 }
+                ]
+            },
+            activityType: {
+                findMany: async () => []
+            }
+        };
+
+        const splitRes = await GET(new Request('http://localhost/api/holdings?symbol=NVDA'));
+        assert.strictEqual(splitRes.status, 200);
+        const splitData = await splitRes.json();
+        assert.strictEqual(splitData.quantity, 6);
+    });
 });

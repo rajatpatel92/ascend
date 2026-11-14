@@ -70,6 +70,8 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
 
         let totalDividends = 0;
 
+        const ACTIVE_QUANTITY_EPSILON = 0.00001;
+
         for (const activity of investment.activities) {
             const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
             const absQty = Math.abs(activity.quantity);
@@ -98,16 +100,25 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                 }
 
             } else if (behavior === 'REMOVE') {
+                const prevQty = totalQuantity;
+                const avgCost = prevQty > 0 ? totalCost / prevQty : 0;
                 totalQuantity -= absQty;
-                // Pro-rata cost basis reduction? Or FIFO?
-                // For simple average cost:
-                const avgCost = totalQuantity > 0 ? totalCost / (totalQuantity + absQty) : 0;
-                totalCost -= absQty * avgCost;
+                if (totalQuantity < 1e-9) totalQuantity = 0;
+
+                if (totalQuantity === 0) {
+                    totalCost = 0;
+                } else {
+                    totalCost -= absQty * avgCost;
+                    if (totalCost < 1e-9) totalCost = 0;
+                }
 
                 if (activity.account) {
                     const accId = activity.account.id;
                     if (accountAllocation[accId]) {
                         accountAllocation[accId].quantity -= absQty;
+                        if (accountAllocation[accId].quantity < 1e-9) {
+                            accountAllocation[accId].quantity = 0;
+                        }
                     }
                 }
             } else if (behavior === 'SPLIT') {
@@ -122,12 +133,22 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                     });
                 }
             } else if (activity.type === 'DIVIDEND') {
-                totalDividends += amount;
+                totalDividends += Math.max(0, amount - (activity.fee || 0));
             }
         }
 
+        if (totalQuantity <= ACTIVE_QUANTITY_EPSILON) {
+            totalQuantity = 0;
+            totalCost = 0;
+        }
+        Object.values(accountAllocation).forEach(acc => {
+            if (acc.quantity <= ACTIVE_QUANTITY_EPSILON) {
+                acc.quantity = 0;
+            }
+        });
+
         const price = marketData?.price || 0;
-        const value = totalQuantity * price;
+        const value = totalQuantity > 0 ? totalQuantity * price : 0;
         const avgPrice = totalQuantity > 0 ? totalCost / totalQuantity : 0;
         const absoluteReturn = value - totalCost;
         const percentReturn = totalCost > 0 ? (absoluteReturn / totalCost) * 100 : 0;
@@ -240,7 +261,7 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                 dividendYield: marketData?.dividendYield
             },
             allocation: {
-                accounts: Object.values(accountAllocation).filter(a => a.quantity > 0)
+                accounts: Object.values(accountAllocation).filter(a => a.quantity > ACTIVE_QUANTITY_EPSILON)
             },
             activities: investment.activities,
             historical: historicalPrices,

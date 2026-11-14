@@ -293,4 +293,162 @@ test('GET /api/portfolio', async (t) => {
         const breakdownEntry = Object.values(aapl.accountsBreakdown)[0] as { name: string };
         assert.strictEqual(breakdownEntry.name, 'Family:Joint');
     });
+
+    await t.test('excludes sold dust positions from upcomingDividends and keeps YTD dividends from sold holdings', async () => {
+        const currentYear = new Date().getUTCFullYear();
+        const todayMidnightUTC = new Date();
+        todayMidnightUTC.setUTCHours(0, 0, 0, 0);
+        const upcomingExDate = new Date(todayMidnightUTC.getTime() + 5 * 24 * 60 * 60 * 1000);
+
+        mockGlobals.__mockPrisma.activityType.findMany = async () => [
+            { name: 'BUY', behavior: 'ADD' },
+            { name: 'SELL', behavior: 'REMOVE' },
+            { name: 'DIVIDEND', behavior: 'NEUTRAL' }
+        ];
+        mockGlobals.__mockPrisma.activity.findMany = async () => [
+            // Sold ETF with IEEE-754 float dust: 10.1 + 20.2 - 30.3 !== 0 in JS float math
+            {
+                id: 'sold-1',
+                type: 'BUY',
+                date: new Date(`${currentYear}-01-05T00:00:00Z`),
+                quantity: 10.1,
+                price: 50,
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'CASH.TO', name: 'Global X Cash ETF', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'TFSA' }
+            },
+            {
+                id: 'sold-2',
+                type: 'BUY',
+                date: new Date(`${currentYear}-01-10T00:00:00Z`),
+                quantity: 20.2,
+                price: 50,
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'CASH.TO', name: 'Global X Cash ETF', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'TFSA' }
+            },
+            {
+                id: 'sold-3',
+                type: 'DIVIDEND',
+                date: new Date(`${currentYear}-01-01T00:00:00Z`),
+                quantity: 1,
+                price: 500,
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'CASH.TO', name: 'Global X Cash ETF', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'TFSA' }
+            },
+            {
+                id: 'sold-4',
+                type: 'SELL',
+                date: new Date(`${currentYear}-03-01T00:00:00Z`),
+                quantity: 30.3,
+                price: 50,
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'CASH.TO', name: 'Global X Cash ETF', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'TFSA' }
+            },
+            // Active holding with exDate today (00:00 UTC) and valid payout
+            {
+                id: 'act-1',
+                type: 'BUY',
+                date: new Date(`${currentYear}-02-01T00:00:00Z`),
+                quantity: 100,
+                price: 30,
+                fee: 0,
+                currency: 'USD',
+                investment: { symbol: 'VTI', name: 'Vanguard Total Stock Market', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'RRSP' }
+            },
+            // Active holding with future exDate in window but $0 payout (must be filtered out)
+            {
+                id: 'act-2',
+                type: 'BUY',
+                date: new Date(`${currentYear}-02-01T00:00:00Z`),
+                quantity: 50,
+                price: 20,
+                fee: 0,
+                currency: 'CAD',
+                investment: { symbol: 'ZERO.TO', name: 'Zero Payout ETF', type: 'ETF' },
+                platform: { name: 'WealthSimple' },
+                account: { name: 'Rajat', type: 'RRSP' }
+            }
+        ];
+
+        mockGlobals.__mockMarketDataService.getPrice = async (symbol: string) => {
+            if (symbol === 'CASH.TO') {
+                return {
+                    price: 50,
+                    currency: 'CAD',
+                    regularMarketChange: 0,
+                    regularMarketChangePercent: 0,
+                    dividendRate: 2.0,
+                    dividendYield: 0.04,
+                    exDividendDate: upcomingExDate.toISOString(),
+                    estNextDividendAmount: 0.16
+                };
+            }
+            if (symbol === 'VTI') {
+                return {
+                    price: 30,
+                    currency: 'USD',
+                    regularMarketChange: 0,
+                    regularMarketChangePercent: 0,
+                    dividendRate: 3.6,
+                    dividendYield: 0.12,
+                    exDividendDate: todayMidnightUTC.toISOString(),
+                    estNextDividendAmount: 0.90
+                };
+            }
+            if (symbol === 'ZERO.TO') {
+                return {
+                    price: 20,
+                    currency: 'CAD',
+                    regularMarketChange: 0,
+                    regularMarketChangePercent: 0,
+                    dividendRate: 0,
+                    dividendYield: 0,
+                    exDividendDate: upcomingExDate.toISOString(),
+                    estNextDividendAmount: 0
+                };
+            }
+            return null;
+        };
+
+        mockGlobals.__mockMarketDataService.getExchangeRate = async (from: string, to: string) => {
+            if (from === 'CAD' && to === 'USD') return 0.7;
+            if (from === 'USD' && to === 'CAD') return 1.4;
+            return 1;
+        };
+
+        const request = new Request('http://localhost/api/portfolio?currency=CAD');
+        const response = await GET(request as Parameters<typeof GET>[0]);
+        assert.strictEqual(response.status, 200);
+
+        const data = await response.json();
+
+        // Sold dust position must be clamped to 0 and excluded from upcomingDividends
+        const cashConstituent = data.constituents.find((c: { symbol: string }) => c.symbol === 'CASH.TO');
+        assert.strictEqual(cashConstituent.quantity, 0);
+        assert.strictEqual(cashConstituent.dividendsYTDNative, 500);
+        assert.ok(Math.abs(cashConstituent.dividendsYTDTarget - 490) < 1e-6); // 500 * 0.7 * 1.4
+
+        // Only VTI should remain in upcomingDividends (estNextDividendAmount 0.90 * 100 * 1.4 CAD/USD = 126)
+        assert.strictEqual(data.upcomingDividends.length, 1);
+        assert.strictEqual(data.upcomingDividends[0].symbol, 'VTI');
+        assert.ok(Math.abs(data.upcomingDividends[0].estimatedAmount - 126) < 1e-6);
+
+        // Projected annual reflects active VTI only (3.6 * 100 * 1.4 = 504 CAD), excluding sold CASH.TO
+        assert.ok(Math.abs(data.projectedDividends - 504) < 1e-6);
+        // Sold CASH.TO YTD dividend (Jan 1 UTC) is still counted in Received YTD
+        assert.ok(Math.abs(data.dividendsYTD - 490) < 1e-6);
+    });
 });

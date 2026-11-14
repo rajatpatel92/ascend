@@ -363,7 +363,7 @@ test('MarketDataService.getPrice', async (t) => {
         apiThrottler.reset();
     });
 
-    await t.test('returns valid cached data when not stale and forceRefresh is false', async (subT) => {
+    await t.test('returns valid cached data including estNextDividendAmount when not stale and forceRefresh is false', async (subT) => {
         const now = new Date();
         subT.mock.method(prisma.marketDataCache, 'findUnique', async () => ({
             symbol: 'AAPL',
@@ -379,7 +379,8 @@ test('MarketDataService.getPrice', async (t) => {
             countryAllocations: [],
             dividendRate: 0.92,
             dividendYield: 0.006,
-            exDividendDate: null
+            exDividendDate: null,
+            estNextDividendAmount: 0.25
         }));
 
         const result = await MarketDataService.getPrice('AAPL', false);
@@ -389,9 +390,11 @@ test('MarketDataService.getPrice', async (t) => {
         assert.strictEqual(result.price, 150);
         assert.strictEqual(result.currency, 'USD');
         assert.strictEqual(result.sector, 'Technology');
+        assert.strictEqual(result.estNextDividendAmount, 0.25);
     });
 
-    await t.test('fetches price from API when cache is stale or forceRefresh is true', async (subT) => {
+    await t.test('fetches price from API when cache is stale or forceRefresh is true and persists dividend fields on create', async (subT) => {
+        const futureExDate = new Date(Date.now() + 1000 * 60 * 60 * 24 * 15);
         subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
         subT.mock.method(yahooFinance, 'quote', async () => ({
             regularMarketPrice: 175.5,
@@ -404,8 +407,12 @@ test('MarketDataService.getPrice', async (t) => {
             summaryProfile: { sector: 'Technology', country: 'United States' },
             summaryDetail: { dividendRate: 0.96, dividendYield: 0.0055 },
             topHoldings: { sectorWeightings: [] },
-            calendarEvents: {}
+            calendarEvents: { exDividendDate: futureExDate.toISOString() }
         }));
+        subT.mock.method(yahooFinance, 'historical', async () => [
+            { date: '2026-01-15', dividends: 0.24 },
+            { date: '2026-04-15', dividends: 0.24 }
+        ]);
 
         let upsertedData: any = null;
         subT.mock.method(prisma.marketDataCache, 'upsert', async (args: any) => {
@@ -418,8 +425,126 @@ test('MarketDataService.getPrice', async (t) => {
         assert.ok(result);
         assert.strictEqual(result.price, 175.5);
         assert.strictEqual(result.symbol, 'AAPL');
+        assert.strictEqual(result.estNextDividendAmount, 0.24);
+        assert.strictEqual(result.exDividendDate?.toISOString().split('T')[0], futureExDate.toISOString().split('T')[0]);
         assert.ok(upsertedData);
         assert.strictEqual(upsertedData.where.symbol, 'AAPL');
+        assert.strictEqual(upsertedData.create.dividendRate, 0.96);
+        assert.strictEqual(upsertedData.create.dividendYield, 0.0055);
+        assert.strictEqual(upsertedData.create.estNextDividendAmount, 0.24);
+        assert.ok(upsertedData.create.exDividendDate instanceof Date);
+    });
+
+    await t.test('recovers ETF trailing 12M rate with 13-month boundary trim and preserves future declared exDividendDate', async (subT) => {
+        const declaredFutureExDate = new Date(Date.now() + 1000 * 60 * 60 * 24 * 10);
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 50,
+            regularMarketChange: 0.2,
+            regularMarketChangePercent: 0.4,
+            currency: 'CAD',
+            quoteType: 'ETF',
+            longName: 'Monthly Cash ETF'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: {},
+            topHoldings: {},
+            calendarEvents: { exDividendDate: declaredFutureExDate.toISOString() },
+            defaultKeyStatistics: {}
+        }));
+
+        // 13 monthly payouts ~30 days apart -> should trim the oldest boundary payment (sum = 12 * 0.20 = 2.40)
+        const baseTime = new Date('2025-01-01T00:00:00.000Z').getTime();
+        const monthlyEvents = Array.from({ length: 13 }, (_, idx) => ({
+            date: new Date(baseTime + idx * 30 * 24 * 60 * 60 * 1000).toISOString(),
+            dividends: idx === 0 ? 0.50 : 0.20
+        }));
+        subT.mock.method(yahooFinance, 'historical', async () => monthlyEvents);
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+
+        const result = await MarketDataService.getPrice('CASH.TO', true);
+
+        assert.ok(result);
+        assert.ok(Math.abs((result.dividendRate || 0) - 2.4) < 1e-6);
+        assert.ok(Math.abs((result.dividendYield || 0) - 0.048) < 1e-6);
+        assert.strictEqual(result.estNextDividendAmount, 0.20);
+        assert.strictEqual(
+            result.exDividendDate?.toISOString().split('T')[0],
+            declaredFutureExDate.toISOString().split('T')[0]
+        );
+    });
+
+    await t.test('preserves cached ETF dividend metadata on stale interactive read when Yahoo omits it', async (subT) => {
+        const staleDate = new Date(Date.now() - 1000 * 60 * 20);
+        const futureExDate = new Date(Date.now() + 1000 * 60 * 60 * 24 * 12);
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => ({
+            symbol: 'XEQT.TO',
+            price: 34,
+            currency: 'CAD',
+            lastUpdated: staleDate,
+            marketTime: staleDate,
+            change: 0.1,
+            changePercent: 0.3,
+            sector: null,
+            country: null,
+            sectorAllocations: [],
+            countryAllocations: [],
+            dividendRate: 0.68,
+            dividendYield: 0.02,
+            exDividendDate: futureExDate,
+            estNextDividendAmount: 0.17
+        }));
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 35,
+            regularMarketChange: 0.5,
+            regularMarketChangePercent: 1.4,
+            currency: 'CAD',
+            quoteType: 'ETF'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: {},
+            topHoldings: {},
+            calendarEvents: {},
+            defaultKeyStatistics: {}
+        }));
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+
+        const result = await MarketDataService.getPrice('XEQT.TO', false);
+
+        assert.ok(result);
+        assert.strictEqual(result.price, 35);
+        assert.strictEqual(result.dividendRate, 0.68);
+        assert.strictEqual(result.dividendYield, 0.02);
+        assert.strictEqual(result.estNextDividendAmount, 0.17);
+        assert.strictEqual(
+            result.exDividendDate?.toISOString().split('T')[0],
+            futureExDate.toISOString().split('T')[0]
+        );
+    });
+
+    await t.test('skips historical dividend estimation for FX pairs, indices, and cryptocurrencies', async (subT) => {
+        let historicalCalled = 0;
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 1.38,
+            regularMarketChange: 0,
+            regularMarketChangePercent: 0,
+            currency: 'CAD',
+            quoteType: 'CURRENCY'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({}));
+        subT.mock.method(yahooFinance, 'historical', async () => {
+            historicalCalled++;
+            return [];
+        });
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+
+        await MarketDataService.getPrice('USDCAD=X', true);
+        await MarketDataService.getPrice('^GSPC', true);
+
+        assert.strictEqual(historicalCalled, 0);
     });
 
     await t.test('falls back to stale cache when API fails and forceRefresh is false', async (subT) => {
@@ -605,6 +730,48 @@ test('MarketDataService.refreshMarketData', async (t) => {
 
         await MarketDataService.refreshMarketData(['AAPL', 'MSFT']);
         assert.strictEqual(transactionUpdatesLength, 2);
+    });
+
+    await t.test('recovers and persists ETF trailing dividendRate and estNextDividendAmount when summaryDetail omits them', async (subT) => {
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            price: { regularMarketPrice: 25, regularMarketChange: 0.1, regularMarketChangePercent: 0.4, currency: 'CAD', quoteType: 'ETF' },
+            summaryProfile: {},
+            summaryDetail: {},
+            topHoldings: {},
+            calendarEvents: {},
+            defaultKeyStatistics: {}
+        }));
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            quotes: [{ date: '2026-01-01T00:00:00.000Z', close: 25 }]
+        }));
+        subT.mock.method(yahooFinance, 'historical', async () => [
+            { date: '2026-01-15T00:00:00.000Z', dividends: 0.25 },
+            { date: '2026-04-15T00:00:00.000Z', dividends: 0.25 },
+            { date: '2026-07-15T00:00:00.000Z', dividends: 0.25 },
+            { date: '2026-10-15T00:00:00.000Z', dividends: 0.25 }
+        ]);
+
+        let capturedUpsert: {
+            update: Record<string, unknown>;
+            create: Record<string, unknown>;
+        } | null = null;
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: {
+            update: Record<string, unknown>;
+            create: Record<string, unknown>;
+        }) => {
+            capturedUpsert = args;
+            return args;
+        });
+        subT.mock.method(prisma, '$transaction', async (updates: unknown[]) => updates);
+
+        await MarketDataService.refreshMarketData('ZHY.TO');
+
+        assert.ok(capturedUpsert);
+        assert.strictEqual(capturedUpsert.update.dividendRate, 1.0);
+        assert.strictEqual(capturedUpsert.update.dividendYield, 0.04);
+        assert.strictEqual(capturedUpsert.update.estNextDividendAmount, 0.25);
+        assert.strictEqual(capturedUpsert.create.estNextDividendAmount, 0.25);
+        assert.ok(capturedUpsert.update.exDividendDate instanceof Date);
     });
 });
 

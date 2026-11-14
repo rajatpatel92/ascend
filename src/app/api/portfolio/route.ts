@@ -8,6 +8,8 @@ import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
 
+const ACTIVE_QUANTITY_EPSILON = 0.00001;
+
 export async function GET(request: NextRequest) {
     const session = await auth();
     if (!session) {
@@ -70,6 +72,8 @@ export async function GET(request: NextRequest) {
             accounts: Map<string, { name: string, quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>
         }>();
 
+        const currentUtcYear = new Date().getUTCFullYear();
+
         for (const activity of activities) {
             const symbol = activity.investment.symbol;
             if (!holdingsMap.has(symbol)) {
@@ -102,8 +106,6 @@ export async function GET(request: NextRequest) {
 
             // Generate Unique Key for Account aggregation
             // User might have multiple accounts with same Name but different Type
-            // Generate Unique Key for Account aggregation
-            // User might have multiple accounts with same Name but different Type
             // AND same Name/Type across different Platforms. Must include Platform to separate.
             const accountKey = `${accountName}:${accountType}:${platformName}`;
 
@@ -130,11 +132,13 @@ export async function GET(request: NextRequest) {
                 }
 
             } else if (behavior === 'REMOVE') {
-                const prevQty = current.quantity;
                 current.quantity -= absQty;
-                current.platforms.set(platformName, Math.max(0, (current.platforms.get(platformName) || 0) - absQty));
+                if (Math.abs(current.quantity) < 1e-9) current.quantity = 0;
 
-                const proportion = acc.quantity > 0 ? (absQty / acc.quantity) : 0;
+                const nextPlatformQty = Math.max(0, (current.platforms.get(platformName) || 0) - absQty);
+                current.platforms.set(platformName, nextPlatformQty < 1e-9 ? 0 : nextPlatformQty);
+
+                const proportion = acc.quantity > 0 ? Math.min(1, absQty / acc.quantity) : 0;
                 const costToRemove = acc.costBasis * proportion;
 
                 // Realized ID: (Proceeds) - (Cost of these specific shares)
@@ -142,6 +146,7 @@ export async function GET(request: NextRequest) {
                 acc.realizedGain += realized;
 
                 acc.quantity = Math.max(0, acc.quantity - absQty);
+                if (acc.quantity < 1e-9) acc.quantity = 0;
                 acc.costBasis = Math.max(0, acc.costBasis - costToRemove);
                 acc.cashFlows.push({ amount: (amount - fee), date: activity.date });
 
@@ -150,7 +155,7 @@ export async function GET(request: NextRequest) {
                 acc.cashFlows.push({ amount: (amount - fee), date: activity.date });
                 acc.lifetimeDividends += (amount - fee);
 
-                if (new Date(activity.date).getFullYear() === new Date().getFullYear()) {
+                if (new Date(activity.date).getUTCFullYear() === currentUtcYear) {
                     acc.dividendsYTD += (amount - fee);
                 }
 
@@ -170,6 +175,22 @@ export async function GET(request: NextRequest) {
             // NEUTRAL does not affect quantity
 
             holdingsMap.set(symbol, current);
+        }
+
+        // Clamp residual float-dust positions cleanly so sold symbols never leak into active calculations
+        for (const holding of holdingsMap.values()) {
+            if (holding.quantity <= ACTIVE_QUANTITY_EPSILON) {
+                holding.quantity = 0;
+            }
+            for (const [pName, pQty] of holding.platforms.entries()) {
+                if (pQty <= ACTIVE_QUANTITY_EPSILON) holding.platforms.set(pName, 0);
+            }
+            for (const acc of holding.accounts.values()) {
+                if (acc.quantity <= ACTIVE_QUANTITY_EPSILON) {
+                    acc.quantity = 0;
+                    acc.costBasis = 0;
+                }
+            }
         }
 
         // 3. Fetch market data and calculate totals
@@ -208,7 +229,7 @@ export async function GET(request: NextRequest) {
                 const price = marketData?.price || 0;
                 let regularMarketChange = marketData?.regularMarketChange || 0;
                 let regularMarketChangePercent = marketData?.regularMarketChangePercent || 0;
-                const currency = marketData?.currency || 'USD';
+                const currency = marketData?.currency || data.investment?.currencyCode || 'USD';
 
                 // 24-Hour Rule: If data is older than 24h, show 0 change
                 if (marketData?.regularMarketTime) {
@@ -256,7 +277,7 @@ export async function GET(request: NextRequest) {
                 let realizedGainNative = 0;
                 let localDividendsYTD = 0;
                 let localLifetimeDividends = 0;
-                
+
                 for (const acc of data.accounts.values()) {
                     costBasis += acc.costBasis;
                     realizedGainNative += acc.realizedGain;
@@ -264,12 +285,13 @@ export async function GET(request: NextRequest) {
                     localLifetimeDividends += acc.lifetimeDividends;
                 }
 
-                const avgBuyPrice = data.quantity > 0 ? costBasis / data.quantity : 0;
-                const value = data.quantity * price;
-                const dayChange = data.quantity * regularMarketChange;
+                const hasActiveHolding = data.quantity > ACTIVE_QUANTITY_EPSILON;
+                const avgBuyPrice = hasActiveHolding ? costBasis / data.quantity : 0;
+                const value = hasActiveHolding ? data.quantity * price : 0;
+                const dayChange = hasActiveHolding ? data.quantity * regularMarketChange : 0;
 
                 // Add Current Value as "Inflow" for XIRR
-                if (data.quantity > 0) {
+                if (hasActiveHolding) {
                     symbolCashFlows.push({ amount: value, date: new Date() });
                 }
 
@@ -311,25 +333,32 @@ export async function GET(request: NextRequest) {
                     percent: costBasis > 0 ? ((value - costBasis) / costBasis) * 100 : 0
                 };
 
-                // Upcoming Dividends
+                // Upcoming Dividends (only for currently held positions with a positive estimated payout)
                 let upcomingDividend = null;
-                if (data.quantity > 0 && marketData?.exDividendDate) {
+                if (hasActiveHolding && marketData?.exDividendDate) {
                     const exDate = new Date(marketData.exDividendDate);
-                    const now = new Date();
-                    const cutoff = new Date();
-                    cutoff.setDate(now.getDate() + 45); // Next 45 days (~1.5 months)
+                    const startOfToday = new Date(now);
+                    startOfToday.setUTCHours(0, 0, 0, 0);
+                    const cutoff = new Date(startOfToday);
+                    cutoff.setUTCDate(cutoff.getUTCDate() + 45); // Next 45 days (~1.5 months)
 
-                    if (exDate >= now && exDate <= cutoff) {
-                        // Estimate Amount: Use exact estimate if available, else assume Quarterly (Rate/4) as crude fallback
-                        const estimatedAmountPerShare = marketData.estNextDividendAmount || ((marketData.dividendRate || 0) / 4);
+                    if (exDate >= startOfToday && exDate <= cutoff) {
+                        // Estimate Amount: Use exact estimate if available, else assume Quarterly (Rate/4) as fallback
+                        const estimatedAmountPerShare =
+                            marketData.estNextDividendAmount && marketData.estNextDividendAmount > 0
+                                ? marketData.estNextDividendAmount
+                                : ((marketData.dividendRate || 0) / 4);
+                        const estimatedAmountUSD = estimatedAmountPerShare * data.quantity * rateToUSD;
 
-                        upcomingDividend = {
-                            symbol,
-                            exDate: exDate.toISOString(),
-                            rate: marketData.dividendRate || 0,
-                            quantity: data.quantity,
-                            estimatedAmount: estimatedAmountPerShare * data.quantity * rateToUSD
-                        };
+                        if (estimatedAmountUSD > 0) {
+                            upcomingDividend = {
+                                symbol,
+                                exDate: exDate.toISOString(),
+                                rate: marketData.dividendRate || 0,
+                                quantity: data.quantity,
+                                estimatedAmount: estimatedAmountUSD
+                            };
+                        }
                     }
                 }
 
@@ -343,14 +372,14 @@ export async function GET(request: NextRequest) {
                     value,
                     costBasis,
                     dayChange,
-                    valueUSD: data.quantity > 0 ? value * rateToUSD : 0,
-                    costBasisUSD: data.quantity > 0 ? costBasis * rateToUSD : 0,
-                    dayChangeUSD: data.quantity > 0 ? dayChange * rateToUSD : 0,
+                    valueUSD: hasActiveHolding ? value * rateToUSD : 0,
+                    costBasisUSD: hasActiveHolding ? costBasis * rateToUSD : 0,
+                    dayChangeUSD: hasActiveHolding ? dayChange * rateToUSD : 0,
                     symbolCashFlows,
                     dividendsYTD: localDividendsYTD * rateToUSD,
                     lifetimeDividends: localLifetimeDividends * rateToUSD,
-                    projectedDividends: ((data.quantity > 0 && marketData?.dividendRate) ? (marketData.dividendRate * data.quantity) : 0) * rateToUSD,
-                    constituent: (data.quantity > 0 || localLifetimeDividends > 0 || Math.abs(realizedGainNative) > 0.01) ? {
+                    projectedDividends: ((hasActiveHolding && marketData?.dividendRate) ? (marketData.dividendRate * data.quantity) : 0) * rateToUSD,
+                    constituent: (hasActiveHolding || localLifetimeDividends > 0 || Math.abs(realizedGainNative) > 0.01) ? {
                         symbol,
                         name: data.investment.name,
                         type: data.investment.type,
@@ -377,22 +406,27 @@ export async function GET(request: NextRequest) {
                         xirr,
                         dividendYield: marketData?.dividendYield || 0,
                         lifetimeDividends: localLifetimeDividends * rateToUSD,
+                        lifetimeDividendsNative: localLifetimeDividends,
                         dividendsYTD: localDividendsYTD * rateToUSD,
+                        dividendsYTDNative: localDividendsYTD,
                         realizedGain: realizedGainNative * rateToUSD,
                         accountTypes: Array.from(new Set(Array.from((data.accounts as Map<string, any>).values()).map((a: any) => a.accountType || 'Unassigned'))),
                         accountNames: Array.from(new Set(Array.from((data.accounts as Map<string, any>).entries()).map(([k, a]: [string, any]) => a.name || k.split(':')[0] || 'Unassigned'))),
 
                         accountsBreakdown: Object.fromEntries(
                             Array.from((data.accounts as Map<string, any>).entries())
-                                .filter(([, val]: [string, any]) => val.quantity > 0 || val.lifetimeDividends > 0 || Math.abs(val.realizedGain) > 0.01)
+                                .filter(([, val]: [string, any]) => val.quantity > ACTIVE_QUANTITY_EPSILON || val.lifetimeDividends > 0 || Math.abs(val.realizedGain) > 0.01)
                                 .map(([key, val]: [string, any]) => {
                                     // Prefer explicit name stored on account entry, fallback to composite key prefix
                                     const accName = val.name || key.split(':')[0] || 'Unassigned';
 
                                     // Calculate Account XIRR
                                     // Add current value as final inflow
-                                    const accountValueUSD = val.quantity * price * rateToUSD;
-                                    const finalCashFlows = [...val.cashFlows, { amount: val.quantity * price, date: new Date() }];
+                                    const isAccountActive = val.quantity > ACTIVE_QUANTITY_EPSILON;
+                                    const accountValueUSD = isAccountActive ? val.quantity * price * rateToUSD : 0;
+                                    const finalCashFlows = isAccountActive
+                                        ? [...val.cashFlows, { amount: val.quantity * price, date: new Date() }]
+                                        : [...val.cashFlows];
                                     // Note: val.cashFlows are in native currency. 
                                     // calculateXIRR expects consistent currency.
                                     // Since all history is native, we use native final value for XIRR calc.
@@ -404,7 +438,7 @@ export async function GET(request: NextRequest) {
                                         value: accountValueUSD, // USD
                                         costBasis: val.costBasis * rateToUSD, // USD
                                         // Native Values for accurate reconstruction
-                                        valueNative: val.quantity * price,
+                                        valueNative: isAccountActive ? val.quantity * price : 0,
                                         costBasisNative: val.costBasis,
                                         lifetimeDividends: val.lifetimeDividends * rateToUSD,
                                         lifetimeDividendsNative: val.lifetimeDividends,
@@ -490,7 +524,7 @@ export async function GET(request: NextRequest) {
             projectedDividends += localProjected;
             totalRealizedGain += (constituent?.realizedGain || 0);
 
-            if (data.quantity > 0) {
+            if (data.quantity > ACTIVE_QUANTITY_EPSILON) {
                 totalValue += valueUSD;
                 totalCostBasis += costBasisUSD;
                 totalDayChange += dayChangeUSD;
@@ -501,7 +535,7 @@ export async function GET(request: NextRequest) {
 
                 // Allocation by Platform
                 for (const [platformName, qty] of data.platforms.entries()) {
-                    if (qty > 0) {
+                    if (qty > ACTIVE_QUANTITY_EPSILON) {
                         const platformValue = qty * price;
                         const platformValueUSD = platformValue * rateToUSD;
                         allocationByPlatform[platformName] = (allocationByPlatform[platformName] || 0) + platformValueUSD;
@@ -510,7 +544,7 @@ export async function GET(request: NextRequest) {
 
                 // Allocation by Account & Account Type
                 for (const [accountKey, accData] of data.accounts.entries()) {
-                    if (accData.quantity > 0) {
+                    if (accData.quantity > ACTIVE_QUANTITY_EPSILON) {
                         const accountValue = accData.quantity * price;
                         const accountValueUSD = accountValue * rateToUSD;
 
@@ -610,7 +644,7 @@ export async function GET(request: NextRequest) {
         }
 
         // Enrich Constituents with Target Values (c.value, bookValue, dayChange.absolute are native;
-        // realizedGain and lifetimeDividends are already stored in USD).
+        // realizedGain, lifetimeDividends, and dividendsYTD are already stored in USD).
         constituents.forEach(c => {
             const conversionRate = (c.rateToUSD || 1) * finalRate;
             c.conversionRate = conversionRate;
@@ -619,6 +653,7 @@ export async function GET(request: NextRequest) {
             c.bookValueTarget = c.bookValue * conversionRate;
             c.realizedGainTarget = (c.realizedGain || 0) * finalRate;
             c.lifetimeDividendsTarget = (c.lifetimeDividends || 0) * finalRate;
+            c.dividendsYTDTarget = (c.dividendsYTD || 0) * finalRate;
 
             const absUSD = c.dayChange.absolute * (c.rateToUSD || 1);
             c.dayChange.absoluteTarget = absUSD * finalRate;
@@ -627,7 +662,7 @@ export async function GET(request: NextRequest) {
 
         // Calculate Look-Through (Portfolio X-Ray: Sector & Geographic Exposure)
         const lookThroughConstituents = constituents
-            .filter(c => c.quantity > 0)
+            .filter(c => c.quantity > ACTIVE_QUANTITY_EPSILON)
             .map(c => ({
                 symbol: c.symbol,
                 name: c.name,

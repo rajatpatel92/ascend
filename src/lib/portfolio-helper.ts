@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma';
 
+const ACTIVE_QUANTITY_EPSILON = 0.00001;
+
 /**
  * Calculates the quantity of shares held for a symbol on a specific date, broken down by account.
  * Considers BUY, SELL, and SPLIT activities.
@@ -41,13 +43,13 @@ export async function getHoldingsAtDate(symbol: string, date: Date): Promise<Rec
         }
 
         // Negative Holdings Protection
-        if (holdings[accId] < 0) holdings[accId] = 0;
+        if (holdings[accId] < 1e-9) holdings[accId] = 0;
     }
 
-    // Filter out zero or negative holdings
+    // Filter out zero, negative, or floating-point dust holdings
     const result: Record<string, number> = {};
     for (const [accId, qty] of Object.entries(holdings)) {
-        if (qty > 0) result[accId] = qty;
+        if (qty > ACTIVE_QUANTITY_EPSILON) result[accId] = qty;
     }
 
     return result;
@@ -78,11 +80,13 @@ export function calculateHoldingsFromActivities(activities: any[], date: Date): 
         } else if (activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') {
             holdings[accId] *= activity.quantity;
         }
+
+        if (holdings[accId] < 1e-9) holdings[accId] = 0;
     }
 
     const result: Record<string, number> = {};
     for (const [accId, qty] of Object.entries(holdings)) {
-        if (qty > 0) result[accId] = qty;
+        if (qty > ACTIVE_QUANTITY_EPSILON) result[accId] = qty;
     }
 
     return result;

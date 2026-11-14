@@ -49,7 +49,7 @@ const EMPTY_INTERACTIVE_FILTERS: InteractiveFilters = {
     country: null
 };
 
-const QUANTITY_EPSILON = 0.000001;
+const QUANTITY_EPSILON = 0.00001;
 const VALUE_EPSILON = 0.01;
 
 const DIMENSIONS: ReadonlyArray<{
@@ -225,7 +225,13 @@ export default function AnalysisPage() {
                     });
                 }
 
-                if (!hasValidAccount || (newQuantity === 0 && newLifetimeDividends === 0 && Math.abs(newRealizedGain) < 0.01)) return null;
+                if (newQuantity <= QUANTITY_EPSILON) {
+                    newQuantity = 0;
+                    newValue = 0;
+                    newCostBasis = 0;
+                }
+
+                if (!hasValidAccount || (newQuantity === 0 && newLifetimeDividends === 0 && newDividendsYTD === 0 && Math.abs(newRealizedGain) < 0.01)) return null;
 
                 const aggregatedXirr = totalWeight > 0 ? weightedXirrSum / totalWeight : null;
                 const quantityRatio = item.quantity > 0 ? (newQuantity / item.quantity) : 0;
@@ -249,8 +255,11 @@ export default function AnalysisPage() {
                     bookValue: newCostBasis,
                     bookValueTarget: newCostBasis * conversionRate,
                     lifetimeDividends: newLifetimeDividends,
+                    lifetimeDividendsNative: newLifetimeDividends,
                     lifetimeDividendsTarget: newLifetimeDividends * conversionRate,
                     dividendsYTD: newDividendsYTD,
+                    dividendsYTDNative: newDividendsYTD,
+                    dividendsYTDTarget: newDividendsYTD * conversionRate,
                     realizedGain: newRealizedGain,
                     realizedGainTarget: newRealizedGain * conversionRate,
                     accountsBreakdown: newBreakdown,
@@ -397,7 +406,13 @@ export default function AnalysisPage() {
                     });
                 }
 
-                if (newQuantity === 0 && newLifetimeDividends === 0 && Math.abs(newRealizedGain) < 0.01) return null;
+                if (newQuantity <= QUANTITY_EPSILON) {
+                    newQuantity = 0;
+                    newValue = 0;
+                    newCostBasis = 0;
+                }
+
+                if (newQuantity === 0 && newLifetimeDividends === 0 && newDividendsYTD === 0 && Math.abs(newRealizedGain) < 0.01) return null;
 
                 const aggregatedXirr = totalWeight > 0 ? weightedXirrSum / totalWeight : null;
                 const quantityRatio = item.quantity > 0 ? (newQuantity / item.quantity) : 0;
@@ -421,8 +436,11 @@ export default function AnalysisPage() {
                     bookValue: newCostBasis,
                     bookValueTarget: newCostBasis * conversionRate,
                     lifetimeDividends: newLifetimeDividends,
+                    lifetimeDividendsNative: newLifetimeDividends,
                     lifetimeDividendsTarget: newLifetimeDividends * conversionRate,
                     dividendsYTD: newDividendsYTD,
+                    dividendsYTDNative: newDividendsYTD,
+                    dividendsYTDTarget: newDividendsYTD * conversionRate,
                     realizedGain: newRealizedGain,
                     realizedGainTarget: newRealizedGain * conversionRate,
                     dayChange: scaleMetric(item.dayChange),

@@ -40,6 +40,8 @@ interface Constituent {
     realizedGain?: number;
     realizedGainTarget?: number;
     dividendsYTD?: number;
+    dividendsYTDNative?: number;
+    dividendsYTDTarget?: number;
 }
 
 interface ConstituentsGridProps {
@@ -63,6 +65,18 @@ const PERIOD_OPTIONS: ReadonlyArray<{ id: ReturnPeriod; label: string }> = [
     { id: 'ALL_COLS', label: 'All' }
 ];
 
+function getEffectiveDividendYield(item: Constituent): number {
+    if (item.dividendYield && item.dividendYield > 0) return item.dividendYield;
+    if (item.quantity < 0.00001) return 0;
+    if (item.dividendsYTDTarget !== undefined && item.valueTarget && item.valueTarget > 0) {
+        return item.dividendsYTDTarget / item.valueTarget;
+    }
+    if (item.dividendsYTDNative !== undefined && item.value > 0) {
+        return item.dividendsYTDNative / item.value;
+    }
+    return item.value > 0 ? (item.dividendsYTD || 0) / item.value : 0;
+}
+
 export default function ConstituentsGrid({ data }: ConstituentsGridProps) {
     const [selectedPeriod, setSelectedPeriod] = useState<ReturnPeriod>('YTD');
     const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
@@ -83,7 +97,7 @@ export default function ConstituentsGrid({ data }: ConstituentsGridProps) {
     };
 
     // Filter active assets for the main table body
-    const EPSILON = 0.000001;
+    const EPSILON = 0.00001;
     const activeAssets = data.filter(d => d.quantity >= EPSILON);
     const soldAssets = data.filter(d => d.quantity < EPSILON);
 
@@ -275,7 +289,7 @@ export default function ConstituentsGrid({ data }: ConstituentsGridProps) {
                                         <div>{format(item.lifetimeDividendsTarget ?? convert(item.lifetimeDividends || 0, item.currency))}</div>
                                         <div className={styles.subtext}>
                                             {(() => {
-                                                const yieldVal = item.dividendYield || (item.value > 0 ? (item.dividendsYTD || 0) / item.value : 0);
+                                                const yieldVal = getEffectiveDividendYield(item);
                                                 return yieldVal > 0 ? `(${(yieldVal * 100).toFixed(2)}%)` : '-';
                                             })()}
                                         </div>
@@ -371,7 +385,7 @@ export default function ConstituentsGrid({ data }: ConstituentsGridProps) {
                                         {(() => {
                                             const totalVal = data.reduce((sum, item) => sum + (item.valueTarget ?? convert(item.value, item.currency)), 0);
                                             const weightedYieldSum = data.reduce((sum, item) => {
-                                                const itemYield = item.dividendYield || (item.value > 0 ? (item.dividendsYTD || 0) / item.value : 0);
+                                                const itemYield = getEffectiveDividendYield(item);
                                                 return sum + ((item.valueTarget ?? convert(item.value, item.currency)) * itemYield);
                                             }, 0);
                                             const avgYield = totalVal > 0 ? (weightedYieldSum / totalVal) : 0;
@@ -436,7 +450,7 @@ export default function ConstituentsGrid({ data }: ConstituentsGridProps) {
                             <div className={styles.statItem}>
                                 <span className={styles.statLabel}>Dividends</span>
                                 <span className={styles.statValue}>
-                                    {format(convert(item.lifetimeDividends || 0, item.currency))}
+                                    {format(item.lifetimeDividendsTarget ?? convert(item.lifetimeDividends || 0, item.currency))}
                                 </span>
                             </div>
                         </div>

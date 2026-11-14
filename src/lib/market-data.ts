@@ -101,35 +101,89 @@ export class Throttler {
 // Global instance: 2 concurrent requests, 300ms delay between completions
 export const apiThrottler = new Throttler(5, 300); // Adjust concurrency
 
-// Helper to estimate next dividend
-export async function estimateNextDividend(symbol: string): Promise<{ date: Date, amount: number } | undefined> {
+export interface DividendEstimateDetails {
+    nextDate?: Date;
+    nextAmount?: number;
+    trailingAnnualRate?: number;
+}
+
+function firstPositive(...values: unknown[]): number | undefined {
+    for (const val of values) {
+        if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+            return val;
+        }
+    }
+    return undefined;
+}
+
+function shouldEstimateDividends(symbol: string, quoteType?: string): boolean {
+    if (!symbol || symbol.endsWith('=X') || symbol.startsWith('^')) return false;
+    if (quoteType && ['CURRENCY', 'CRYPTOCURRENCY', 'INDEX'].includes(quoteType.toUpperCase())) {
+        return false;
+    }
+    return true;
+}
+
+// Helper to analyze trailing 12M dividend history and estimate next payout
+export async function estimateDividendDetails(symbol: string): Promise<DividendEstimateDetails | undefined> {
     try {
         const endDate = new Date();
         const startDate = new Date();
         startDate.setFullYear(endDate.getFullYear() - 1); // Last 12 months
 
-        // @ts-ignore - yahooFinance types might not support events='dividends' explicitly in some versions but it works
         const events = await apiThrottler.add(() => yahooFinance.historical(symbol, {
             period1: startDate,
             period2: endDate,
             events: 'dividends'
         }));
 
-        if (!Array.isArray(events) || events.length < 2) return undefined;
+        if (!Array.isArray(events) || events.length === 0) return undefined;
 
-        // Sort descending
-        events.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const validEvents = events
+            .map((e: any) => {
+                const dateObj = new Date(e?.date);
+                const amount = Number(e?.dividends);
+                return { dateObj, amount };
+            })
+            .filter(e => !Number.isNaN(e.dateObj.getTime()) && Number.isFinite(e.amount) && e.amount > 0)
+            .sort((a, b) => b.dateObj.getTime() - a.dateObj.getTime());
 
-        const lastDiv = new Date(events[0].date);
-        const prevDiv = new Date(events[1].date);
+        if (validEvents.length === 0) return undefined;
+
+        // # Reason: A 365-day window can catch an extra edge-date payment (e.g. 13 monthly or 5 quarterly
+        // payouts) when ex-dates shift by a day or two YoY; trim the extra boundary payout for regular cadences.
+        let annualEvents = validEvents;
+        if (validEvents.length >= 2) {
+            const intervals: number[] = [];
+            for (let i = 0; i < validEvents.length - 1; i++) {
+                const gapDays = (validEvents[i].dateObj.getTime() - validEvents[i + 1].dateObj.getTime()) / (1000 * 60 * 60 * 24);
+                intervals.push(gapDays);
+            }
+            const isMonthlySeries = validEvents.length === 13 && intervals.every(d => d >= 20 && d <= 40);
+            const isQuarterlySeries = validEvents.length === 5 && intervals.every(d => d >= 75 && d <= 105);
+            if (isMonthlySeries) {
+                annualEvents = validEvents.slice(0, 12);
+            } else if (isQuarterlySeries) {
+                annualEvents = validEvents.slice(0, 4);
+            }
+        }
+
+        const trailingAnnualRate = annualEvents.reduce((sum, e) => sum + e.amount, 0);
+
+        if (validEvents.length < 2) {
+            return { trailingAnnualRate };
+        }
+
+        const lastDiv = validEvents[0].dateObj;
+        const prevDiv = validEvents[1].dateObj;
 
         // Calculate interval in days
         const diffTime = Math.abs(lastDiv.getTime() - prevDiv.getTime());
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-        let projectedDate = new Date(lastDiv);
+        const projectedDate = new Date(lastDiv);
 
-        // Simple logic: if ~30 days, add 30. If ~90, add 90.
+        // Simple logic: if ~30 days, add 30. If ~90, add 91.
         if (diffDays >= 25 && diffDays <= 35) {
             projectedDate.setDate(lastDiv.getDate() + 30);
         } else if (diffDays >= 85 && diffDays <= 95) {
@@ -141,19 +195,24 @@ export async function estimateNextDividend(symbol: string): Promise<{ date: Date
             projectedDate.setDate(lastDiv.getDate() + diffDays);
         }
 
-        // Ensure projected date is in future (or close to now)
-        // If we projected a date that is already passed (e.g. today is Jan 5, projected was Jan 1), 
-        // it means we might have missed a payment or it's late. Still useful to return.
-
-        // Return valid data
         return {
-            date: projectedDate,
-            amount: events[0].dividends // Use the most recent dividend amount as the estimate
+            nextDate: projectedDate,
+            nextAmount: validEvents[0].amount,
+            trailingAnnualRate
         };
-
-    } catch (e) {
+    } catch {
         return undefined;
     }
+}
+
+// Helper to estimate next dividend
+export async function estimateNextDividend(symbol: string): Promise<{ date: Date, amount: number } | undefined> {
+    const details = await estimateDividendDetails(symbol);
+    if (!details?.nextDate || details.nextAmount === undefined) return undefined;
+    return {
+        date: details.nextDate,
+        amount: details.nextAmount
+    };
 }
 
 export interface StockSearchResult {
@@ -245,12 +304,16 @@ export class MarketDataService {
                     dividendRate: cached.dividendRate || undefined,
                     dividendYield: cached.dividendYield || undefined,
                     exDividendDate: cached.exDividendDate || undefined,
+                    estNextDividendAmount: cached.estNextDividendAmount || undefined,
                 };
             }
 
             // 2. Fetch from API (Only if forceRefresh is true OR cache is missing)
             // Fetch both Quote (for realtime price) and Summary (for metadata)
             const now = new Date();
+            const startOfToday = new Date(now);
+            startOfToday.setUTCHours(0, 0, 0, 0);
+
             // Execute sequentially to reduce rate-limiting (429) risk compared to Promise.all
             let quoteRealtime = null;
             let lastError: any = null;
@@ -282,6 +345,7 @@ export class MarketDataService {
             const changePercentVal = quoteRealtime?.regularMarketChangePercent || quoteSummary?.price?.regularMarketChangePercent || 0;
             const currencyVal = quoteRealtime?.currency || quoteSummary?.price?.currency || 'USD';
             const nameVal = quoteRealtime?.longName || quoteRealtime?.shortName || quoteSummary?.price?.longName || quoteSummary?.price?.shortName;
+            const quoteType = quoteRealtime?.quoteType || quoteSummary?.price?.quoteType;
 
             // Extract Market Time
             let marketTime = now;
@@ -298,26 +362,19 @@ export class MarketDataService {
             const calendar: any = quoteSummary?.calendarEvents || {};
             const keyStats: any = quoteSummary?.defaultKeyStatistics || {};
 
-            let dividendRate = detail.dividendRate;
-            let dividendYield = detail.dividendYield;
-
-            // Fallback for Dividend Rate/Yield
-            // Some ETFs/Funds provide 'yield' or 'trailingAnnualDividendYield' instead of 'dividendYield'
-            if (!dividendYield) {
-                if (detail.yield) {
-                    dividendYield = detail.yield;
-                } else if (detail.trailingAnnualDividendYield) {
-                    dividendYield = detail.trailingAnnualDividendYield;
-                } else if (keyStats.yield) {
-                    dividendYield = keyStats.yield;
-                }
-            }
-
-            if (!dividendRate) {
-                if (detail.trailingAnnualDividendRate) {
-                    dividendRate = detail.trailingAnnualDividendRate;
-                }
-            }
+            let dividendRate = firstPositive(
+                detail.dividendRate,
+                quoteRealtime?.dividendRate,
+                detail.trailingAnnualDividendRate,
+                quoteRealtime?.trailingAnnualDividendRate
+            );
+            let dividendYield = firstPositive(
+                detail.dividendYield,
+                detail.yield,
+                detail.trailingAnnualDividendYield,
+                quoteRealtime?.trailingAnnualDividendYield,
+                keyStats.yield
+            );
 
             // Calculate Rate if missing but Yield exists
             if (!dividendRate && dividendYield && priceVal) {
@@ -349,13 +406,40 @@ export class MarketDataService {
                 name: nameVal
             };
 
-            // Smart Projection: If missing Ex-Date OR Amount, try to estimate from history
-            // Only do this if we are forcing refresh (Background Job) to avoid slowing down user requests
-            if ((!data.exDividendDate || !data.estNextDividendAmount) && (data.dividendYield || data.dividendRate) && forceRefresh) {
-                const estimated = await estimateNextDividend(symbol);
-                if (estimated) {
-                    data.exDividendDate = estimated.date;
-                    data.estNextDividendAmount = estimated.amount;
+            // Smart Projection & Trailing-12M ETF Fallback:
+            // Only do this on forceRefresh (Background Job) to avoid slowing down interactive user requests.
+            if (
+                forceRefresh &&
+                shouldEstimateDividends(symbol, quoteType) &&
+                (!data.dividendRate || !data.exDividendDate || data.exDividendDate < startOfToday || !data.estNextDividendAmount)
+            ) {
+                const details = await estimateDividendDetails(symbol);
+                if (details) {
+                    if (!data.dividendRate && details.trailingAnnualRate) {
+                        data.dividendRate = details.trailingAnnualRate;
+                        if (!data.dividendYield && data.price > 0) {
+                            data.dividendYield = details.trailingAnnualRate / data.price;
+                        }
+                    }
+                    if (details.nextDate && (!data.exDividendDate || data.exDividendDate < startOfToday)) {
+                        data.exDividendDate = details.nextDate;
+                    }
+                    if (details.nextAmount) {
+                        data.estNextDividendAmount = details.nextAmount;
+                    }
+                }
+            } else if (!forceRefresh && cached) {
+                // # Reason: Interactive reads after the 5-minute TTL skip the historical dividend check;
+                // preserve previously resolved ETF dividend metadata when quote/summary omits it.
+                if (!data.dividendRate && !data.dividendYield && cached.dividendRate) {
+                    data.dividendRate = cached.dividendRate;
+                    data.dividendYield = cached.dividendYield || (data.price > 0 ? cached.dividendRate / data.price : undefined);
+                }
+                if ((!data.exDividendDate || data.exDividendDate < startOfToday) && cached.exDividendDate && new Date(cached.exDividendDate) >= startOfToday) {
+                    data.exDividendDate = cached.exDividendDate;
+                }
+                if (!data.estNextDividendAmount && cached.estNextDividendAmount) {
+                    data.estNextDividendAmount = cached.estNextDividendAmount;
                 }
             }
 
@@ -388,6 +472,10 @@ export class MarketDataService {
                     country: data.country,
                     sectorAllocations: data.sectorAllocations,
                     countryAllocations: data.countryAllocations,
+                    dividendRate: data.dividendRate,
+                    dividendYield: data.dividendYield,
+                    exDividendDate: data.exDividendDate,
+                    estNextDividendAmount: data.estNextDividendAmount,
                     marketTime: data.regularMarketTime,
                     lastUpdated: now
                 }
@@ -861,6 +949,8 @@ export class MarketDataService {
         try {
             console.log(`Refreshing market data for ${symbolList.length} symbol(s)...`);
             const now = new Date();
+            const startOfToday = new Date(now);
+            startOfToday.setUTCHours(0, 0, 0, 0);
 
             const processSymbol = async (symbol: string) => {
                 let priceData = {
@@ -874,21 +964,47 @@ export class MarketDataService {
                     countryAllocations: undefined as any,
                     dividendRate: undefined as number | undefined,
                     dividendYield: undefined as number | undefined,
-                    exDividendDate: undefined as Date | undefined
+                    exDividendDate: undefined as Date | undefined,
+                    estNextDividendAmount: undefined as number | undefined
                 };
 
                 try {
                     // 1. Fetch Quote (Price, Profile, Top Holdings for ETF)
                     const quote = await apiThrottler.add(() => yahooFinance.quoteSummary(symbol, { modules: ['price', 'summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] })) as any;
 
+                    let quoteType: string | undefined;
                     if (quote && quote.price) {
                         const p = quote.price;
                         const profile = quote.summaryProfile || {};
                         const holdings = quote.topHoldings || {};
                         const calendar = quote.calendarEvents || {};
+                        const detail = quote.summaryDetail || {};
+                        const keyStats = quote.defaultKeyStatistics || {};
+                        quoteType = p.quoteType;
+
+                        const priceVal = p.regularMarketPrice || 0;
+
+                        let dividendRate = firstPositive(
+                            detail.dividendRate,
+                            detail.trailingAnnualDividendRate
+                        );
+                        let dividendYield = firstPositive(
+                            detail.dividendYield,
+                            detail.yield,
+                            detail.trailingAnnualDividendYield,
+                            keyStats.yield
+                        );
+
+                        if (!dividendRate && dividendYield && priceVal) {
+                            dividendRate = priceVal * dividendYield;
+                        }
+
+                        if (!dividendYield && dividendRate && priceVal) {
+                            dividendYield = dividendRate / priceVal;
+                        }
 
                         priceData = {
-                            price: p.regularMarketPrice || 0,
+                            price: priceVal,
                             change: p.regularMarketChange || 0,
                             changePercent: p.regularMarketChangePercent || 0,
                             currency: p.currency || 'USD',
@@ -896,44 +1012,32 @@ export class MarketDataService {
                             country: profile.country,
                             sectorAllocations: holdings.sectorWeightings || [],
                             countryAllocations: [],
-
-                            dividendRate: quote.summaryDetail?.dividendRate,
-                            dividendYield: quote.summaryDetail?.dividendYield,
-                            exDividendDate: calendar.exDividendDate ? new Date(calendar.exDividendDate) : undefined
+                            dividendRate,
+                            dividendYield,
+                            exDividendDate: calendar.exDividendDate ? new Date(calendar.exDividendDate) : undefined,
+                            estNextDividendAmount: undefined
                         };
+                    }
 
-                        const detail = quote.summaryDetail || {};
-                        const keyStats = quote.defaultKeyStatistics || {};
-
-                        let dividendRate = detail.dividendRate;
-                        let dividendYield = detail.dividendYield;
-
-                        if (!dividendYield) {
-                            if (detail.yield) {
-                                dividendYield = detail.yield;
-                            } else if (detail.trailingAnnualDividendYield) {
-                                dividendYield = detail.trailingAnnualDividendYield;
-                            } else if (keyStats.yield) {
-                                dividendYield = keyStats.yield;
+                    if (
+                        shouldEstimateDividends(symbol, quoteType) &&
+                        (!priceData.dividendRate || !priceData.exDividendDate || priceData.exDividendDate < startOfToday || !priceData.estNextDividendAmount)
+                    ) {
+                        const details = await estimateDividendDetails(symbol);
+                        if (details) {
+                            if (!priceData.dividendRate && details.trailingAnnualRate) {
+                                priceData.dividendRate = details.trailingAnnualRate;
+                                if (!priceData.dividendYield && priceData.price > 0) {
+                                    priceData.dividendYield = details.trailingAnnualRate / priceData.price;
+                                }
+                            }
+                            if (details.nextDate && (!priceData.exDividendDate || priceData.exDividendDate < startOfToday)) {
+                                priceData.exDividendDate = details.nextDate;
+                            }
+                            if (details.nextAmount) {
+                                priceData.estNextDividendAmount = details.nextAmount;
                             }
                         }
-
-                        if (!dividendRate) {
-                            if (detail.trailingAnnualDividendRate) {
-                                dividendRate = detail.trailingAnnualDividendRate;
-                            }
-                        }
-
-                        if (!dividendRate && dividendYield && priceData.price) {
-                            dividendRate = priceData.price * dividendYield;
-                        }
-
-                        if (!dividendYield && dividendRate && priceData.price) {
-                            dividendYield = dividendRate / priceData.price;
-                        }
-
-                        priceData.dividendRate = dividendRate;
-                        priceData.dividendYield = dividendYield;
                     }
 
                     // 2. Fetch History (Chart)
@@ -983,6 +1087,7 @@ export class MarketDataService {
                             dividendRate: priceData.dividendRate,
                             dividendYield: priceData.dividendYield,
                             exDividendDate: priceData.exDividendDate,
+                            estNextDividendAmount: priceData.estNextDividendAmount,
                             history: history,
                             lastUpdated: now
                         },
@@ -999,6 +1104,7 @@ export class MarketDataService {
                             dividendRate: priceData.dividendRate,
                             dividendYield: priceData.dividendYield,
                             exDividendDate: priceData.exDividendDate,
+                            estNextDividendAmount: priceData.estNextDividendAmount,
                             history: history,
                             lastUpdated: now
                         }

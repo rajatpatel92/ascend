@@ -28,6 +28,9 @@ export async function GET(request: Request) {
             },
             include: {
                 investment: true
+            },
+            orderBy: {
+                date: 'asc'
             }
         });
 
@@ -39,6 +42,7 @@ export async function GET(request: Request) {
         // Default behaviors
         if (!behaviorMap.has('BUY')) behaviorMap.set('BUY', 'ADD');
         if (!behaviorMap.has('SELL')) behaviorMap.set('SELL', 'REMOVE');
+        if (!behaviorMap.has('STOCK_SPLIT')) behaviorMap.set('STOCK_SPLIT', 'SPLIT');
         if (!behaviorMap.has('TRANSFER_IN')) behaviorMap.set('TRANSFER_IN', 'ADD');
         if (!behaviorMap.has('TRANSFER_OUT')) behaviorMap.set('TRANSFER_OUT', 'REMOVE');
 
@@ -46,12 +50,20 @@ export async function GET(request: Request) {
 
         for (const activity of activities) {
             const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
+            const absQty = Math.abs(activity.quantity);
 
             if (behavior === 'ADD') {
-                quantity += activity.quantity;
+                quantity += absQty;
             } else if (behavior === 'REMOVE') {
-                quantity -= activity.quantity;
+                quantity -= absQty;
+                if (quantity < 1e-9) quantity = 0;
+            } else if (behavior === 'SPLIT' && absQty > 0) {
+                quantity *= absQty;
             }
+        }
+
+        if (quantity <= 0.00001) {
+            quantity = 0;
         }
 
         return NextResponse.json({ quantity });
