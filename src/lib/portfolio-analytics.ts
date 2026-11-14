@@ -34,36 +34,276 @@ interface DividendData {
 
 export class PortfolioAnalytics {
 
+    private static isIsoDateKey(key: string): boolean {
+        return /^\d{4}-\d{2}-\d{2}$/.test(key);
+    }
+
+    private static getAccountPoolKey(activity: Activity): string {
+        const withAccount = activity as Activity & { account?: { id?: string | null } | null };
+        return activity.accountId || withAccount.account?.id || 'portfolio';
+    }
+
+    private static resolveFxRate(
+        fxMap: Record<string, number> | undefined,
+        dateStr: string,
+        lastKnownRate?: number
+    ): number | null {
+        if (fxMap && fxMap[dateStr] !== undefined && fxMap[dateStr] > 0) {
+            return fxMap[dateStr];
+        }
+        if (lastKnownRate !== undefined && lastKnownRate > 0) {
+            return lastKnownRate;
+        }
+        if (fxMap) {
+            const dateKeys = Object.keys(fxMap).filter(k => this.isIsoDateKey(k)).sort();
+            let closestDate: string | null = null;
+            for (const d of dateKeys) {
+                if (d <= dateStr && fxMap[d] > 0) closestDate = d;
+                else if (d > dateStr) break;
+            }
+            if (closestDate) return fxMap[closestDate];
+            const firstValid = dateKeys.find(d => fxMap[d] > 0);
+            if (firstValid) return fxMap[firstValid];
+        }
+        return null;
+    }
+
+    private static async batchProcess<T>(
+        items: T[],
+        batchSize: number,
+        processor: (item: T) => Promise<void>
+    ): Promise<void> {
+        for (let i = 0; i < items.length; i += batchSize) {
+            const batch = items.slice(i, i + batchSize);
+            await Promise.all(batch.map(item => processor(item)));
+        }
+    }
+
+    private static async fetchFxMaps(
+        relevantCurrencies: string[],
+        targetCurrency: string,
+        lookback: Date,
+        log?: (msg: string) => void
+    ): Promise<Record<string, Record<string, number>>> {
+        const fxMaps: Record<string, Record<string, number>> = {};
+        const fxPairs = relevantCurrencies.map(c => ({ from: c, to: targetCurrency, symbol: `${c}${targetCurrency}=X` }));
+        if (log) log(`[PortfolioAnalytics] Fetching FX Pairs: ${fxPairs.map(p => p.symbol).join(', ')}`);
+
+        await this.batchProcess(fxPairs, 2, async ({ from, to, symbol }) => {
+            let hist = await MarketDataService.getDailyHistory(symbol, lookback);
+
+            // Fallback: Try Reverse Pair if direct pair fails
+            if (Object.keys(hist).length === 0) {
+                const reverseSymbol = `${to}${from}=X`;
+                if (log) log(`[PortfolioAnalytics] Direct FX ${symbol} empty. Trying reverse ${reverseSymbol}`);
+
+                const reverseHist = await MarketDataService.getDailyHistory(reverseSymbol, lookback);
+                if (Object.keys(reverseHist).length > 0) {
+                    hist = {};
+                    Object.entries(reverseHist).forEach(([date, rate]) => {
+                        if (rate > 0) hist[date] = 1 / rate;
+                    });
+                    if (log) log(`[PortfolioAnalytics] Inverted ${Object.keys(hist).length} points from ${reverseSymbol}`);
+                }
+            }
+
+            fxMaps[from] = hist;
+        });
+
+        return fxMaps;
+    }
+
+    private static seedLastKnownFx(
+        relevantCurrencies: string[],
+        fxMaps: Record<string, Record<string, number>>,
+        referenceIso: string
+    ): Record<string, number> {
+        const lastKnownFx: Record<string, number> = {};
+        relevantCurrencies.forEach(c => {
+            const rate = this.resolveFxRate(fxMaps[c], referenceIso);
+            if (rate !== null && rate > 0) {
+                lastKnownFx[c] = rate;
+            }
+        });
+        return lastKnownFx;
+    }
+
+    private static groupActivitiesByUtcDay<T extends Activity>(activities: T[]): Array<{ dateStr: string; items: T[] }> {
+        const typeOrder = (t: string): number => {
+            if (t === 'STOCK_SPLIT' || t === 'SPLIT') return 0;
+            if (t === 'DIVIDEND') return 1;
+            if (t === 'BUY' || t === 'DEPOSIT' || t === 'TRANSFER_IN') return 2;
+            return 3;
+        };
+        const sorted = [...activities].sort((a, b) => {
+            const diff = new Date(a.date).getTime() - new Date(b.date).getTime();
+            if (diff !== 0) return diff;
+            return typeOrder(a.type) - typeOrder(b.type);
+        });
+        const groups: Array<{ dateStr: string; items: T[] }> = [];
+        for (const activity of sorted) {
+            const dateStr = new Date(activity.date).toISOString().split('T')[0];
+            const last = groups[groups.length - 1];
+            if (last && last.dateStr === dateStr) {
+                last.items.push(activity);
+            } else {
+                groups.push({ dateStr, items: [activity] });
+            }
+        }
+        return groups;
+    }
+
+    /**
+     * Processes one UTC day's non-split activities in deterministic order:
+     * 1) DIVIDEND credits the account's dividend cash pool (available for same-day DRIP or future BUYs).
+     * 2) BUY consumes from that pool first so reinvested dividends are excluded from out-of-pocket contributions.
+     * 3) SELL/WITHDRAWAL/TRANSFER_OUT subtracts fees from proceeds and triggers oversell deficit protection.
+     */
+    private static applyNonSplitActivitiesForDay(params: {
+        activities: (Activity & { investment: { symbol: string; currency: string } })[];
+        dateStr: string;
+        targetCurrency: string;
+        fxMaps: Record<string, Record<string, number>>;
+        lastKnownFx: Record<string, number>;
+        holdings: Record<string, number>;
+        dividendCashPool: Record<string, number>;
+        log?: (msg: string) => void;
+    }): {
+        outOfPocketInflow: number;
+        outOfPocketOutflow: number;
+        netFlow: number;
+        grossTradeFlow: number;
+        dailyDividends: number;
+        dailyDivBySym: Record<string, number>;
+        symTradeFlowDelta: Record<string, { netInflow: number; buys: number }>;
+    } {
+        const { activities, dateStr, targetCurrency, fxMaps, lastKnownFx, holdings, dividendCashPool, log } = params;
+
+        let outOfPocketInflow = 0;
+        let outOfPocketOutflow = 0;
+        let grossTradeFlow = 0;
+        let dailyDividends = 0;
+        const dailyDivBySym: Record<string, number> = {};
+        const symTradeFlowDelta: Record<string, { netInflow: number; buys: number }> = {};
+
+        const getActivityFx = (assetCurrency: string): number => {
+            if (!assetCurrency || assetCurrency === targetCurrency) return 1;
+            const resolved = this.resolveFxRate(fxMaps[assetCurrency], dateStr, lastKnownFx[assetCurrency]);
+            const fxRate = resolved !== null && resolved > 0 ? resolved : 1;
+            if (resolved !== null && resolved > 0) {
+                lastKnownFx[assetCurrency] = resolved;
+            }
+            return fxRate;
+        };
+
+        const divActivities = activities.filter(a => a.type === 'DIVIDEND');
+        const flowActivities = activities.filter(a => a.type !== 'DIVIDEND');
+
+        // # Reason: Process DIVIDENDs before same-day BUYs so automated DRIPs (which share the exact same date)
+        // draw from the dividend proceeds instead of inflating out-of-pocket capital contributions.
+        for (const a of divActivities) {
+            const symbol = a.investment.symbol;
+            const fxRate = getActivityFx(a.investment.currency);
+            const divVal = (a.quantity * a.price) * fxRate;
+            dailyDividends += divVal;
+            dailyDivBySym[symbol] = (dailyDivBySym[symbol] || 0) + divVal;
+
+            if (divVal > 0) {
+                const poolKey = this.getAccountPoolKey(a);
+                dividendCashPool[poolKey] = (dividendCashPool[poolKey] || 0) + divVal;
+            }
+            if (log) {
+                log(`[Dividend] ${a.date} ${symbol}: Qty=${a.quantity}, Price=${a.price}, FX=${fxRate} -> Val=${divVal} (DailyTotal=${dailyDividends})`);
+            }
+        }
+
+        for (const a of flowActivities) {
+            const symbol = a.investment.symbol;
+            const fxRate = getActivityFx(a.investment.currency);
+            if (!symTradeFlowDelta[symbol]) {
+                symTradeFlowDelta[symbol] = { netInflow: 0, buys: 0 };
+            }
+
+            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
+                const flowVal = (a.quantity * a.price) + (a.fee || 0);
+                const flowConverted = flowVal * fxRate;
+                grossTradeFlow += flowConverted;
+                symTradeFlowDelta[symbol].netInflow += flowConverted;
+                symTradeFlowDelta[symbol].buys += flowConverted;
+
+                if (a.type === 'BUY' && flowConverted > 0) {
+                    const poolKey = this.getAccountPoolKey(a);
+                    const poolAvailable = dividendCashPool[poolKey] || 0;
+                    const reinvestedFromDiv = Math.min(flowConverted, poolAvailable);
+                    dividendCashPool[poolKey] = Math.max(0, poolAvailable - reinvestedFromDiv);
+                    outOfPocketInflow += flowConverted - reinvestedFromDiv;
+                } else {
+                    outOfPocketInflow += flowConverted;
+                }
+
+                holdings[symbol] = (holdings[symbol] || 0) + a.quantity;
+                if (holdings[symbol] < 0) holdings[symbol] = 0;
+            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
+                const flowVal = (Math.abs(a.quantity) * a.price) - (a.fee || 0);
+                const proceedsConverted = flowVal * fxRate;
+                grossTradeFlow -= proceedsConverted;
+                symTradeFlowDelta[symbol].netInflow -= proceedsConverted;
+
+                if (proceedsConverted >= 0) {
+                    outOfPocketOutflow += proceedsConverted;
+                } else {
+                    outOfPocketInflow += Math.abs(proceedsConverted);
+                }
+
+                holdings[symbol] = (holdings[symbol] || 0) - Math.abs(a.quantity);
+                if (holdings[symbol] < 0) {
+                    const deficit = Math.abs(holdings[symbol]);
+                    const deficitVal = deficit * a.price * fxRate;
+                    outOfPocketInflow += deficitVal;
+                    grossTradeFlow += deficitVal;
+                    symTradeFlowDelta[symbol].netInflow += deficitVal;
+                    symTradeFlowDelta[symbol].buys += deficitVal;
+                    holdings[symbol] = 0;
+                }
+            }
+        }
+
+        return {
+            outOfPocketInflow,
+            outOfPocketOutflow,
+            netFlow: outOfPocketInflow - outOfPocketOutflow,
+            grossTradeFlow,
+            dailyDividends,
+            dailyDivBySym,
+            symTradeFlowDelta
+        };
+    }
+
     static async calculateFlows(
         activities: (Activity & { investment: { symbol: string; currency: string } })[],
         targetCurrency: string = 'CAD'
     ) {
+        const sortedActivities = [...activities].sort(
+            (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+        );
+
         // 1. Identify currencies
-        const assetCurrencies = Array.from(new Set(activities.map(a => a.investment.currency)));
+        const assetCurrencies = Array.from(new Set(sortedActivities.map(a => a.investment.currency)));
         const relevantCurrencies = assetCurrencies.filter(c => c && c !== targetCurrency);
 
-        // 2. Fetch FX Rates
-        const lookback = new Date(); // Determine oldest activity?
-        if (activities.length > 0) {
-            lookback.setTime(new Date(activities[0].date).getTime());
+        // 2. Fetch FX Rates with 14-day lookback and reverse-pair fallback
+        const lookback = new Date();
+        if (sortedActivities.length > 0) {
+            lookback.setTime(new Date(sortedActivities[0].date).getTime());
         } else {
-            lookback.setFullYear(lookback.getFullYear() - 1);
+            lookback.setUTCFullYear(lookback.getUTCFullYear() - 1);
         }
+        lookback.setUTCDate(lookback.getUTCDate() - 14);
 
-        const fxMaps: Record<string, Record<string, number>> = {};
-        const fxPairs = relevantCurrencies.map(c => ({ from: c, to: targetCurrency, symbol: `${c}${targetCurrency}=X` }));
-
-        await Promise.all(fxPairs.map(async ({ from, symbol }) => {
-            const hist = await MarketDataService.getDailyHistory(symbol, lookback);
-            fxMaps[from] = hist;
-        }));
-
-        // 3. Aggregate
-        // We reuse the structure from route.ts but strictly typed here would be better
-        // For now, return raw data so route can format? Or format here? 
-        // Formatting (Week/Month/Year) is better done here to keep logic encapsulated.
+        const fxMaps = await this.fetchFxMaps(relevantCurrencies, targetCurrency, lookback);
 
         const flows = {
+            day: new Map<string, FlowData>(),
             week: new Map<string, FlowData>(),
             month: new Map<string, FlowData>(),
             year: new Map<string, FlowData>()
@@ -87,152 +327,105 @@ export class PortfolioAnalytics {
             e.amount += amount;
         };
 
-        activities.forEach(a => {
-            const date = new Date(a.date);
-            const dateStr = date.toISOString().split('T')[0];
-            const assetCurrency = a.investment.currency;
+        const dayGroups = this.groupActivitiesByUtcDay(sortedActivities);
+        const startIso = dayGroups.length > 0
+            ? dayGroups[0].dateStr
+            : new Date().toISOString().split('T')[0];
 
-            let fx = 1;
-            if (assetCurrency !== targetCurrency) {
-                fx = fxMaps[assetCurrency]?.[dateStr] || 1;
-                // We could implement lastKnownFx logic here too for robustness
+        const lastKnownFx = this.seedLastKnownFx(relevantCurrencies, fxMaps, startIso);
+        const holdings: Record<string, number> = {};
+        const dividendCashPool: Record<string, number> = {};
+
+        for (const { dateStr, items } of dayGroups) {
+            const splitActivities = items.filter(a => a.type === 'STOCK_SPLIT' || a.type === 'SPLIT');
+            const otherActivities = items.filter(a => a.type !== 'STOCK_SPLIT' && a.type !== 'SPLIT');
+
+            for (const a of splitActivities) {
+                const sym = a.investment.symbol;
+                holdings[sym] = Math.max(0, (holdings[sym] || 0) * a.quantity);
             }
 
-            const amount = ((a.quantity * a.price) + (a.fee || 0)) * fx;
-            const divAmount = (a.quantity * a.price) * fx;
+            const { outOfPocketInflow, outOfPocketOutflow, dailyDividends } = this.applyNonSplitActivitiesForDay({
+                activities: otherActivities,
+                dateStr,
+                targetCurrency,
+                fxMaps,
+                lastKnownFx,
+                holdings,
+                dividendCashPool
+            });
 
-            // Generate Keys
-            const yKey = date.getFullYear().toString();
-            const mKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
-
-            // Week Key
-            const day = date.getDay();
-            const diff = date.getDate() - day;
-            const weekStart = new Date(date);
-            weekStart.setDate(diff);
+            const utcDate = new Date(`${dateStr}T00:00:00.000Z`);
+            const yKey = String(utcDate.getUTCFullYear());
+            const mKey = `${yKey}-${String(utcDate.getUTCMonth() + 1).padStart(2, '0')}`;
+            const weekStart = new Date(Date.UTC(
+                utcDate.getUTCFullYear(),
+                utcDate.getUTCMonth(),
+                utcDate.getUTCDate() - utcDate.getUTCDay()
+            ));
             const wKey = weekStart.toISOString().split('T')[0];
 
-            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
-                processMap(flows.week, wKey, wKey, amount, 0);
-                processMap(flows.month, mKey, `${mKey}-01`, amount, 0);
-                processMap(flows.year, yKey, `${yKey}-01-01`, amount, 0);
-            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
-                processMap(flows.week, wKey, wKey, 0, Math.abs(amount));
-                processMap(flows.month, mKey, `${mKey}-01`, 0, Math.abs(amount));
-                processMap(flows.year, yKey, `${yKey}-01-01`, 0, Math.abs(amount));
-            } else if (a.type === 'DIVIDEND') {
-                processDivMap(dividends.month, mKey, `${mKey}-01`, divAmount);
-                processDivMap(dividends.year, yKey, `${yKey}-01-01`, divAmount);
+            if (outOfPocketInflow > 0 || outOfPocketOutflow > 0) {
+                processMap(flows.day, dateStr, dateStr, outOfPocketInflow, outOfPocketOutflow);
+                processMap(flows.week, wKey, wKey, outOfPocketInflow, outOfPocketOutflow);
+                processMap(flows.month, mKey, `${mKey}-01`, outOfPocketInflow, outOfPocketOutflow);
+                processMap(flows.year, yKey, `${yKey}-01-01`, outOfPocketInflow, outOfPocketOutflow);
             }
-        });
 
-        const sort = <T extends { date: string }>(map: Map<string, T>) => Array.from(map.values()).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-        // Gap Filling Logic
-        const fillGaps = (
-            map: Map<string, any>,
-            type: 'month' | 'year',
-            minDate: Date,
-            maxDate: Date = new Date()
-        ) => {
-            if (map.size === 0 && minDate > maxDate) return;
-
-            // Adjust minDate to start of period
-            const current = new Date(minDate);
-            current.setDate(1); // Start of month
-
-            while (current <= maxDate) {
-                let key = '';
-                let dateStr = '';
-
-                if (type === 'month') {
-                    key = `${current.getFullYear()}-${(current.getMonth() + 1).toString().padStart(2, '0')}`;
-                    dateStr = `${key}-01`;
-                    // Increment
-                    current.setMonth(current.getMonth() + 1);
-                } else if (type === 'year') {
-                    key = current.getFullYear().toString();
-                    dateStr = `${key}-01-01`;
-                    // Increment
-                    current.setFullYear(current.getFullYear() + 1);
-                }
-
-                if (!map.has(key)) {
-                    // Check structure type (FlowData vs DividendData)
-                    // We can infer or check existing, but "inflow" implies FlowData
-                    // Simplest is to pass factory or check what map holds? 
-                    // Let's assume generic fill based on known types.
-                    // Actually, we can just check if any value exists to get shape?
-                    // Or just use the known shape.
-
-                    // Since specific maps are passed, we handle them outside or make this generic.
-                    // Easier to just inline or strictly type.
-                }
+            if (dailyDividends > 0) {
+                processDivMap(dividends.month, mKey, `${mKey}-01`, dailyDividends);
+                processDivMap(dividends.year, yKey, `${yKey}-01-01`, dailyDividends);
             }
-        };
-
-        // Inline simplified gap filler for specific maps
-        const now = new Date();
-        // Determine start date from activities (or 1 year ago if empty?)
-        let startDate = new Date();
-        if (activities.length > 0) {
-            activities.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-            startDate = new Date(activities[0].date);
-        } else {
-            startDate.setFullYear(startDate.getFullYear() - 1);
         }
+
+        const sort = <T extends { date: string }>(map: Map<string, T>) =>
+            Array.from(map.values()).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        // UTC-consistent month and year gap filling
+        const now = new Date();
+        const nowUtcYear = now.getUTCFullYear();
+        const nowUtcMonth = now.getUTCMonth();
+
+        const startDate = sortedActivities.length > 0
+            ? new Date(`${dayGroups[0].dateStr}T00:00:00.000Z`)
+            : new Date(Date.UTC(nowUtcYear - 1, nowUtcMonth, 1));
 
         // 1. Fill Months
         {
-            const current = new Date(startDate);
-            current.setDate(1); // Start of month
-
-            // Go up to current month (inclusive)
-            const endMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0); // End of current month? Or just ensure we hit the month.
-            // Loop until current month is processed.
-            // current <= now is enough if we increment by month.
-
-            while (current <= now || (current.getMonth() === now.getMonth() && current.getFullYear() === now.getFullYear())) {
-                const key = `${current.getFullYear()}-${(current.getMonth() + 1).toString().padStart(2, '0')}`;
-
-                // Flows
+            let year = startDate.getUTCFullYear();
+            let month = startDate.getUTCMonth();
+            while (year < nowUtcYear || (year === nowUtcYear && month <= nowUtcMonth)) {
+                const key = `${year}-${String(month + 1).padStart(2, '0')}`;
                 if (!flows.month.has(key)) {
                     flows.month.set(key, { date: `${key}-01`, inflow: 0, outflow: 0 });
                 }
-
-                // Dividends
                 if (!dividends.month.has(key)) {
                     dividends.month.set(key, { date: `${key}-01`, amount: 0 });
                 }
-
-                current.setMonth(current.getMonth() + 1);
+                month += 1;
+                if (month > 11) {
+                    month = 0;
+                    year += 1;
+                }
             }
         }
 
         // 2. Fill Years
         {
-            const current = new Date(startDate);
-            current.setMonth(0, 1); // Start of year
-
-            while (current.getFullYear() <= now.getFullYear()) {
-                const key = current.getFullYear().toString();
-
-                // Flows
+            for (let year = startDate.getUTCFullYear(); year <= nowUtcYear; year += 1) {
+                const key = String(year);
                 if (!flows.year.has(key)) {
                     flows.year.set(key, { date: `${key}-01-01`, inflow: 0, outflow: 0 });
                 }
-
-                // Dividends
                 if (!dividends.year.has(key)) {
                     dividends.year.set(key, { date: `${key}-01-01`, amount: 0 });
                 }
-
-                current.setFullYear(current.getFullYear() + 1);
             }
         }
 
         return {
             contributions: {
+                day: sort(flows.day),
                 week: sort(flows.week),
                 month: sort(flows.month),
                 year: sort(flows.year)
@@ -256,6 +449,9 @@ export class PortfolioAnalytics {
         performers: { top: PerformerAttribution[], bottom: PerformerAttribution[] },
         debug: string[]
     }> {
+        const sortedActivities = [...activities].sort(
+            (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+        );
 
         const debug: string[] = [];
         const log = (msg: string) => {
@@ -265,14 +461,11 @@ export class PortfolioAnalytics {
         log(`[PortfolioAnalytics] Starting Calculation. Target: ${targetCurrency}`);
 
         // 1. Identify all symbols and currencies
-        const types = Array.from(new Set(activities.map(a => a.type)));
+        const types = Array.from(new Set(sortedActivities.map(a => a.type)));
         log(`[PortfolioAnalytics] Activity Types Found: ${types.join(', ')}`);
 
-        const symbols = Array.from(new Set(activities.map(a => a.investment.symbol)));
-        // Do NOT push benchmarkSymbol here, we fetch it separately to ensure full history coverage
-        // symbols.push(benchmarkSymbol);
-
-        const assetCurrencies = Array.from(new Set(activities.map(a => a.investment.currency)));
+        const symbols = Array.from(new Set(sortedActivities.map(a => a.investment.symbol)));
+        const assetCurrencies = Array.from(new Set(sortedActivities.map(a => a.investment.currency)));
         const relevantCurrencies = assetCurrencies.filter(c => c && c !== targetCurrency);
 
         log(`[PortfolioAnalytics] Asset Currencies: ${assetCurrencies.join(', ')}`);
@@ -281,8 +474,8 @@ export class PortfolioAnalytics {
         // 2. Parallel Fetching: Asset Prices + FX Rates
         // Fetch from the earliest activity date or startDate, whichever is earlier
         let firstActivityDate = startDate;
-        if (activities.length > 0) {
-            const firstDate = new Date(activities[0].date);
+        if (sortedActivities.length > 0) {
+            const firstDate = new Date(sortedActivities[0].date);
             if (firstDate < firstActivityDate) firstActivityDate = firstDate;
         }
 
@@ -291,35 +484,10 @@ export class PortfolioAnalytics {
         log(`[PortfolioAnalytics] Fetching Data from ${lookback.toISOString().split('T')[0]}`);
 
         const priceMaps: Record<string, Record<string, number>> = {};
-        const fxMaps: Record<string, Record<string, number>> = {};
 
-        // Prepare FX pairs to fetch
-        const fxPairs = relevantCurrencies.map(c => ({ from: c, to: targetCurrency, symbol: `${c}${targetCurrency}=X` }));
-        log(`[PortfolioAnalytics] Fetching FX Pairs: ${fxPairs.map(p => p.symbol).join(', ')}`);
-
-        // Helper to process items in batches (Concurrency Control)
-        // MarketDataService handles API rate limits, but we batch to avoid overwhelming the DB/Event Loop if logical processing is heavy.
-        const batchProcess = async <T>(
-            items: T[],
-            batchSize: number,
-            delayMs: number,
-            processor: (item: T) => Promise<void>
-        ) => {
-            // Processing all at once (limited by batchSize chunks) but without artificial delay
-            // actually, we can just run them all if we trust MarketDataService.
-            // But to be safe, we keep batching but remove delay.
-            for (let i = 0; i < items.length; i += batchSize) {
-                const batch = items.slice(i, i + batchSize);
-                // log(`[PortfolioAnalytics] Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(items.length / batchSize)}`);
-                await Promise.all(batch.map(item => processor(item)));
-                // No artificial delay needed for Cache Hits.
-            }
-        };
-
-        // 2. Fetch Data (Throttled)
         // Fetch Asset Prices in batches
         log(`[PortfolioAnalytics] Fetching history for ${symbols.length} symbols...`);
-        await batchProcess(symbols, 2, 1000, async (sym) => {
+        await this.batchProcess(symbols, 2, async (sym) => {
             try {
                 const hist = await MarketDataService.getDailyHistory(sym, lookback);
                 priceMaps[sym] = hist;
@@ -328,7 +496,7 @@ export class PortfolioAnalytics {
             }
         });
 
-        // Fetch Benchmark (Single call, no batch needed but added for completeness/flow)
+        // Fetch Benchmark
         try {
             const benchLookback = new Date(lookback);
             benchLookback.setFullYear(benchLookback.getFullYear() - 5);
@@ -340,29 +508,8 @@ export class PortfolioAnalytics {
             log(`[PortfolioAnalytics] Error fetching Benchmark ${benchmarkSymbol}: ${e.message}`);
         }
 
-        // Fetch FX Rates in batches
-        log(`[PortfolioAnalytics] Fetching history for ${fxPairs.length} FX pairs...`);
-        await batchProcess(fxPairs, 2, 1000, async ({ from, to, symbol }) => {
-            let hist = await MarketDataService.getDailyHistory(symbol, lookback);
-
-            // Fallback: Try Reverse Pair if direct pair fails
-            if (Object.keys(hist).length === 0) {
-                const reverseSymbol = `${to}${from}=X`;
-                log(`[PortfolioAnalytics] Direct FX ${symbol} empty. Trying reverse ${reverseSymbol}`);
-
-                const reverseHist = await MarketDataService.getDailyHistory(reverseSymbol, lookback);
-                if (Object.keys(reverseHist).length > 0) {
-                    // Invert values
-                    hist = {};
-                    Object.entries(reverseHist).forEach(([date, rate]) => {
-                        if (rate > 0) hist[date] = 1 / rate;
-                    });
-                    log(`[PortfolioAnalytics] Inverted ${Object.keys(hist).length} points from ${reverseSymbol}`);
-                }
-            }
-
-            fxMaps[from] = hist;
-        });
+        // Fetch FX Rates in batches with reverse-pair fallback
+        const fxMaps = await this.fetchFxMaps(relevantCurrencies, targetCurrency, lookback, log);
 
         log(`[PortfolioAnalytics] Fetch Complete. PriceKeys: ${Object.keys(priceMaps).length}, FXKeys: ${Object.keys(fxMaps).length}`);
         Object.keys(fxMaps).forEach(k => {
@@ -372,60 +519,56 @@ export class PortfolioAnalytics {
 
         // 3. Replay Engine
         const dailyPerf: DailyPerformance[] = [];
-        const isIsoDateKey = (k: string) => /^\d{4}-\d{2}-\d{2}$/.test(k);
+        const isIsoDateKey = (k: string) => this.isIsoDateKey(k);
 
         const startIso = startDate.toISOString().split('T')[0];
         const endDate = new Date(); // To Today
         const endIso = endDate.toISOString().split('T')[0];
         const currentDate = new Date(`${startIso}T00:00:00.000Z`);
 
-        let holdings: Record<string, number> = {};
+        const holdings: Record<string, number> = {};
+        const dividendCashPool: Record<string, number> = {};
         let units = 0;
         let nav = 100; // Start at 100
         let prevMarketValue = 0;
 
-        const initialActivities = activities.filter(
+        const initialActivities = sortedActivities.filter(
             a => new Date(a.date).toISOString().split('T')[0] < startIso
         );
-        holdings = this.computeHoldingsState(initialActivities);
 
-        // Accumulate dividends from initial activities prior to startDate
+        // Seed FX at the earliest activity date (or startIso if none) before replaying initialActivities
+        const firstInitialIso = initialActivities.length > 0
+            ? new Date(initialActivities[0].date).toISOString().split('T')[0]
+            : startIso;
+        const initialLastKnownFx = this.seedLastKnownFx(relevantCurrencies, fxMaps, firstInitialIso);
+
+        // Replay pre-start activities chronologically so both holdings and the unspent dividend pool
+        // match an all-time inception replay at startIso.
         let initialDividends = 0;
+        for (const { dateStr: initDateStr, items: initItems } of this.groupActivitiesByUtcDay(initialActivities)) {
+            const initSplits = initItems.filter(a => a.type === 'STOCK_SPLIT' || a.type === 'SPLIT');
+            const initOthers = initItems.filter(a => a.type !== 'STOCK_SPLIT' && a.type !== 'SPLIT');
 
-        initialActivities.forEach(a => {
-            if (a.type === 'DIVIDEND') {
-                const d = new Date(a.date).toISOString().split('T')[0];
-                const sym = a.investment.currency;
-                const fxMap = fxMaps[sym];
-                let fx = 1;
-
-                if (sym !== targetCurrency) {
-                    if (fxMap && fxMap[d]) {
-                        fx = fxMap[d];
-                    } else if (fxMap) {
-                        // Find closest previous FX
-                        const dateKeys = Object.keys(fxMap).filter(isIsoDateKey).sort();
-                        let closestDate = null;
-                        for (const dateKey of dateKeys) {
-                            if (dateKey <= d) closestDate = dateKey;
-                            else break;
-                        }
-                        if (closestDate) {
-                            fx = fxMap[closestDate];
-                        } else if (dateKeys.length > 0) {
-                            // If no prior history, use the EARLIEST history available
-                            fx = fxMap[dateKeys[0]];
-                        }
-                    }
-                }
-                initialDividends += (a.quantity * a.price) * fx;
+            for (const a of initSplits) {
+                const sym = a.investment.symbol;
+                holdings[sym] = Math.max(0, (holdings[sym] || 0) * a.quantity);
             }
-        });
+
+            const { dailyDividends } = this.applyNonSplitActivitiesForDay({
+                activities: initOthers,
+                dateStr: initDateStr,
+                targetCurrency,
+                fxMaps,
+                lastKnownFx: initialLastKnownFx,
+                holdings,
+                dividendCashPool
+            });
+            initialDividends += dailyDividends;
+        }
         log(`[PortfolioAnalytics] Initial Historical Dividends: ${initialDividends}`);
 
         // State for filling gaps (Prices & FX)
         const lastKnownPrices: Record<string, number> = {};
-        const lastKnownFx: Record<string, number> = {};
 
         // Seed Prices using the closest available price on or before startIso so
         // non-trading start dates (e.g. YTD Jan 1 or weekends) start with prior closing prices.
@@ -461,42 +604,15 @@ export class PortfolioAnalytics {
             }
         });
 
-        // [FIX] Initialize FX Rates for the loop
-        // Ensure we start with a valid FX rate (e.g. from START_DATE or closest available)
-        // rather than defaulting to 1.0 inside the loop, which causes massive drops.
-        relevantCurrencies.forEach(c => {
-            if (fxMaps[c]) {
-                const dateKeys = Object.keys(fxMaps[c]).filter(isIsoDateKey).sort();
-                // Find closest date <= startDate
-                // Since dateKeys are ISO strings, string comparison works for YYYY-MM-DD
-                let closestDate = null;
-                for (const d of dateKeys) {
-                    if (d <= startIso && fxMaps[c][d] > 0) closestDate = d;
-                    else if (d > startIso) break;
-                }
-                // If found, seed it. Any later dates will update it in the loop.
-                // If not found (startDate is before any history?), we rely on the first available? 
-                // Or fallback to 1.0 (unavoidable if no history).
-                if (closestDate) {
-                    lastKnownFx[c] = fxMaps[c][closestDate];
-                } else {
-                    // If no prior history, use the EARLIEST history available as the best guess
-                    // This prevents 1.0 default if logic starts before data
-                    const firstValidDate = dateKeys.find(d => fxMaps[c][d] > 0);
-                    if (firstValidDate) {
-                        lastKnownFx[c] = fxMaps[c][firstValidDate];
-                    }
-                }
-            }
-        });
+        // [FIX] Initialize FX Rates for the loop at startIso
+        const lastKnownFx = this.seedLastKnownFx(relevantCurrencies, fxMaps, startIso);
 
         // Seed Dividend Accumulator
-        // Removed shadowed 'dividends' variable, just renamed locally for clarity if needed or use this.
         let accDividends = initialDividends;
 
         // Map Symbol -> Currency for fast lookup
         const symbolCurrencyMap: Record<string, string> = {};
-        activities.forEach(a => symbolCurrencyMap[a.investment.symbol] = a.investment.currency);
+        sortedActivities.forEach(a => symbolCurrencyMap[a.investment.symbol] = a.investment.currency);
 
         // Initial Market Value & per-symbol attribution state
         const initialEval = this.calculateMarketValue(
@@ -545,7 +661,7 @@ export class PortfolioAnalytics {
             // If we use yesterday's Holdings (Low Count) * Today's Price (Low Price), we get a massive value drop.
             // We must adjust Holdings FIRST to match the new Price regime.
 
-            const rawDaysActivities = activities.filter(a => {
+            const rawDaysActivities = sortedActivities.filter(a => {
                 const aDate = new Date(a.date).toISOString().split('T')[0];
                 return aDate === dateStr;
             });
@@ -589,67 +705,37 @@ export class PortfolioAnalytics {
                 (dateStr === '2023-10-15' || dateStr === '2023-10-16' || dateStr === '2024-08-09') ? log : undefined
             );
 
-            // Calculate Net Flow & Dividends (Converted to Target Currency)
-            let netFlow = 0;
-            let dailyDividends = 0;
-            const dailyDivBySym: Record<string, number> = {};
+            // Calculate Out-of-Pocket Net Flow & Dividends (Converted to Target Currency)
+            const {
+                netFlow,
+                grossTradeFlow,
+                dailyDividends,
+                dailyDivBySym,
+                symTradeFlowDelta
+            } = this.applyNonSplitActivitiesForDay({
+                activities: daysActivities,
+                dateStr,
+                targetCurrency,
+                fxMaps,
+                lastKnownFx,
+                holdings,
+                dividendCashPool,
+                log
+            });
+
+            Object.entries(symTradeFlowDelta).forEach(([sym, delta]) => {
+                symNetInflows[sym] = (symNetInflows[sym] || 0) + delta.netInflow;
+                symTotalBuys[sym] = (symTotalBuys[sym] || 0) + delta.buys;
+            });
+            Object.entries(dailyDivBySym).forEach(([sym, divVal]) => {
+                symTotalDividends[sym] = (symTotalDividends[sym] || 0) + divVal;
+            });
 
             daysActivities.forEach(a => {
-                // Determine FX Rate for this transaction's currency
-                const assetCurrency = a.investment.currency;
                 const symbol = a.investment.symbol;
                 symHeldDuringPeriod.add(symbol);
 
-                // For Transaction Flow, we usually use the historic rate ON THAT DAY (or close to it)
-                // We can use our daily FX map
-                let fxRate = 1;
-                if (assetCurrency !== targetCurrency) {
-                    fxRate = fxMaps[assetCurrency]?.[dateStr] || lastKnownFx[assetCurrency] || 1;
-                    // Note: If we have NO rate ever, we might assume 1 or 0. Data gaps in FX are bad.
-                }
-
-                if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
-                    // Cost = (Qty * Price) + Fee
-                    const flowVal = (a.quantity * a.price) + (a.fee || 0);
-                    const flowConverted = flowVal * fxRate;
-                    netFlow += flowConverted;
-                    symNetInflows[symbol] = (symNetInflows[symbol] || 0) + flowConverted;
-                    symTotalBuys[symbol] = (symTotalBuys[symbol] || 0) + flowConverted;
-
-                    holdings[symbol] = (holdings[symbol] || 0) + a.quantity;
-
-                    // Negative Holdings Protection
-                    if (holdings[symbol] < 0) holdings[symbol] = 0;
-                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
-                    const flowVal = (Math.abs(a.quantity) * a.price) - (a.fee || 0); // Proceeds - Fee
-                    const proceedsConverted = flowVal * fxRate;
-                    netFlow -= proceedsConverted; // Outflow is negative
-                    symNetInflows[symbol] = (symNetInflows[symbol] || 0) - proceedsConverted;
-
-                    holdings[symbol] = (holdings[symbol] || 0) - Math.abs(a.quantity);
-
-                    // [FIX] Negative Holdings Protection
-                    // If we sell more than we have (due to missing history/splits), treat the deficit as an implicit deposit
-                    // to prevent massive value drops.
-                    if (holdings[symbol] < 0) {
-                        const deficit = Math.abs(holdings[symbol]);
-                        const deficitVal = deficit * a.price * fxRate;
-                        // Add back the value of the missing shares to netFlow 
-                        // (effectively saying "We deposited these shares just before selling them")
-                        netFlow += deficitVal;
-                        symNetInflows[symbol] = (symNetInflows[symbol] || 0) + deficitVal;
-                        symTotalBuys[symbol] = (symTotalBuys[symbol] || 0) + deficitVal;
-                        holdings[symbol] = 0;
-                    }
-                } else if (a.type === 'DIVIDEND') {
-                    const divVal = (a.quantity * a.price) * fxRate;
-                    dailyDividends += divVal;
-                    dailyDivBySym[symbol] = (dailyDivBySym[symbol] || 0) + divVal;
-                    symTotalDividends[symbol] = (symTotalDividends[symbol] || 0) + divVal;
-                    log(`[Dividend] ${a.date} ${symbol}: Qty=${a.quantity}, Price=${a.price}, FX=${fxRate} -> Val=${divVal} (DailyTotal=${dailyDividends})`);
-                }
-
-                // [FIX]: Ensure we update lastKnownPrices/Fx for the asset involved today.
+                // [FIX]: Ensure we update lastKnownPrices for the asset involved today.
                 // If we don't, and this is a new asset, the NEXT day's calculateMarketValue loop
                 // will see it as a "New Discovery" because lastKnownPrices[symbol] would be 0 or undefined,
                 // causing a massive fake "inflow" equal to the entire position value.
@@ -677,10 +763,6 @@ export class PortfolioAnalytics {
                     // Fallback to execution price ONLY if we have no market data history
                     // and this is NOT a dividend or transfer (which use historical costs/rates)
                     lastKnownPrices[symbol] = a.price;
-                }
-
-                if (assetCurrency !== targetCurrency) {
-                    lastKnownFx[assetCurrency] = fxRate;
                 }
             });
 
@@ -731,14 +813,14 @@ export class PortfolioAnalytics {
                         }
                     });
                 }
-            } else if (netFlow > 0 && nav === 100) {
+            } else if ((netFlow > 0 || grossTradeFlow > 0) && nav === 100) {
                 // First deposit
                 nav = 100;
             }
 
             // 4. Update Structure
             // Recalculate Final MV based on End-of-Day Holdings & Prices (MTM)
-            // We use MTM to prevent Day 2 drops, but fallback to Cost (passive + netFlow)
+            // We use MTM to prevent Day 2 drops, but fallback to Cost (passive + grossTradeFlow)
             // if MTM is 0 despite having holdings (due to missing data).
             const { mv: recalculatedMV, bySymbol: endBySymbol } = this.calculateMarketValue(
                 holdings,
@@ -751,7 +833,7 @@ export class PortfolioAnalytics {
                 symbolCurrencyMap
             );
 
-            const costBasisMV = passiveMV + netFlow;
+            const costBasisMV = passiveMV + grossTradeFlow;
             const hasHoldings = Object.values(holdings).some(qty => qty > 0);
             const finalMV = (recalculatedMV === 0 && hasHoldings) ? costBasisMV : recalculatedMV;
 

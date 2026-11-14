@@ -542,3 +542,222 @@ test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
         }
     });
 });
+
+test('PortfolioAnalytics.calculateFlows & out-of-pocket principal', async (t) => {
+    await t.test('matches calculateComparisonHistory cumulative netFlow across holiday FX, reverse FX, SELL fees, oversell, and UTC dates', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'USDCAD=X') {
+                    // Direct pair intentionally empty to verify reverse-pair inversion (CADUSD=X)
+                    return {};
+                }
+                if (sym === 'CADUSD=X') {
+                    return {
+                        '1M': 0,
+                        '2025-12-31': 0.8, // 1 / 0.8 = 1.25 CAD per USD (pre-activity lookback for 2026-01-01 holiday)
+                        // '2026-01-01' omitted (holiday FX gap)
+                        '2026-01-02': 0.8,
+                        '2026-01-05': 0.8,
+                    };
+                }
+                if (sym === 'AAPL') {
+                    return {
+                        '2025-12-31': 100,
+                        '2026-01-02': 100,
+                        '2026-01-05': 120,
+                    };
+                }
+                if (sym === '^GSPC') {
+                    return {
+                        '2025-12-31': 5000,
+                        '2026-01-02': 5050,
+                        '2026-01-05': 5100,
+                    };
+                }
+                return {};
+            };
+
+            // Intentionally unsorted input to confirm input is not mutated and chronological ordering holds
+            const activities = [
+                {
+                    type: 'SELL',
+                    quantity: 6, // Oversell by 1 share after buying 5 -> deficit protection triggers on 1 share
+                    price: 120,
+                    fee: 10, // Net USD proceeds = 6*120 - 10 = 710 USD (not 730!), deficit = 1*120 = 120 USD -> net outflow = 590 USD * 1.25 = 737.5 CAD
+                    date: new Date('2026-01-05T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'AAPL', currency: 'USD' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 5,
+                    price: 100,
+                    fee: 10, // (5*100 + 10) * 1.25 = 637.5 CAD using 2025-12-31 lookback FX
+                    date: new Date('2026-01-01T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'AAPL', currency: 'USD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateFlows>[0];
+
+            const originalOrderFirstType = activities[0].type;
+            const flowRes = await PortfolioAnalytics.calculateFlows(activities, 'CAD');
+            assert.strictEqual(activities[0].type, originalOrderFirstType);
+
+            const compRes = await PortfolioAnalytics.calculateComparisonHistory(
+                activities as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0],
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'CAD'
+            );
+
+            // BUY on 2026-01-01 = +637.5 CAD; SELL 6 when holding 5 = outflow 710*1.25 (887.5) & deficit inflow 120*1.25 (150)
+            // Net = 637.5 + 150 - 887.5 = -100 CAD
+            const daySum = flowRes.contributions.day.reduce((s, d) => s + d.inflow - d.outflow, 0);
+            const monthSum = flowRes.contributions.month.reduce((s, d) => s + d.inflow - d.outflow, 0);
+            const yearSum = flowRes.contributions.year.reduce((s, d) => s + d.inflow - d.outflow, 0);
+            const evoInvested = compRes.portfolio.reduce((s, d) => s + d.netFlow, 0);
+
+            assert.ok(Math.abs(daySum - (-100)) < 0.01);
+            assert.ok(Math.abs(monthSum - evoInvested) < 0.01);
+            assert.ok(Math.abs(yearSum - evoInvested) < 0.01);
+            assert.strictEqual(flowRes.contributions.month[0].date, '2026-01-01');
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
+
+    await t.test('excludes DRIP and dividend-funded buys from net contributions without reducing un-reinvested principal', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'SCHD') {
+                    return {
+                        '2025-01-02': 100,
+                        '2025-03-01': 100,
+                        '2025-04-01': 100,
+                    };
+                }
+                if (sym === 'XEQT') {
+                    return {
+                        '2025-04-01': 50,
+                    };
+                }
+                if (sym === '^GSPC') {
+                    return {
+                        '2025-01-02': 5000,
+                        '2025-03-01': 5000,
+                        '2025-04-01': 5000,
+                    };
+                }
+                return {};
+            };
+
+            const activities = [
+                // 1) Initial out-of-pocket investment: $10,000 in acc-1
+                {
+                    type: 'BUY',
+                    quantity: 100,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-01-02T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'SCHD', currency: 'CAD' }
+                },
+                // 2) Same-day DRIP where BUY appears before DIVIDEND in input array:
+                // $500 dividend + $500 DRIP BUY -> $0 out-of-pocket!
+                {
+                    type: 'BUY',
+                    quantity: 5,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-03-01T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'SCHD', currency: 'CAD' }
+                },
+                {
+                    type: 'DIVIDEND',
+                    quantity: 100,
+                    price: 5,
+                    fee: 0,
+                    date: new Date('2025-03-01T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'SCHD', currency: 'CAD' }
+                },
+                // 3) Later $300 dividend in acc-1, partially funding a $1000 BUY of XEQT -> $700 out-of-pocket
+                {
+                    type: 'DIVIDEND',
+                    quantity: 105,
+                    price: 300 / 105,
+                    fee: 0,
+                    date: new Date('2025-03-15T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'SCHD', currency: 'CAD' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 20,
+                    price: 50,
+                    fee: 0,
+                    date: new Date('2025-04-01T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'XEQT', currency: 'CAD' }
+                },
+                // 4) Un-reinvested dividend in acc-2 after buying $2000 -> out-of-pocket in acc-2 remains $2000 (not $1900)
+                {
+                    type: 'BUY',
+                    quantity: 20,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-01-02T00:00:00.000Z'),
+                    accountId: 'acc-2',
+                    investment: { symbol: 'SCHD', currency: 'CAD' }
+                },
+                {
+                    type: 'DIVIDEND',
+                    quantity: 20,
+                    price: 5, // $100 dividend never reinvested
+                    fee: 0,
+                    date: new Date('2025-03-01T00:00:00.000Z'),
+                    accountId: 'acc-2',
+                    investment: { symbol: 'SCHD', currency: 'CAD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateFlows>[0];
+
+            const flowRes = await PortfolioAnalytics.calculateFlows(activities, 'CAD');
+            const totalNetFlow = flowRes.contributions.month.reduce((s, m) => s + m.inflow - m.outflow, 0);
+
+            // Expected out-of-pocket: $10,000 (acc-1) + $0 (DRIP) + $700 (partial XEQT) + $2,000 (acc-2) = $12,700
+            assert.ok(Math.abs(totalNetFlow - 12700) < 0.01);
+
+            // Also verify calculateComparisonHistory agrees and preserves SCHD attribution profit (no double-counting)
+            const compRes = await PortfolioAnalytics.calculateComparisonHistory(
+                activities as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0],
+                '^GSPC',
+                new Date('2025-01-02T00:00:00.000Z'),
+                'CAD'
+            );
+            const evoInvested = compRes.portfolio.reduce((s, d) => s + d.netFlow, 0);
+            assert.ok(Math.abs(evoInvested - 12700) < 0.01);
+
+            const schdAttr = compRes.performers.top.find(p => p.symbol === 'SCHD');
+            assert.ok(schdAttr);
+            // SCHD price stayed flat at $100, so total profit from SCHD = $500 + $300 + $100 = $900 (NOT $1,400 double-counted)
+            assert.ok(Math.abs(schdAttr.profit - 900) < 0.05);
+
+            // Sub-range run starting 2025-03-20 should carry forward the $300 dividend pool in acc-1
+            // so the 2025-04-01 $1,000 BUY still records only $700 out-of-pocket netFlow
+            const subRangeRes = await PortfolioAnalytics.calculateComparisonHistory(
+                activities as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0],
+                '^GSPC',
+                new Date('2025-03-20T00:00:00.000Z'),
+                'CAD'
+            );
+            const apr1 = subRangeRes.portfolio.find(p => p.date === '2025-04-01');
+            assert.ok(apr1);
+            assert.ok(Math.abs(apr1.netFlow - 700) < 0.01);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
+});

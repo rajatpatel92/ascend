@@ -43,7 +43,7 @@ interface EvolutionHistoryResponse {
 }
 
 interface EvolutionFlowsResponse {
-    contributions?: { week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
+    contributions?: { day?: ContributionPoint[]; week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
     dividends?: { month: DividendPoint[]; year: DividendPoint[] };
 }
 
@@ -95,7 +95,7 @@ export default function EvolutionPage() {
 
     const [data, setData] = useState<{
         evolution?: EvolutionPoint[];
-        contributions?: { week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
+        contributions?: { day?: ContributionPoint[]; week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
         dividends?: { month: DividendPoint[]; year: DividendPoint[] };
     }>({});
 
@@ -123,7 +123,7 @@ export default function EvolutionPage() {
         const backendFilters = { ...normalizedFilters, assetClasses: normalizedFilters.investmentTypes };
 
         const fetchHistory = () => {
-            const cacheKey = ClientCache.generateKey('evolution_history_v2', { filters: normalizedFilters, currency });
+            const cacheKey = ClientCache.generateKey('evolution_history_v3', { filters: normalizedFilters, currency });
             return fetchWithStaleWhileRevalidate<EvolutionHistoryResponse>({
                 cache: ClientCache,
                 cacheKey,
@@ -161,12 +161,17 @@ export default function EvolutionPage() {
         };
 
         const fetchFlows = () => {
-            const cacheKey = ClientCache.generateKey('evolution_flows_v2', { filters: normalizedFilters, currency });
+            const cacheKey = ClientCache.generateKey('evolution_flows_v3', { filters: normalizedFilters, currency });
             return fetchWithStaleWhileRevalidate<EvolutionFlowsResponse>({
                 cache: ClientCache,
                 cacheKey,
                 isValid: (val): val is EvolutionFlowsResponse =>
-                    Boolean(val && typeof val === 'object' && (val as EvolutionFlowsResponse).contributions),
+                    Boolean(
+                        val &&
+                        typeof val === 'object' &&
+                        Array.isArray((val as EvolutionFlowsResponse).contributions?.day) &&
+                        Array.isArray((val as EvolutionFlowsResponse).contributions?.month)
+                    ),
                 signal: controller.signal,
                 fetcher: async (signal) => {
                     const res = await fetch('/api/analytics/evolution', {
@@ -247,23 +252,34 @@ export default function EvolutionPage() {
         const endingValue = lastEv ? lastEv.value : 0;
         const startingValue = firstEv ? firstEv.value : 0;
         const endInvested = lastEv ? lastEv.invested : 0;
-        const startInvested = firstEv ? firstEv.invested : 0;
 
         const periodDelta = endingValue - startingValue;
         const periodDeltaPct = startingValue > 0.01 ? (periodDelta / startingValue) * 100 : 0;
 
+        // # Reason: Use exact daily buckets for Card 2 totals so non-ALL ranges (e.g. 1M, YTD)
+        // don't pull in pre-cutoff flows from the start of the opening calendar month.
+        const dayFlows = filterByRange(data.contributions?.day, range, 'day');
         const monthlyFlows = filterByRange(data.contributions?.month, range, 'month');
-        const totalInflows = monthlyFlows.reduce((s, d) => s + d.inflow, 0);
-        const totalOutflows = monthlyFlows.reduce((s, d) => s + Math.abs(d.outflow), 0);
+        const flowSource = data.contributions?.day ? dayFlows : monthlyFlows;
+        const totalInflows = flowSource.reduce((s, d) => s + d.inflow, 0);
+        const totalOutflows = flowSource.reduce((s, d) => s + Math.abs(d.outflow), 0);
         const netFlowFromSchedule = totalInflows - totalOutflows;
         const avgMonthlyContribution = monthlyFlows.length > 0 ? netFlowFromSchedule / monthlyFlows.length : 0;
 
-        const compoundedGain = range === 'ALL'
+        const isAllRange = range === 'ALL';
+        const baselineEv = !isAllRange && firstEv && data.evolution
+            ? (() => {
+                const firstIdx = data.evolution.findIndex(p => p.date === firstEv.date);
+                return firstIdx > 0 ? data.evolution[firstIdx - 1] : null;
+            })()
+            : null;
+
+        const compoundedGain = (isAllRange || !baselineEv)
             ? (endingValue - endInvested)
-            : (endingValue - startingValue) - (endInvested - startInvested);
-        const gainDenominator = range === 'ALL'
+            : (endingValue - baselineEv.value) - (endInvested - baselineEv.invested);
+        const gainDenominator = (isAllRange || !baselineEv)
             ? (endInvested > 0.01 ? endInvested : endingValue)
-            : startingValue + Math.max(0, endInvested - startInvested);
+            : baselineEv.value + Math.max(0, endInvested - baselineEv.invested);
         const compoundedGainPct = gainDenominator > 0.01 ? (compoundedGain / gainDenominator) * 100 : 0;
 
         const monthlyDivs = filterByRange(data.dividends?.month, range, 'month');
@@ -298,7 +314,7 @@ export default function EvolutionPage() {
             startDate: firstEv?.date || null,
             endDate: lastEv?.date || null
         };
-    }, [filteredEvolution, data.contributions, data.dividends, range]);
+    }, [filteredEvolution, data.evolution, data.contributions, data.dividends, range]);
 
     const flowStats = useMemo(() => {
         const inflows = filteredContributions.reduce((s, d) => s + d.inflow, 0);
@@ -413,7 +429,9 @@ export default function EvolutionPage() {
                     <div className={styles.kpiCard}>
                         <div className={styles.kpiHeader}>
                             <span className={styles.kpiLabel}>Net Capital Contributions</span>
-                            <span className={styles.kpiTag}>Inflows &minus; Outflows</span>
+                            <span className={styles.kpiTag} title="External inflows minus outflows, excluding reinvested dividends">
+                                Out-of-Pocket
+                            </span>
                         </div>
                         <div className={styles.kpiValue}>{format(kpis.netFlowFromSchedule, { maximumFractionDigits: 0 })}</div>
                         <div className={styles.kpiFooter}>
