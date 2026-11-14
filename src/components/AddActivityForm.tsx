@@ -1,9 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import styles from './AddActivityForm.module.css';
 import DateInput from './DateInput';
+import { filterSelectableAccounts, type SelectableAccount } from '@/lib/activity-accounts';
 
 interface SearchResult {
     symbol: string;
@@ -16,6 +17,7 @@ interface AddActivityFormProps {
     onSuccess?: () => void;
     initialData?: any; // Using any for simplicity, ideally should match Activity type
     onCancel?: () => void;
+    accountsRefreshKey?: number;
 }
 
 function toLocalDateString(d: Date | string): string {
@@ -39,13 +41,14 @@ function toLocalDateString(d: Date | string): string {
     return '';
 }
 
-export default function AddActivityForm({ onSuccess, initialData, onCancel }: AddActivityFormProps) {
+export default function AddActivityForm({ onSuccess, initialData, onCancel, accountsRefreshKey }: AddActivityFormProps) {
     const [symbol, setSymbol] = useState('');
     const [symbolName, setSymbolName] = useState('');
     const [results, setResults] = useState<SearchResult[]>([]);
     const [showResults, setShowResults] = useState(false);
     const [loading, setLoading] = useState(false);
     const isSelectionRef = useRef(false);
+    const wasEditingRef = useRef(false);
 
     // Other form fields
     const [type, setType] = useState('BUY');
@@ -60,7 +63,7 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
     const [currency, setCurrency] = useState('CAD');
 
     const [platforms, setPlatforms] = useState<{ id: string, name: string }[]>([]);
-    const [accounts, setAccounts] = useState<{ id: string, name: string, type: string, platformId: string, currency: string, isActive?: boolean }[]>([]);
+    const [accounts, setAccounts] = useState<SelectableAccount[]>([]);
     // ... inside component ...
     interface InvestmentType {
         id: string;
@@ -72,11 +75,23 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
     const [users, setUsers] = useState<{ id: string, username: string, name?: string }[]>([]);
     const [isInvestmentTypeLocked, setIsInvestmentTypeLocked] = useState(false);
 
+    const fetchAccounts = useCallback(async () => {
+        try {
+            const res = await fetch('/api/accounts?includeInactive=true');
+            const data = await res.json();
+            if (Array.isArray(data)) {
+                setAccounts(data);
+            }
+        } catch (error) {
+            console.error('Failed to fetch accounts', error);
+        }
+    }, []);
+
     useEffect(() => {
         // Fetch platforms, accounts, and types
         Promise.allSettled([
             fetch('/api/platforms').then(res => res.json()),
-            fetch('/api/accounts').then(res => res.json()),
+            fetch('/api/accounts?includeInactive=true').then(res => res.json()),
             fetch('/api/settings/investment-types').then(res => res.json()),
             fetch('/api/settings/activity-types').then(res => res.json()),
             fetch('/api/users').then(res => res.json())
@@ -101,9 +116,16 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
         });
     }, []);
 
-    // Populate form with initial data when editing
+    useEffect(() => {
+        if (accountsRefreshKey) {
+            fetchAccounts();
+        }
+    }, [accountsRefreshKey, fetchAccounts]);
+
+    // Populate form with initial data when editing, and reset when exiting edit mode
     useEffect(() => {
         if (initialData) {
+            wasEditingRef.current = true;
             setSymbol(initialData.investment.symbol);
             setSymbolName(initialData.investment.name);
             setSymbolType(initialData.investment.type);
@@ -129,7 +151,28 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
             } else if (initialData.platform) {
                 // Case where only platform is known (unlikely given schema, but possible in legacy data)
                 setPlatformId(initialData.platform.id);
+                setAccountId('');
+            } else {
+                setAccountId('');
+                setPlatformId('');
             }
+        } else if (wasEditingRef.current) {
+            wasEditingRef.current = false;
+            setSymbol('');
+            setSymbolName('');
+            setSymbolType('');
+            setInvestmentType('EQUITY');
+            setCurrency('CAD');
+            setType('BUY');
+            setDate(toLocalDateString(new Date()));
+            setQuantity('');
+            setPrice('');
+            setFee('');
+            setPlatformId('');
+            setAccountId('');
+            setIsInvestmentTypeLocked(false);
+            setResults([]);
+            setShowResults(false);
         }
     }, [initialData]);
 
@@ -418,8 +461,7 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel }: Ad
                         required
                     >
                         <option value="">Select Account</option>
-                        {accounts
-                            .filter(a => a.currency === currency && (a.isActive !== false || a.id === accountId))
+                        {filterSelectableAccounts(accounts, currency, initialData?.account?.id ?? initialData?.accountId)
                             .map(a => {
                                 const user = users.find(u => u.username === a.name);
                                 const displayName = user?.name || a.name;

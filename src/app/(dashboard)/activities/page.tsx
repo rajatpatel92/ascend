@@ -87,6 +87,7 @@ export default function ActivitiesPage() {
     const [currentPage, setCurrentPage] = useState(1);
 
     const [showAddForm, setShowAddForm] = useState(false);
+    const [accountsRefreshKey, setAccountsRefreshKey] = useState(0);
     const [users, setUsers] = useState<User[]>([]);
 
     const fetchUsers = async () => {
@@ -1174,6 +1175,7 @@ export default function ActivitiesPage() {
                     onClose={() => setShowTransferModal(false)}
                     onSuccess={() => {
                         fetchActivities();
+                        setAccountsRefreshKey(prev => prev + 1);
                         setShowTransferModal(false);
                     }}
                 />
@@ -1189,6 +1191,7 @@ export default function ActivitiesPage() {
                             setEditingActivity(null);
                         }}
                         initialData={editingActivity}
+                        accountsRefreshKey={accountsRefreshKey}
                         onCancel={() => {
                             setShowAddForm(false);
                             setEditingActivity(null);
