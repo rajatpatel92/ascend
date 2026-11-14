@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
             quantity: number,
             investment: any,
             platforms: Map<string, number>,
-            accounts: Map<string, { quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>
+            accounts: Map<string, { name: string, quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>
         }>();
 
         for (const activity of activities) {
@@ -110,7 +110,7 @@ export async function GET(request: NextRequest) {
             // Get account data or init
             let acc = current.accounts.get(accountKey);
             if (!acc) {
-                acc = { quantity: 0, platformName, accountType, costBasis: 0, lifetimeDividends: 0, dividendsYTD: 0, realizedGain: 0, cashFlows: [], firstBuyDate: null };
+                acc = { name: accountName, quantity: 0, platformName, accountType, costBasis: 0, lifetimeDividends: 0, dividendsYTD: 0, realizedGain: 0, cashFlows: [], firstBuyDate: null };
                 current.accounts.set(accountKey, acc);
             }
 
@@ -380,14 +380,14 @@ export async function GET(request: NextRequest) {
                         dividendsYTD: localDividendsYTD * rateToUSD,
                         realizedGain: realizedGainNative * rateToUSD,
                         accountTypes: Array.from(new Set(Array.from((data.accounts as Map<string, any>).values()).map((a: any) => a.accountType || 'Unassigned'))),
-                        accountNames: Array.from(new Set(Array.from((data.accounts as Map<string, any>).keys()).map((k: string) => k.split(':')[0]))),
+                        accountNames: Array.from(new Set(Array.from((data.accounts as Map<string, any>).entries()).map(([k, a]: [string, any]) => a.name || k.split(':')[0] || 'Unassigned'))),
 
                         accountsBreakdown: Object.fromEntries(
                             Array.from((data.accounts as Map<string, any>).entries())
-                                .filter(([_, val]: [string, any]) => val.quantity > 0 || val.lifetimeDividends > 0 || Math.abs(val.realizedGain) > 0.01)
+                                .filter(([, val]: [string, any]) => val.quantity > 0 || val.lifetimeDividends > 0 || Math.abs(val.realizedGain) > 0.01)
                                 .map(([key, val]: [string, any]) => {
-                                    // Parse name from composite key if needed
-                                    const [accName] = key.split(':');
+                                    // Prefer explicit name stored on account entry, fallback to composite key prefix
+                                    const accName = val.name || key.split(':')[0] || 'Unassigned';
 
                                     // Calculate Account XIRR
                                     // Add current value as final inflow
@@ -516,7 +516,8 @@ export async function GET(request: NextRequest) {
 
                         // By Account Name - Platform (Aggregate by Name + Platform)
                         // This ensures accounts with same name on different platforms are split
-                        const compositeKey = `${accData.name} - ${accData.platformName}`;
+                        const accountName = accData.name || accountKey.split(':')[0] || 'Unassigned';
+                        const compositeKey = `${accountName} - ${accData.platformName}`;
                         const existing = allocationByAccount[compositeKey] || { value: 0, platformName: accData.platformName };
                         allocationByAccount[compositeKey] = {
                             value: existing.value + accountValueUSD,
