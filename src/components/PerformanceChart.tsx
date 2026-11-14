@@ -104,7 +104,7 @@ export default function PerformanceChart({
 
         const fetchData = async () => {
             const filterKey = `${(filterInvestmentTypes || []).slice().sort().join('-')}_${(filterAccountTypes || []).slice().sort().join('-')}`;
-            const cacheKey = `portfolio-history-${range}-${currency}-${customStart}-${customEnd}-${filterKey}-v5`;
+            const cacheKey = `portfolio-history-${range}-${currency}-${customStart}-${customEnd}-${filterKey}-v6`;
 
             const cached = ClientCache.get<HistoryPoint[]>(cacheKey);
             if (cached && Array.isArray(cached) && cached.length > 0) {

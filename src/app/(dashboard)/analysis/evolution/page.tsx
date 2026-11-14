@@ -123,7 +123,7 @@ export default function EvolutionPage() {
         const backendFilters = { ...normalizedFilters, assetClasses: normalizedFilters.investmentTypes };
 
         const fetchHistory = () => {
-            const cacheKey = ClientCache.generateKey('evolution_history_v3', { filters: normalizedFilters, currency });
+            const cacheKey = ClientCache.generateKey('evolution_history_v4', { filters: normalizedFilters, currency });
             return fetchWithStaleWhileRevalidate<EvolutionHistoryResponse>({
                 cache: ClientCache,
                 cacheKey,
@@ -161,7 +161,7 @@ export default function EvolutionPage() {
         };
 
         const fetchFlows = () => {
-            const cacheKey = ClientCache.generateKey('evolution_flows_v3', { filters: normalizedFilters, currency });
+            const cacheKey = ClientCache.generateKey('evolution_flows_v4', { filters: normalizedFilters, currency });
             return fetchWithStaleWhileRevalidate<EvolutionFlowsResponse>({
                 cache: ClientCache,
                 cacheKey,

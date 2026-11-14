@@ -30,6 +30,9 @@ export async function resolve(specifier, context, nextResolve) {
 const { PortfolioAnalytics } = await import('./portfolio-analytics.ts');
 const { MarketDataService } = await import('./market-data.ts');
 
+MarketDataService.getPrice = async () => null;
+MarketDataService.getExchangeRate = async () => null;
+
 test('PortfolioAnalytics.computeHoldingsState', async (t) => {
     await t.test('returns empty object for empty activities', () => {
         const result = PortfolioAnalytics.computeHoldingsState([]);
@@ -760,4 +763,186 @@ test('PortfolioAnalytics.calculateFlows & out-of-pocket principal', async (t) =>
             MarketDataService.getDailyHistory = originalGetDailyHistory;
         }
     });
+
+    await t.test('merges cron-refreshed USD-shorthand FX tickers (CAD=X) over stale USDCAD=X history', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        const originalGetPrice = MarketDataService.getPrice;
+        const originalGetExchangeRate = MarketDataService.getExchangeRate;
+
+        try {
+            MarketDataService.getPrice = async () => null;
+            MarketDataService.getExchangeRate = async () => null;
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'AAPL') {
+                    return { '2025-01-01': 100, '2025-01-02': 100 };
+                }
+                if (sym === 'SHOP.TO') {
+                    return { '2025-01-01': 140, '2025-01-02': 140 };
+                }
+                if (sym === 'USDCAD=X') {
+                    return { '2025-01-01': 1.30, '2025-01-02': 1.30 };
+                }
+                if (sym === 'CADUSD=X') {
+                    return { '2025-01-01': 0.70, '2025-01-02': 0.70 };
+                }
+                if (sym === 'CAD=X') {
+                    // Fresh shorthand point for 2025-01-02 overrides stale USDCAD=X / CADUSD=X
+                    return { '2025-01-02': 1.40 };
+                }
+                return {};
+            };
+
+            const usdActivities = [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-01-02T12:00:00.000Z'),
+                    investment: { symbol: 'AAPL', currency: 'USD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const flowRes = await PortfolioAnalytics.calculateFlows(usdActivities, 'CAD');
+            const totalInflowCad = flowRes.contributions.day.reduce((s, d) => s + d.inflow, 0);
+            // 10 * 100 * 1.40 (from CAD=X) = 1400, NOT 1300 (from stale USDCAD=X)
+            assert.ok(Math.abs(totalInflowCad - 1400) < 0.01);
+
+            const cadComp = await PortfolioAnalytics.calculateComparisonHistory(
+                usdActivities,
+                '^GSPC',
+                new Date('2025-01-02T00:00:00.000Z'),
+                'CAD'
+            );
+            const jan2Cad = cadComp.portfolio.find(p => p.date === '2025-01-02');
+            assert.ok(jan2Cad);
+            assert.ok(Math.abs(jan2Cad.marketValue - 1400) < 0.01);
+
+            // Reverse direction: CAD asset converted to USD uses 1 / CAD=X (1 / 1.40 = 0.7142857...)
+            const cadActivities = [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    price: 140,
+                    fee: 0,
+                    date: new Date('2025-01-02T12:00:00.000Z'),
+                    investment: { symbol: 'SHOP.TO', currency: 'CAD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const usdComp = await PortfolioAnalytics.calculateComparisonHistory(
+                cadActivities,
+                '^GSPC',
+                new Date('2025-01-02T00:00:00.000Z'),
+                'USD'
+            );
+            const jan2Usd = usdComp.portfolio.find(p => p.date === '2025-01-02');
+            assert.ok(jan2Usd);
+            // 10 * 140 * (1 / 1.40) = 1000 USD (not 10 * 140 * 0.70 = 980)
+            assert.ok(Math.abs(jan2Usd.marketValue - 1000) < 0.01);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+            MarketDataService.getPrice = originalGetPrice;
+            MarketDataService.getExchangeRate = originalGetExchangeRate;
+        }
+    });
+
+    await t.test('overlays today (endIso) with live getPrice and getExchangeRate matching dashboard net worth', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        const originalGetPrice = MarketDataService.getPrice;
+        const originalGetExchangeRate = MarketDataService.getExchangeRate;
+
+        try {
+            const now = new Date();
+            const endIso = now.toISOString().split('T')[0];
+            const yesterday = new Date(now);
+            yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+            const prevIso = yesterday.toISOString().split('T')[0];
+            const twoDaysAgo = new Date(now);
+            twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
+            const startIso = twoDaysAgo.toISOString().split('T')[0];
+
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                // Daily history has older/stale prices & FX and lacks today's live tick
+                if (sym === 'AAPL') return { [startIso]: 190, [prevIso]: 200, [endIso]: 200 };
+                if (sym === 'SAP') return { [startIso]: 100, [prevIso]: 100 };
+                if (sym === 'FAILING') return { [startIso]: 50, [prevIso]: 52 };
+                if (sym === 'USDCAD=X') return { [startIso]: 1.35, [prevIso]: 1.35 };
+                if (sym === 'EURCAD=X') return { [startIso]: 1.45, [prevIso]: 1.45 };
+                return {};
+            };
+
+            MarketDataService.getPrice = async (sym: string) => {
+                if (sym === 'AAPL') {
+                    return { symbol: 'AAPL', price: 215, currency: 'USD', regularMarketTime: now, regularMarketChange: 15, regularMarketChangePercent: 7.5 };
+                }
+                if (sym === 'SAP') {
+                    // Quote returned in USD while asset record uses EUR -> tests cross-currency live normalization
+                    return { symbol: 'SAP', price: 120, currency: 'USD', regularMarketTime: now, regularMarketChange: 0, regularMarketChangePercent: 0 };
+                }
+                if (sym === 'FAILING') {
+                    throw new Error('Live quote unavailable');
+                }
+                return null;
+            };
+
+            MarketDataService.getExchangeRate = async (from: string, to: string) => {
+                if (from === 'USD' && to === 'CAD') return 1.40;
+                if (from === 'EUR' && to === 'USD') return 1.10;
+                if (from === 'USD' && to === 'EUR') return 1 / 1.10;
+                return null;
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    price: 190,
+                    fee: 0,
+                    date: new Date(`${startIso}T12:00:00.000Z`),
+                    investment: { symbol: 'AAPL', currency: 'USD' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 5,
+                    price: 100,
+                    fee: 0,
+                    date: new Date(`${startIso}T12:00:00.000Z`),
+                    investment: { symbol: 'SAP', currency: 'EUR' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 2,
+                    price: 50,
+                    fee: 0,
+                    date: new Date(`${startIso}T12:00:00.000Z`),
+                    investment: { symbol: 'FAILING', currency: 'CAD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const res = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date(`${startIso}T00:00:00.000Z`),
+                'CAD'
+            );
+
+            const lastPoint = res.portfolio[res.portfolio.length - 1];
+            assert.strictEqual(lastPoint.date, endIso);
+
+            // AAPL: 10 * 215 * 1.40 = 3010 CAD
+            // SAP: 5 * (120 * (1 / 1.10)) * (1.10 * 1.40) = 5 * 120 * 1.40 = 840 CAD
+            // FAILING (throws on getPrice): falls back to yesterday's close 2 * 52 = 104 CAD
+            const expectedEndValue = 3010 + 840 + 104;
+            assert.ok(
+                Math.abs(lastPoint.marketValue - expectedEndValue) < 0.01,
+                `Expected ${expectedEndValue}, got ${lastPoint.marketValue}`
+            );
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+            MarketDataService.getPrice = originalGetPrice;
+            MarketDataService.getExchangeRate = originalGetExchangeRate;
+        }
+    });
 });
+

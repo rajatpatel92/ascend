@@ -31,17 +31,17 @@ export async function POST(req: Request) {
         });
 
         // 2. Apply granular filters
+        // # Reason: Match /api/portfolio and /api/portfolio/history by retaining unassigned
+        // activities unless an account-level filter is explicitly applied.
         const filteredActivities = activities.filter(a => {
-            if (!a.account) return false; // Filter out orphans
-
             if (filters?.assetClasses?.length > 0) {
                 if (!filters.assetClasses.includes(a.investment.type)) return false;
             }
             if (filters?.accountTypes?.length > 0) {
-                if (!filters.accountTypes.includes(a.account.type)) return false;
+                if (!a.account || !filters.accountTypes.includes(a.account.type)) return false;
             }
             if (filters?.accountNames?.length > 0) {
-                if (!filters.accountNames.includes(a.account.name)) return false;
+                if (!a.account || !filters.accountNames.includes(a.account.name)) return false;
             }
             if (filters?.assets?.length > 0) {
                 if (!filters.assets.includes(a.investment.symbol)) return false;

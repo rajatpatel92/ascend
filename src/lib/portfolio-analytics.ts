@@ -90,9 +90,29 @@ export class PortfolioAnalytics {
         if (log) log(`[PortfolioAnalytics] Fetching FX Pairs: ${fxPairs.map(p => p.symbol).join(', ')}`);
 
         await this.batchProcess(fxPairs, 2, async ({ from, to, symbol }) => {
-            let hist = await MarketDataService.getDailyHistory(symbol, lookback);
+            let hist: Record<string, number> = { ...(await MarketDataService.getDailyHistory(symbol, lookback)) };
 
-            // Fallback: Try Reverse Pair if direct pair fails
+            // # Reason: Ascend's cron jobs refresh Yahoo USD-shorthand tickers (CAD=X, EUR=X, etc.)
+            // rather than USDCAD=X/CADUSD=X; overlay any fresh shorthand history so FX rates don't lag.
+            if (from === 'USD') {
+                const shorthandSymbol = `${to}=X`;
+                const shorthandHist = await MarketDataService.getDailyHistory(shorthandSymbol, lookback);
+                Object.entries(shorthandHist).forEach(([date, rate]) => {
+                    if (this.isIsoDateKey(date) && rate > 0) {
+                        hist[date] = rate;
+                    }
+                });
+            } else if (to === 'USD') {
+                const shorthandSymbol = `${from}=X`;
+                const shorthandHist = await MarketDataService.getDailyHistory(shorthandSymbol, lookback);
+                Object.entries(shorthandHist).forEach(([date, rate]) => {
+                    if (this.isIsoDateKey(date) && rate > 0) {
+                        hist[date] = 1 / rate;
+                    }
+                });
+            }
+
+            // Fallback: Try Reverse Pair if combined history is still empty
             if (Object.keys(hist).length === 0) {
                 const reverseSymbol = `${to}${from}=X`;
                 if (log) log(`[PortfolioAnalytics] Direct FX ${symbol} empty. Trying reverse ${reverseSymbol}`);
@@ -526,6 +546,70 @@ export class PortfolioAnalytics {
         const endIso = endDate.toISOString().split('T')[0];
         const currentDate = new Date(`${startIso}T00:00:00.000Z`);
 
+        // Map Symbol -> Currency for fast lookup
+        const symbolCurrencyMap: Record<string, string> = {};
+        sortedActivities.forEach(a => symbolCurrencyMap[a.investment.symbol] = a.investment.currency);
+
+        // # Reason: Align today's (endIso) valuation with Dashboard /api/portfolio, which uses
+        // live/incremental 5-min cached quotes (getPrice & getExchangeRate) rather than yesterday's daily history close.
+        const activitiesUpToEnd = sortedActivities.filter(
+            a => new Date(a.date).toISOString().split('T')[0] <= endIso
+        );
+        const endHoldings = this.computeHoldingsState(activitiesUpToEnd);
+        const activeEndSymbols = Object.keys(endHoldings).filter(sym => endHoldings[sym] > 1e-8);
+
+        const resolveLiveFxRate = async (from: string, to: string): Promise<number | null> => {
+            if (!from || !to || from === to) return 1;
+            if (typeof MarketDataService.getExchangeRate !== 'function') return null;
+            try {
+                if (from === 'USD' || to === 'USD') {
+                    return await MarketDataService.getExchangeRate(from, to);
+                }
+                const [toUsd, fromUsd] = await Promise.all([
+                    MarketDataService.getExchangeRate(from, 'USD'),
+                    MarketDataService.getExchangeRate('USD', to)
+                ]);
+                if (toUsd && toUsd > 0 && fromUsd && fromUsd > 0) {
+                    return toUsd * fromUsd;
+                }
+                return await MarketDataService.getExchangeRate(from, to);
+            } catch {
+                return null;
+            }
+        };
+
+        await this.batchProcess(relevantCurrencies, 2, async (c) => {
+            const liveRate = await resolveLiveFxRate(c, targetCurrency);
+            if (liveRate && liveRate > 0) {
+                if (!fxMaps[c]) fxMaps[c] = {};
+                fxMaps[c][endIso] = liveRate;
+            }
+        });
+
+        if (typeof MarketDataService.getPrice === 'function' && activeEndSymbols.length > 0) {
+            await this.batchProcess(activeEndSymbols, 5, async (sym) => {
+                try {
+                    const liveQuote = await MarketDataService.getPrice(sym);
+                    if (liveQuote && liveQuote.price > 0) {
+                        const assetCurrency = symbolCurrencyMap[sym] || liveQuote.currency || 'USD';
+                        let normalizedLivePrice = liveQuote.price;
+
+                        if (liveQuote.currency && liveQuote.currency !== assetCurrency) {
+                            const quoteToAssetFx = await resolveLiveFxRate(liveQuote.currency, assetCurrency);
+                            if (quoteToAssetFx && quoteToAssetFx > 0) {
+                                normalizedLivePrice = liveQuote.price * quoteToAssetFx;
+                            }
+                        }
+
+                        if (!priceMaps[sym]) priceMaps[sym] = {};
+                        priceMaps[sym][endIso] = normalizedLivePrice;
+                    }
+                } catch {
+                    // Preserve historical close fallback when live quote lookup fails
+                }
+            });
+        }
+
         const holdings: Record<string, number> = {};
         const dividendCashPool: Record<string, number> = {};
         let units = 0;
@@ -609,10 +693,6 @@ export class PortfolioAnalytics {
 
         // Seed Dividend Accumulator
         let accDividends = initialDividends;
-
-        // Map Symbol -> Currency for fast lookup
-        const symbolCurrencyMap: Record<string, string> = {};
-        sortedActivities.forEach(a => symbolCurrencyMap[a.investment.symbol] = a.investment.currency);
 
         // Initial Market Value & per-symbol attribution state
         const initialEval = this.calculateMarketValue(
