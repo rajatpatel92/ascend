@@ -35,6 +35,10 @@ interface BenchmarkPoint {
 
 interface PerformerItem {
     symbol: string;
+    contribution?: number;
+    assetReturn?: number;
+    profit?: number;
+    isExited?: boolean;
     return: number;
 }
 
@@ -106,7 +110,7 @@ export default function ComparePage() {
     const chartTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const attrTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-    const { format } = useCurrency();
+    const { currency, format } = useCurrency();
     const { formatDate } = useDate();
 
     useEffect(() => {
@@ -136,7 +140,7 @@ export default function ComparePage() {
                 accountTypes: [...(safeFilters.accountTypes || [])].sort(),
                 investmentTypes: [...(safeFilters.investmentTypes || [])].sort()
             });
-            const cacheKey = `comparison-${timeRange}-${benchmark}-${filterHash}-v2`;
+            const cacheKey = `comparison-${timeRange}-${benchmark}-${currency}-${filterHash}-v3`;
 
             const cached = ClientCache.get<ComparisonApiResponse>(cacheKey);
             if (cached && cached.portfolio) {
@@ -155,6 +159,7 @@ export default function ComparePage() {
                     body: JSON.stringify({
                         timeRange,
                         benchmarkSymbol: benchmark,
+                        currency,
                         filters: safeFilters
                     }),
                     signal: controller.signal
@@ -187,7 +192,7 @@ export default function ComparePage() {
 
         fetchData();
         return () => controller.abort();
-    }, [timeRange, benchmark, filters, isFiltersLoaded]);
+    }, [timeRange, benchmark, currency, filters, isFiltersLoaded]);
 
     const benchmarkName = useMemo(() => {
         return availableBenchmarks.find(b => b.symbol === benchmark)?.name || benchmark;
@@ -302,7 +307,15 @@ export default function ComparePage() {
     const resilienceDelta = Math.abs(benchmarkMaxDrawdown) - Math.abs(portfolioMaxDrawdown);
     const maxDrawdownScale = Math.max(Math.abs(portfolioMaxDrawdown), Math.abs(benchmarkMaxDrawdown), 1);
     const activePerformers = attributionTab === 'top' ? performers.top : performers.bottom;
-    const maxAbsPerformer = Math.max(...activePerformers.map(p => Math.abs(p.return)), 1);
+    const maxAbsPerformer = Math.max(...activePerformers.map(p => Math.abs(p.contribution ?? p.return)), 0.01);
+
+    const formatProfit = (val: number) => {
+        if (!Number.isFinite(val)) return format(0, { maximumFractionDigits: 0 });
+        const absFormatted = format(Math.abs(val), { maximumFractionDigits: 0 });
+        if (val > 0.5) return `+${absFormatted}`;
+        if (val < -0.5) return `-${absFormatted}`;
+        return absFormatted;
+    };
 
     const isOutperforming = netAlpha >= 0;
 
@@ -740,9 +753,11 @@ export default function ComparePage() {
                             ) : (
                                 <ul className={styles.performerList}>
                                     {activePerformers.map(p => {
-                                        const isPos = p.return >= 0;
-                                        const vsIndex = p.return - safeBenchmarkReturn;
-                                        const barPct = Math.min(100, Math.max(6, (Math.abs(p.return) / maxAbsPerformer) * 100));
+                                        const impact = p.contribution ?? p.return;
+                                        const assetRet = p.assetReturn ?? p.return;
+                                        const hasProfit = typeof p.profit === 'number' && Number.isFinite(p.profit);
+                                        const isPos = impact >= 0;
+                                        const barPct = Math.min(100, Math.max(6, (Math.abs(impact) / maxAbsPerformer) * 100));
 
                                         return (
                                             <li key={p.symbol} className={styles.performerLi}>
@@ -751,9 +766,17 @@ export default function ComparePage() {
                                                     className={styles.performerItem}
                                                 >
                                                     <div className={styles.performerTop}>
-                                                        <span className={styles.performerSymbol}>{p.symbol}</span>
-                                                        <span className={`${styles.returnPill} ${isPos ? styles.pillPos : styles.pillNeg}`}>
-                                                            {formatPct(p.return)}
+                                                        <span className={styles.performerTitleGroup}>
+                                                            <span className={styles.performerSymbol}>{p.symbol}</span>
+                                                            {p.isExited && (
+                                                                <span className={styles.exitedBadge}>Exited</span>
+                                                            )}
+                                                        </span>
+                                                        <span
+                                                            className={`${styles.returnPill} ${isPos ? styles.pillPos : styles.pillNeg}`}
+                                                            title="Portfolio Return Impact"
+                                                        >
+                                                            {formatPct(impact)}
                                                         </span>
                                                     </div>
                                                     <div className={styles.perfBarTrack} aria-hidden="true">
@@ -763,10 +786,21 @@ export default function ComparePage() {
                                                         />
                                                     </div>
                                                     <div className={styles.performerMeta}>
-                                                        <span>vs Index</span>
-                                                        <span className={vsIndex >= 0 ? styles.positiveText : styles.negativeText}>
-                                                            {formatPct(vsIndex)}
+                                                        <span>
+                                                            Asset{' '}
+                                                            <span className={assetRet >= 0 ? styles.positiveText : styles.negativeText}>
+                                                                {formatPct(assetRet)}
+                                                            </span>
                                                         </span>
+                                                        {hasProfit ? (
+                                                            <span className={(p.profit ?? 0) >= 0 ? styles.positiveText : styles.negativeText}>
+                                                                {formatProfit(p.profit ?? 0)}
+                                                            </span>
+                                                        ) : (
+                                                            <span className={assetRet - safeBenchmarkReturn >= 0 ? styles.positiveText : styles.negativeText}>
+                                                                {formatPct(assetRet - safeBenchmarkReturn)}
+                                                            </span>
+                                                        )}
                                                     </div>
                                                 </Link>
                                             </li>

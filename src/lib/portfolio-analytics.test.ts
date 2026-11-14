@@ -435,4 +435,110 @@ test('PortfolioAnalytics.calculateComparisonHistory', async (t) => {
         assert.strictEqual(day1.marketValue, 1500);
         assert.strictEqual(day1.netFlow, 1500);
     });
+
+    await t.test('ranks attribution leaders by portfolio impact rather than tiny exited high-ROI holdings', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'CORE') {
+                    return {
+                        '2026-01-01': 100,
+                        '2026-01-02': 105,
+                        '2026-01-03': 110,
+                    };
+                }
+                if (sym === 'EEMV') {
+                    return {
+                        '2026-01-01': 100,
+                        '2026-01-02': 120,
+                        '2026-01-03': 120,
+                    };
+                }
+                if (sym === 'DRAG') {
+                    return {
+                        '2026-01-01': 100,
+                        '2026-01-02': 90,
+                        '2026-01-03': 85,
+                    };
+                }
+                if (sym === '^GSPC') {
+                    return {
+                        '2026-01-01': 5000,
+                        '2026-01-02': 5050,
+                        '2026-01-03': 5100,
+                    };
+                }
+                return {};
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 1000, // $100,000 start value -> +$10,000 profit (+10% asset return)
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-12-15T00:00:00.000Z'),
+                    investment: { symbol: 'CORE', currency: 'CAD' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 10, // $1,000 start value -> +$200 profit (+20% asset return)
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-12-15T00:00:00.000Z'),
+                    investment: { symbol: 'EEMV', currency: 'CAD' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 100, // $10,000 start value -> -$1,500 profit (-15% asset return)
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-12-15T00:00:00.000Z'),
+                    investment: { symbol: 'DRAG', currency: 'CAD' }
+                },
+                {
+                    type: 'SELL',
+                    quantity: 10, // Exited EEMV at $120 on 2026-01-02
+                    price: 120,
+                    fee: 0,
+                    date: new Date('2026-01-02T00:00:00.000Z'),
+                    investment: { symbol: 'EEMV', currency: 'CAD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const res = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'CAD'
+            );
+
+            // CORE (+10% on $100k) must outrank EEMV (+20% on $1k exited)
+            assert.strictEqual(res.performers.top.length, 2);
+            assert.strictEqual(res.performers.top[0].symbol, 'CORE');
+            assert.strictEqual(res.performers.top[0].isExited, false);
+            assert.ok(Math.abs(res.performers.top[0].profit - 10000) < 0.01);
+            assert.ok(Math.abs(res.performers.top[0].assetReturn - 10) < 0.01);
+
+            assert.strictEqual(res.performers.top[1].symbol, 'EEMV');
+            assert.strictEqual(res.performers.top[1].isExited, true);
+            assert.ok(Math.abs(res.performers.top[1].profit - 200) < 0.01);
+            assert.ok(Math.abs(res.performers.top[1].assetReturn - 20) < 0.01);
+            assert.ok(res.performers.top[0].contribution > res.performers.top[1].contribution * 10);
+
+            // Bottom laggards contain only DRAG (no overlap with positive leaders)
+            assert.strictEqual(res.performers.bottom.length, 1);
+            assert.strictEqual(res.performers.bottom[0].symbol, 'DRAG');
+            assert.strictEqual(res.performers.bottom[0].isExited, false);
+            assert.ok(Math.abs(res.performers.bottom[0].profit - (-1500)) < 0.01);
+
+            // Sum of Carino-linked contributions equals total portfolio TWR
+            const totalContribution =
+                res.performers.top.reduce((s, p) => s + p.contribution, 0) +
+                res.performers.bottom.reduce((s, p) => s + p.contribution, 0);
+            assert.ok(Math.abs(totalContribution - res.summary.portfolioReturn) < 0.01);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
 });

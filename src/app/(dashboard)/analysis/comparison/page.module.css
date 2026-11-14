@@ -785,6 +785,13 @@
     min-inline-size: 0;
 }
 
+.performerTitleGroup {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-inline-size: 0;
+}
+
 .performerSymbol {
     font-size: 0.9rem;
     font-weight: 700;
@@ -792,6 +799,23 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.exitedBadge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.3rem;
+    color: #475569;
+    background: rgba(148, 163, 184, 0.18);
+    flex-shrink: 0;
+}
+
+:global([data-theme='dark']) .exitedBadge {
+    color: #cbd5e1;
+    background: rgba(148, 163, 184, 0.22);
 }
 
 .returnPill {

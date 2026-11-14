@@ -12,7 +12,8 @@ export async function POST(req: Request) {
 
     try {
         const body = await req.json();
-        const { timeRange, benchmarkSymbol, filters } = body;
+        const { timeRange, benchmarkSymbol, filters, currency } = body;
+        const targetCurrency = typeof currency === 'string' && currency.trim() ? currency : 'CAD';
 
         // Determine Start Date using UTC midnight so ISO date partitioning stays exact
         const now = new Date();
@@ -81,7 +82,8 @@ export async function POST(req: Request) {
         const result = await PortfolioAnalytics.calculateComparisonHistory(
             formattedActivities as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0],
             benchmarkSymbol || '^GSPC',
-            startDate
+            startDate,
+            targetCurrency
         );
 
         return NextResponse.json(result);

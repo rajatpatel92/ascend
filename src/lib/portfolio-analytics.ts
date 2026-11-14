@@ -12,6 +12,15 @@ export interface DailyPerformance {
     discoveryFlow?: number;
 }
 
+export interface PerformerAttribution {
+    symbol: string;
+    contribution: number;
+    assetReturn: number;
+    profit: number;
+    isExited: boolean;
+    return: number;
+}
+
 interface FlowData {
     date: string;
     inflow: number;
@@ -244,7 +253,7 @@ export class PortfolioAnalytics {
         portfolio: DailyPerformance[],
         benchmark: { date: string, value: number, normalized: number }[],
         summary: { portfolioReturn: number, benchmarkReturn: number },
-        performers: { top: { symbol: string, return: number }[], bottom: { symbol: string, return: number }[] },
+        performers: { top: PerformerAttribution[], bottom: PerformerAttribution[] },
         debug: string[]
     }> {
 
@@ -489,8 +498,8 @@ export class PortfolioAnalytics {
         const symbolCurrencyMap: Record<string, string> = {};
         activities.forEach(a => symbolCurrencyMap[a.investment.symbol] = a.investment.currency);
 
-        // Initial Market Value
-        prevMarketValue = this.calculateMarketValue(
+        // Initial Market Value & per-symbol attribution state
+        const initialEval = this.calculateMarketValue(
             holdings,
             priceMaps,
             fxMaps,
@@ -499,7 +508,27 @@ export class PortfolioAnalytics {
             lastKnownFx,
             targetCurrency,
             symbolCurrencyMap
-        ).mv;
+        );
+        prevMarketValue = initialEval.mv;
+
+        const symStartValue: Record<string, number> = {};
+        let prevSymbolValues: Record<string, number> = {};
+        const symHeldDuringPeriod = new Set<string>();
+        Object.entries(holdings).forEach(([sym, qty]) => {
+            if (qty > 1e-8) {
+                symHeldDuringPeriod.add(sym);
+                const val = initialEval.bySymbol[sym]?.val || 0;
+                symStartValue[sym] = val;
+                prevSymbolValues[sym] = val;
+            }
+        });
+
+        const symLinkedContrib: Record<string, number> = {};
+        const symUnlinkedContrib: Record<string, number> = {};
+        const symNetInflows: Record<string, number> = {};
+        const symTotalBuys: Record<string, number> = {};
+        const symTotalDividends: Record<string, number> = {};
+        let hasNonPositiveGrowthDay = false;
 
         // Initial Units
         if (prevMarketValue > 0) units = prevMarketValue / nav;
@@ -547,7 +576,7 @@ export class PortfolioAnalytics {
             const daysActivities = otherActivities;
 
             // 2. Get Today's Value (Passive) - Now with Split-Adjusted Holdings if applicable
-            const { mv: passiveMV, discovery: discoveryFlow } = this.calculateMarketValue(
+            const { mv: passiveMV, discovery: discoveryFlow, bySymbol: passiveBySymbol } = this.calculateMarketValue(
                 holdings,
                 priceMaps,
                 fxMaps,
@@ -563,11 +592,13 @@ export class PortfolioAnalytics {
             // Calculate Net Flow & Dividends (Converted to Target Currency)
             let netFlow = 0;
             let dailyDividends = 0;
+            const dailyDivBySym: Record<string, number> = {};
 
             daysActivities.forEach(a => {
                 // Determine FX Rate for this transaction's currency
                 const assetCurrency = a.investment.currency;
                 const symbol = a.investment.symbol;
+                symHeldDuringPeriod.add(symbol);
 
                 // For Transaction Flow, we usually use the historic rate ON THAT DAY (or close to it)
                 // We can use our daily FX map
@@ -579,37 +610,43 @@ export class PortfolioAnalytics {
 
                 if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
                     // Cost = (Qty * Price) + Fee
-                    // All in Asset Currency? Usually Price is Asset Currency. Fee might be Account Currency?
-                    // Complex. For now, assume uniform currency for simplicity or map Fee separately if needed.
-                    // Given previous impl just summed standard amounts, we assume everything is "Value" in Asset Currency.
                     const flowVal = (a.quantity * a.price) + (a.fee || 0);
-                    netFlow += flowVal * fxRate;
+                    const flowConverted = flowVal * fxRate;
+                    netFlow += flowConverted;
+                    symNetInflows[symbol] = (symNetInflows[symbol] || 0) + flowConverted;
+                    symTotalBuys[symbol] = (symTotalBuys[symbol] || 0) + flowConverted;
 
-                    holdings[a.investment.symbol] = (holdings[a.investment.symbol] || 0) + a.quantity;
+                    holdings[symbol] = (holdings[symbol] || 0) + a.quantity;
 
                     // Negative Holdings Protection
-                    if (holdings[a.investment.symbol] < 0) holdings[a.investment.symbol] = 0;
+                    if (holdings[symbol] < 0) holdings[symbol] = 0;
                 } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
                     const flowVal = (Math.abs(a.quantity) * a.price) - (a.fee || 0); // Proceeds - Fee
-                    netFlow -= flowVal * fxRate; // Outflow is negative
+                    const proceedsConverted = flowVal * fxRate;
+                    netFlow -= proceedsConverted; // Outflow is negative
+                    symNetInflows[symbol] = (symNetInflows[symbol] || 0) - proceedsConverted;
 
-                    holdings[a.investment.symbol] = (holdings[a.investment.symbol] || 0) - Math.abs(a.quantity);
+                    holdings[symbol] = (holdings[symbol] || 0) - Math.abs(a.quantity);
 
                     // [FIX] Negative Holdings Protection
                     // If we sell more than we have (due to missing history/splits), treat the deficit as an implicit deposit
                     // to prevent massive value drops.
-                    if (holdings[a.investment.symbol] < 0) {
-                        const deficit = Math.abs(holdings[a.investment.symbol]);
-                        const deficitVal = deficit * a.price;
+                    if (holdings[symbol] < 0) {
+                        const deficit = Math.abs(holdings[symbol]);
+                        const deficitVal = deficit * a.price * fxRate;
                         // Add back the value of the missing shares to netFlow 
                         // (effectively saying "We deposited these shares just before selling them")
-                        netFlow += deficitVal * fxRate;
-                        holdings[a.investment.symbol] = 0;
+                        netFlow += deficitVal;
+                        symNetInflows[symbol] = (symNetInflows[symbol] || 0) + deficitVal;
+                        symTotalBuys[symbol] = (symTotalBuys[symbol] || 0) + deficitVal;
+                        holdings[symbol] = 0;
                     }
                 } else if (a.type === 'DIVIDEND') {
-                    const divVal = (a.quantity * a.price);
-                    dailyDividends += divVal * fxRate;
-                    log(`[Dividend] ${a.date} ${symbol}: Qty=${a.quantity}, Price=${a.price}, FX=${fxRate} -> Val=${divVal * fxRate} (DailyTotal=${dailyDividends})`);
+                    const divVal = (a.quantity * a.price) * fxRate;
+                    dailyDividends += divVal;
+                    dailyDivBySym[symbol] = (dailyDivBySym[symbol] || 0) + divVal;
+                    symTotalDividends[symbol] = (symTotalDividends[symbol] || 0) + divVal;
+                    log(`[Dividend] ${a.date} ${symbol}: Qty=${a.quantity}, Price=${a.price}, FX=${fxRate} -> Val=${divVal} (DailyTotal=${dailyDividends})`);
                 }
 
                 // [FIX]: Ensure we update lastKnownPrices/Fx for the asset involved today.
@@ -662,6 +699,37 @@ export class PortfolioAnalytics {
                 if (discoveryFlow === 0 || passiveMV > discoveryFlow || dailyDividends > 0) {
                     const growth = adjustablePassiveMV / prevMarketValue;
                     nav = nav * growth;
+
+                    // # Reason: Attribute today's portfolio return to each symbol via its weighted
+                    // daily P&L and smooth with Carino log factors so multi-day contributions
+                    // sum to the portfolio's time-weighted return rather than ranking tiny positions first.
+                    const dailyRet = growth - 1;
+                    if (growth <= 0) {
+                        hasNonPositiveGrowthDay = true;
+                    }
+                    const k_t = growth > 0
+                        ? (Math.abs(dailyRet) > 1e-8 ? Math.log(growth) / dailyRet : 1)
+                        : 1;
+
+                    const activeDaySymbols = new Set<string>([
+                        ...Object.keys(prevSymbolValues),
+                        ...Object.keys(passiveBySymbol),
+                        ...Object.keys(dailyDivBySym)
+                    ]);
+
+                    activeDaySymbols.forEach(sym => {
+                        const prevVal = prevSymbolValues[sym] || 0;
+                        const todayPassive = passiveBySymbol[sym]?.val || 0;
+                        const symDiscovery = passiveBySymbol[sym]?.discovery || 0;
+                        const symDiv = dailyDivBySym[sym] || 0;
+                        const symPnl = (todayPassive - symDiscovery + symDiv) - prevVal;
+                        const dailyContrib = symPnl / prevMarketValue;
+
+                        symUnlinkedContrib[sym] = (symUnlinkedContrib[sym] || 0) + dailyContrib;
+                        if (growth > 0) {
+                            symLinkedContrib[sym] = (symLinkedContrib[sym] || 0) + dailyContrib * k_t;
+                        }
+                    });
                 }
             } else if (netFlow > 0 && nav === 100) {
                 // First deposit
@@ -672,7 +740,7 @@ export class PortfolioAnalytics {
             // Recalculate Final MV based on End-of-Day Holdings & Prices (MTM)
             // We use MTM to prevent Day 2 drops, but fallback to Cost (passive + netFlow)
             // if MTM is 0 despite having holdings (due to missing data).
-            const { mv: recalculatedMV } = this.calculateMarketValue(
+            const { mv: recalculatedMV, bySymbol: endBySymbol } = this.calculateMarketValue(
                 holdings,
                 priceMaps,
                 fxMaps,
@@ -686,6 +754,12 @@ export class PortfolioAnalytics {
             const costBasisMV = passiveMV + netFlow;
             const hasHoldings = Object.values(holdings).some(qty => qty > 0);
             const finalMV = (recalculatedMV === 0 && hasHoldings) ? costBasisMV : recalculatedMV;
+
+            const nextPrevSymbolValues: Record<string, number> = {};
+            Object.entries(endBySymbol).forEach(([sym, info]) => {
+                nextPrevSymbolValues[sym] = info.val;
+            });
+            prevSymbolValues = nextPrevSymbolValues;
 
             // Log final day summary
             if (isLastDay) {
@@ -771,80 +845,58 @@ export class PortfolioAnalytics {
             benchmarkReturn = ((end - start) / start) * 100;
         }
 
-        // Calculate Top/Bottom Performers (Personal ROI Impact over period)
-        const performanceMap: { symbol: string, return: number }[] = [];
-        const startHoldings = this.computeHoldingsState(initialActivities);
+        // Calculate Top/Bottom Performers ranked by Portfolio Impact (Carino-linked return contribution)
+        const performanceMap: PerformerAttribution[] = [];
+        const totalRet = portfolioReturn / 100;
+        const useCarino = !hasNonPositiveGrowthDay && (1 + totalRet) > 0;
+        const totalCarinoK = useCarino
+            ? (Math.abs(totalRet) > 1e-8 ? Math.log(1 + totalRet) / totalRet : 1)
+            : 1;
 
-        const getClosestValue = (map: Record<string, number>, targetDate: string) => {
-            if (!map) return 0;
-            const dates = Object.keys(map).filter(isIsoDateKey).sort();
-            let closest = 0;
-            for (const d of dates) {
-                if (d <= targetDate && map[d] > 0) closest = map[d];
-                else if (d > targetDate) break;
-            }
-            return closest;
-        };
-
-        for (const sym of symbols) {
+        for (const sym of symHeldDuringPeriod) {
             if (sym === benchmarkSymbol) continue;
 
-            const priceMap = priceMaps[sym];
-            if (!priceMap) continue;
-
-            const assetCurrency = symbolCurrencyMap[sym] || 'USD';
-            const fxMap = fxMaps[assetCurrency];
-
-            const startQty = startHoldings[sym] || 0;
-            const startPrice = getClosestValue(priceMap, startIso);
-            const startFx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, startIso) || 1);
-            const startValue = startQty * startPrice * startFx;
-
-            const endQty = holdings[sym] || 0;
-            const endPrice = getClosestValue(priceMap, endIso);
-            const endFx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, endIso) || 1);
-            const endValue = endQty * endPrice * endFx;
-
-            const periodActivities = activities.filter(a => {
-                const aIso = new Date(a.date).toISOString().split('T')[0];
-                return aIso >= startIso && aIso <= endIso && a.investment.symbol === sym;
-            });
-
-            let totalBuys = 0;
-            let netInflows = 0; 
-            let totalDividends = 0;
-
-            periodActivities.forEach(a => {
-                const aIso = new Date(a.date).toISOString().split('T')[0];
-                const fx = assetCurrency === targetCurrency ? 1 : (getClosestValue(fxMap, aIso) || 1);
-                
-                if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
-                    const val = ((a.quantity * a.price) + (a.fee || 0)) * fx;
-                    netInflows += val;
-                    totalBuys += val;
-                } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
-                    const val = ((Math.abs(a.quantity) * a.price) - (a.fee || 0)) * fx;
-                    netInflows -= val;
-                } else if (a.type === 'DIVIDEND') {
-                    const val = (a.quantity * a.price) * fx;
-                    totalDividends += val;
-                }
-            });
+            const startValue = symStartValue[sym] || 0;
+            const endValue = prevSymbolValues[sym] || 0;
+            const netInflows = symNetInflows[sym] || 0;
+            const totalBuys = symTotalBuys[sym] || 0;
+            const totalDividends = symTotalDividends[sym] || 0;
 
             const profit = endValue - startValue - netInflows + totalDividends;
             const investedBasis = startValue + totalBuys;
+            const assetReturn = investedBasis > 0.01 ? (profit / investedBasis) * 100 : 0;
 
-            if (investedBasis > 0.01) {
-                const ret = (profit / investedBasis) * 100;
-                performanceMap.push({ symbol: sym, return: ret });
-            } else if (startQty > 0 || totalBuys > 0) {
-                performanceMap.push({ symbol: sym, return: 0 });
+            const contribution = useCarino
+                ? ((symLinkedContrib[sym] || 0) / totalCarinoK) * 100
+                : (symUnlinkedContrib[sym] || 0) * 100;
+
+            const isExited = (holdings[sym] || 0) <= 1e-8;
+
+            if (investedBasis > 0.01 || Math.abs(contribution) > 1e-6 || Math.abs(profit) > 0.01) {
+                performanceMap.push({
+                    symbol: sym,
+                    contribution,
+                    assetReturn,
+                    profit,
+                    isExited,
+                    return: contribution
+                });
             }
         }
 
-        const sortedPerformers = performanceMap.sort((a, b) => b.return - a.return);
-        const top5 = sortedPerformers.slice(0, 5);
-        const bottom5 = sortedPerformers.slice(-5).reverse();
+        const sortedPerformers = performanceMap.sort((a, b) => b.contribution - a.contribution);
+        const positives = sortedPerformers.filter(p => p.contribution > 0);
+        const negatives = sortedPerformers.filter(p => p.contribution < 0).reverse();
+
+        const top5 = positives.length > 0
+            ? positives.slice(0, 5)
+            : sortedPerformers.slice(0, 5);
+
+        const topSymbols = new Set(top5.map(p => p.symbol));
+        const nonTopAsc = [...sortedPerformers].reverse().filter(p => !topSymbols.has(p.symbol));
+        const bottom5 = negatives.length > 0
+            ? negatives.slice(0, 5)
+            : nonTopAsc.slice(0, 5);
 
         return {
             portfolio: dailyPerf,
@@ -885,9 +937,10 @@ export class PortfolioAnalytics {
         targetCurrency: string,
         symbolCurrencyMap: Record<string, string>,
         log?: (msg: string) => void
-    ): { mv: number, discovery: number } {
+    ): { mv: number, discovery: number, bySymbol: Record<string, { val: number, discovery: number }> } {
         let mv = 0;
         let discovery = 0;
+        const bySymbol: Record<string, { val: number, discovery: number }> = {};
 
         Object.entries(holdings).forEach(([sym, qty]) => {
             if (qty > 0) {
@@ -910,6 +963,7 @@ export class PortfolioAnalytics {
                 }
 
                 const currentValConverted = qty * currentPrice * fxRate;
+                let symDiscovery = 0;
 
                 // Debug Logging for Oct 2023 Spike
                 if (log && (date === '2023-10-15' || date === '2023-10-16')) {
@@ -920,8 +974,10 @@ export class PortfolioAnalytics {
                 if (previousPrice === 0 && currentPrice > 0) {
                     // New price found! Treated as Inflow.
                     discovery += currentValConverted;
+                    symDiscovery = currentValConverted;
                 }
 
+                bySymbol[sym] = { val: currentValConverted, discovery: symDiscovery };
                 mv += currentValConverted;
                 if (log && date === '2023-10-15') {
                     log(`[accum] MV is now ${mv} (Added ${currentValConverted})`);
@@ -929,7 +985,7 @@ export class PortfolioAnalytics {
             }
         });
 
-        return { mv, discovery };
+        return { mv, discovery, bySymbol };
     }
 
     static async calculateIntradayHistory(
