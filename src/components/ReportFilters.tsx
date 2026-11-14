@@ -1,7 +1,6 @@
-
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import styles from './ReportFilters.module.css';
 import { MdFilterList, MdClose } from 'react-icons/md';
 
@@ -17,6 +16,7 @@ interface ReportFiltersProps {
 
 export default function ReportFilters({ onChange, initialFilters }: ReportFiltersProps) {
     const [isOpen, setIsOpen] = useState(false);
+    const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
 
     // Available Options
     const [availableAccTypes, setAvailableAccTypes] = useState<string[]>([]);
@@ -25,39 +25,135 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
     // Selected Options
     const [selectedAccTypes, setSelectedAccTypes] = useState<string[]>(initialFilters?.accountTypes || []);
     const [selectedInvTypes, setSelectedInvTypes] = useState<string[]>(initialFilters?.investmentTypes || []);
+    const [prevInitialFilters, setPrevInitialFilters] = useState<FilterOptions | undefined>(initialFilters);
+
+    const containerRef = useRef<HTMLDivElement>(null);
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const onChangeRef = useRef(onChange);
+    const hasInitialFiltersOnMount = useRef(Boolean(initialFilters));
 
     useEffect(() => {
+        onChangeRef.current = onChange;
+    }, [onChange]);
+
+    // Sync local selections when initialFilters prop updates from parent state
+    if (initialFilters !== prevInitialFilters) {
+        setPrevInitialFilters(initialFilters);
         if (initialFilters) {
             setSelectedAccTypes(initialFilters.accountTypes);
             setSelectedInvTypes(initialFilters.investmentTypes);
         }
-    }, [initialFilters]);
+    }
 
     useEffect(() => {
-        // Fetch Metadata to populate filters
-        // Parallel fetch for types
+        const controller = new AbortController();
+
         Promise.all([
-            fetch('/api/settings/account-types').then(res => res.json()),
-            fetch('/api/settings/investment-types').then(res => res.json())
-        ]).then(([accs, invs]) => {
-            const accTypes = (accs as { name: string }[]).map(a => a.name);
-            const invTypes = (invs as { name: string }[]).map(i => i.name);
+            fetch('/api/settings/account-types', { signal: controller.signal }).then(res => res.json()),
+            fetch('/api/settings/investment-types', { signal: controller.signal }).then(res => res.json())
+        ])
+            .then(([accs, invs]) => {
+                if (controller.signal.aborted) return;
 
-            setAvailableAccTypes(accTypes);
-            setAvailableInvTypes(invTypes);
+                const accTypes = (accs as { name: string }[]).map(a => a.name);
+                const invTypes = (invs as { name: string }[]).map(i => i.name);
 
-            // Default select all ONLY if no initial filters provided (or meaningless empty)
-            // But we should respect empty array if it means "none selected" - though usually we want all.
-            // A truly "fresh" state usually means Select All.
-            if (!initialFilters) {
-                setSelectedAccTypes(accTypes);
-                setSelectedInvTypes(invTypes);
+                setAvailableAccTypes(accTypes);
+                setAvailableInvTypes(invTypes);
 
-                // Initial notify only if we are setting defaults
-                if (onChange) onChange({ accountTypes: accTypes, investmentTypes: invTypes });
+                if (!hasInitialFiltersOnMount.current) {
+                    setSelectedAccTypes(accTypes);
+                    setSelectedInvTypes(invTypes);
+                    onChangeRef.current?.({ accountTypes: accTypes, investmentTypes: invTypes });
+                }
+            })
+            .catch((err: unknown) => {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to load filter options:', err);
+            });
+
+        return () => controller.abort();
+    }, []);
+
+    const computePopoverStyle = useCallback((): React.CSSProperties => {
+        const containerEl = containerRef.current;
+        const triggerEl = buttonRef.current ?? containerEl;
+        if (!containerEl || !triggerEl || typeof window === 'undefined') {
+            return {};
+        }
+
+        const anchorRect = containerEl.getBoundingClientRect();
+        const triggerRect = triggerEl.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const margin = 12;
+        const gap = 8;
+        const popoverWidth = Math.min(320, Math.max(220, vw - margin * 2));
+
+        // Align left edge when trigger is in the left half (e.g., wrapped on mobile),
+        // align right edge when trigger is in the right half, and clamp strictly within viewport.
+        const isLeftHalf = triggerRect.left + triggerRect.width / 2 < vw / 2;
+        const idealLeft = isLeftHalf ? triggerRect.left : triggerRect.right - popoverWidth;
+        const clampedLeft = Math.max(margin, Math.min(idealLeft, vw - popoverWidth - margin));
+
+        const spaceBelow = vh - triggerRect.bottom - gap - margin;
+        const spaceAbove = triggerRect.top - gap - margin;
+        const flipUp = spaceBelow < 260 && spaceAbove > spaceBelow;
+        const availableVertical = flipUp ? spaceAbove : spaceBelow;
+        const maxHeight = Math.min(480, Math.max(200, availableVertical));
+
+        return {
+            width: `${popoverWidth}px`,
+            left: `${clampedLeft - anchorRect.left}px`,
+            right: 'auto',
+            top: flipUp ? 'auto' : `calc(100% + ${gap}px)`,
+            bottom: flipUp ? `calc(100% + ${gap}px)` : 'auto',
+            maxHeight: `${maxHeight}px`
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const handleResize = () => {
+            setPopoverStyle(computePopoverStyle());
+        };
+
+        const handleOutside = (event: MouseEvent | TouchEvent) => {
+            const target = event.target as Node | null;
+            if (target && containerRef.current && !containerRef.current.contains(target)) {
+                setIsOpen(false);
             }
-        });
-    }, []); // Run once on mount
+        };
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setIsOpen(false);
+                buttonRef.current?.focus();
+            }
+        };
+
+        window.addEventListener('resize', handleResize);
+        document.addEventListener('mousedown', handleOutside);
+        document.addEventListener('touchstart', handleOutside);
+        document.addEventListener('keydown', handleKeyDown);
+
+        return () => {
+            window.removeEventListener('resize', handleResize);
+            document.removeEventListener('mousedown', handleOutside);
+            document.removeEventListener('touchstart', handleOutside);
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [isOpen, computePopoverStyle]);
+
+    const handleToggle = () => {
+        if (!isOpen) {
+            setPopoverStyle(computePopoverStyle());
+            setIsOpen(true);
+        } else {
+            setIsOpen(false);
+        }
+    };
 
     const handleApply = () => {
         onChange({
@@ -87,42 +183,47 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
         setSelectedInvTypes(prev => availableInvTypes.filter(t => !prev.includes(t)));
     };
 
-    const isFilterActive = 
+    const isFilterActive =
         (availableAccTypes.length > 0 && selectedAccTypes.length < availableAccTypes.length) ||
         (availableInvTypes.length > 0 && selectedInvTypes.length < availableInvTypes.length);
 
     return (
-        <div className={styles.container}>
-            <button className={styles.filterBtn} onClick={() => setIsOpen(!isOpen)}>
-                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                    <MdFilterList size={20} />
-                    {isFilterActive && (
-                        <span style={{
-                            position: 'absolute',
-                            top: '-2px',
-                            right: '-2px',
-                            width: '8px',
-                            height: '8px',
-                            backgroundColor: '#3b82f6', // primary blue
-                            borderRadius: '50%',
-                            border: '1px solid var(--card-bg)'
-                        }} />
-                    )}
+        <div
+            ref={containerRef}
+            className={`${styles.container} ${isOpen ? styles.containerOpen : ''}`}
+        >
+            <button
+                ref={buttonRef}
+                type="button"
+                className={styles.filterBtn}
+                onClick={handleToggle}
+                aria-expanded={isOpen}
+            >
+                <div className={styles.iconWrap}>
+                    <MdFilterList size={20} aria-hidden="true" />
+                    {isFilterActive && <span className={styles.activeDot} aria-hidden="true" />}
                 </div>
                 <span>Filters</span>
             </button>
 
             {isOpen && (
-                <div className={styles.popover}>
+                <div className={styles.popover} style={popoverStyle}>
                     <div className={styles.header}>
                         <h3>Filter Analysis</h3>
-                        <button onClick={() => setIsOpen(false)}><MdClose /></button>
+                        <button
+                            type="button"
+                            className={styles.closeBtn}
+                            onClick={() => setIsOpen(false)}
+                            aria-label="Close filters"
+                        >
+                            <MdClose aria-hidden="true" />
+                        </button>
                     </div>
 
                     <div className={styles.section}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <div className={styles.sectionHead}>
                             <h4>Account Types</h4>
-                            <button onClick={invertAcc} className={styles.linkBtn} style={{ fontSize: '0.8rem', color: 'var(--primary-color)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                            <button type="button" onClick={invertAcc} className={styles.linkBtn}>
                                 Inverse
                             </button>
                         </div>
@@ -134,16 +235,16 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
                                         checked={selectedAccTypes.includes(type)}
                                         onChange={() => toggleAcc(type)}
                                     />
-                                    {type}
+                                    <span>{type}</span>
                                 </label>
                             ))}
                         </div>
                     </div>
 
                     <div className={styles.section}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <div className={styles.sectionHead}>
                             <h4>Investment Types</h4>
-                            <button onClick={invertInv} className={styles.linkBtn} style={{ fontSize: '0.8rem', color: 'var(--primary-color)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                            <button type="button" onClick={invertInv} className={styles.linkBtn}>
                                 Inverse
                             </button>
                         </div>
@@ -155,14 +256,16 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
                                         checked={selectedInvTypes.includes(type)}
                                         onChange={() => toggleInv(type)}
                                     />
-                                    {type}
+                                    <span>{type}</span>
                                 </label>
                             ))}
                         </div>
                     </div>
 
                     <div className={styles.actions}>
-                        <button className={styles.applyBtn} onClick={handleApply}>Apply Filters</button>
+                        <button type="button" className={styles.applyBtn} onClick={handleApply}>
+                            Apply Filters
+                        </button>
                     </div>
                 </div>
             )}

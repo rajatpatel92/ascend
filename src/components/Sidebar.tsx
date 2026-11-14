@@ -20,7 +20,6 @@ import {
     MdDarkMode,
     MdLightMode,
     MdLogout,
-    MdPeople,
     MdPieChart,
     MdCompareArrows,
     MdExpandMore,
@@ -106,6 +105,32 @@ export default function Sidebar({ aiEnabled }: { aiEnabled?: boolean }) {
         });
     }, [pathname]);
 
+    // Mark <main> inert and allow Escape dismissal while the mobile drawer is open
+    useEffect(() => {
+        const mainEl = document.querySelector('main');
+        if (!mainEl) return;
+
+        const syncModality = () => {
+            mainEl.inert = isOpen && window.innerWidth <= 768;
+        };
+
+        syncModality();
+        window.addEventListener('resize', syncModality);
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (isOpen && e.key === 'Escape') {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+
+        return () => {
+            mainEl.inert = false;
+            window.removeEventListener('resize', syncModality);
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [isOpen]);
+
     const toggleMenu = (name: string) => {
         setExpandedMenus(prev =>
             prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
@@ -116,9 +141,11 @@ export default function Sidebar({ aiEnabled }: { aiEnabled?: boolean }) {
         <>
             {/* Mobile Toggle Button */}
             <button
+                type="button"
                 className={styles.mobileToggle}
                 onClick={() => setIsOpen(true)}
                 aria-label="Open Menu"
+                aria-expanded={isOpen}
             >
                 <MdMenu size={24} />
             </button>

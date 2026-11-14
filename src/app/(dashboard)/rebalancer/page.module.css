@@ -10,6 +10,8 @@
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 1rem;
 }
 
 .headerLeft {
@@ -224,6 +226,7 @@
 @media (max-width: 768px) {
     .container {
         padding: 1rem;
+        padding-top: 4.5rem;
     }
     
     .header h1 {
