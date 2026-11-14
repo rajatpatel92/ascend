@@ -88,7 +88,7 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
         const vh = window.innerHeight;
         const margin = 12;
         const gap = 8;
-        const popoverWidth = Math.min(320, Math.max(220, vw - margin * 2));
+        const popoverWidth = Math.min(360, Math.max(220, vw - margin * 2));
 
         // Align left edge when trigger is in the left half (e.g., wrapped on mobile),
         // align right edge when trigger is in the right half, and clamp strictly within viewport.
@@ -99,8 +99,11 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
         const spaceBelow = vh - triggerRect.bottom - gap - margin;
         const spaceAbove = triggerRect.top - gap - margin;
         const flipUp = spaceBelow < 260 && spaceAbove > spaceBelow;
-        const availableVertical = flipUp ? spaceAbove : spaceBelow;
-        const maxHeight = Math.min(480, Math.max(200, availableVertical));
+        const availableVertical = Math.max(0, flipUp ? spaceAbove : spaceBelow);
+        // Keep popover strictly within available viewport height so pinned Apply Filters footer is always visible
+        const maxHeight = availableVertical >= 220
+            ? Math.min(600, availableVertical)
+            : Math.max(180, availableVertical);
 
         return {
             width: `${popoverWidth}px`,
@@ -207,7 +210,7 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
             </button>
 
             {isOpen && (
-                <div className={styles.popover} style={popoverStyle}>
+                <div className={styles.popover} style={popoverStyle} role="dialog" aria-label="Filter Analysis">
                     <div className={styles.header}>
                         <h3>Filter Analysis</h3>
                         <button
@@ -220,45 +223,47 @@ export default function ReportFilters({ onChange, initialFilters }: ReportFilter
                         </button>
                     </div>
 
-                    <div className={styles.section}>
-                        <div className={styles.sectionHead}>
-                            <h4>Account Types</h4>
-                            <button type="button" onClick={invertAcc} className={styles.linkBtn}>
-                                Inverse
-                            </button>
+                    <div className={styles.body}>
+                        <div className={styles.section}>
+                            <div className={styles.sectionHead}>
+                                <h4>Account Types</h4>
+                                <button type="button" onClick={invertAcc} className={styles.linkBtn}>
+                                    Inverse
+                                </button>
+                            </div>
+                            <div className={styles.grid}>
+                                {availableAccTypes.map(type => (
+                                    <label key={type} className={styles.checkbox}>
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedAccTypes.includes(type)}
+                                            onChange={() => toggleAcc(type)}
+                                        />
+                                        <span>{type}</span>
+                                    </label>
+                                ))}
+                            </div>
                         </div>
-                        <div className={styles.grid}>
-                            {availableAccTypes.map(type => (
-                                <label key={type} className={styles.checkbox}>
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedAccTypes.includes(type)}
-                                        onChange={() => toggleAcc(type)}
-                                    />
-                                    <span>{type}</span>
-                                </label>
-                            ))}
-                        </div>
-                    </div>
 
-                    <div className={styles.section}>
-                        <div className={styles.sectionHead}>
-                            <h4>Investment Types</h4>
-                            <button type="button" onClick={invertInv} className={styles.linkBtn}>
-                                Inverse
-                            </button>
-                        </div>
-                        <div className={styles.grid}>
-                            {availableInvTypes.map(type => (
-                                <label key={type} className={styles.checkbox}>
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedInvTypes.includes(type)}
-                                        onChange={() => toggleInv(type)}
-                                    />
-                                    <span>{type}</span>
-                                </label>
-                            ))}
+                        <div className={styles.section}>
+                            <div className={styles.sectionHead}>
+                                <h4>Investment Types</h4>
+                                <button type="button" onClick={invertInv} className={styles.linkBtn}>
+                                    Inverse
+                                </button>
+                            </div>
+                            <div className={styles.grid}>
+                                {availableInvTypes.map(type => (
+                                    <label key={type} className={styles.checkbox}>
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedInvTypes.includes(type)}
+                                            onChange={() => toggleInv(type)}
+                                        />
+                                        <span>{type}</span>
+                                    </label>
+                                ))}
+                            </div>
                         </div>
                     </div>
 
