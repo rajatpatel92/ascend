@@ -17,6 +17,7 @@ import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
 import { ClientCache } from '@/lib/client-cache';
+import { fetchWithStaleWhileRevalidate } from '@/lib/evolution-cache';
 import { getBucketEndMs, parseLocalDate } from '@/lib/date-utils';
 import usePersistentState from '@/hooks/usePersistentState';
 
@@ -121,80 +122,78 @@ export default function EvolutionPage() {
         };
         const backendFilters = { ...normalizedFilters, assetClasses: normalizedFilters.investmentTypes };
 
-        const fetchHistory = async () => {
+        const fetchHistory = () => {
             const cacheKey = ClientCache.generateKey('evolution_history_v2', { filters: normalizedFilters, currency });
-            const cached = ClientCache.get<EvolutionHistoryResponse>(cacheKey);
-
-            if (cached && Array.isArray(cached.evolution)) {
-                setData(prev => ({ ...prev, evolution: cached.evolution }));
-                setFetchError(null);
-                setLoadingHistory(false);
-                return;
-            }
-
-            setLoadingHistory(true);
-            try {
-                const res = await fetch('/api/analytics/evolution', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filters: backendFilters, currency, mode: 'evolution' }),
-                    signal: controller.signal
-                });
-                if (!res.ok) {
-                    throw new Error(`HTTP ${res.status}`);
-                }
-                const json: EvolutionHistoryResponse = await res.json();
-                if (!controller.signal.aborted) {
+            return fetchWithStaleWhileRevalidate<EvolutionHistoryResponse>({
+                cache: ClientCache,
+                cacheKey,
+                isValid: (val): val is EvolutionHistoryResponse =>
+                    Boolean(val && typeof val === 'object' && Array.isArray((val as EvolutionHistoryResponse).evolution)),
+                signal: controller.signal,
+                fetcher: async (signal) => {
+                    const res = await fetch('/api/analytics/evolution', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filters: backendFilters, currency, mode: 'evolution' }),
+                        signal
+                    });
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}`);
+                    }
+                    return res.json();
+                },
+                onCached: (cached) => {
+                    setData(prev => ({ ...prev, evolution: cached.evolution }));
+                    setFetchError(null);
+                },
+                onFresh: (json) => {
                     setData(prev => ({ ...prev, evolution: json.evolution }));
                     setFetchError(null);
-                    ClientCache.set(cacheKey, { evolution: json.evolution });
+                },
+                onLoadingChange: setLoadingHistory,
+                onError: (err, hasCached) => {
+                    console.error('Failed to fetch evolution history:', err);
+                    if (!hasCached) {
+                        setFetchError('Unable to load portfolio evolution history for the selected filters.');
+                    }
                 }
-            } catch (err) {
-                if (err instanceof DOMException && err.name === 'AbortError') return;
-                console.error('Failed to fetch evolution history:', err);
-                setFetchError('Unable to load portfolio evolution history for the selected filters.');
-            } finally {
-                if (!controller.signal.aborted) {
-                    setLoadingHistory(false);
-                }
-            }
+            });
         };
 
-        const fetchFlows = async () => {
+        const fetchFlows = () => {
             const cacheKey = ClientCache.generateKey('evolution_flows_v2', { filters: normalizedFilters, currency });
-            const cached = ClientCache.get<EvolutionFlowsResponse>(cacheKey);
-
-            if (cached && cached.contributions) {
-                setData(prev => ({ ...prev, contributions: cached.contributions, dividends: cached.dividends }));
-                setLoadingFlows(false);
-                return;
-            }
-
-            setLoadingFlows(true);
-            try {
-                const res = await fetch('/api/analytics/evolution', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filters: backendFilters, currency, mode: 'flows' }),
-                    signal: controller.signal
-                });
-                if (!res.ok) {
-                    throw new Error(`HTTP ${res.status}`);
-                }
-                const json: EvolutionFlowsResponse = await res.json();
-                if (!controller.signal.aborted) {
+            return fetchWithStaleWhileRevalidate<EvolutionFlowsResponse>({
+                cache: ClientCache,
+                cacheKey,
+                isValid: (val): val is EvolutionFlowsResponse =>
+                    Boolean(val && typeof val === 'object' && (val as EvolutionFlowsResponse).contributions),
+                signal: controller.signal,
+                fetcher: async (signal) => {
+                    const res = await fetch('/api/analytics/evolution', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filters: backendFilters, currency, mode: 'flows' }),
+                        signal
+                    });
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}`);
+                    }
+                    return res.json();
+                },
+                onCached: (cached) => {
+                    setData(prev => ({ ...prev, contributions: cached.contributions, dividends: cached.dividends }));
+                },
+                onFresh: (json) => {
                     setData(prev => ({ ...prev, contributions: json.contributions, dividends: json.dividends }));
-                    ClientCache.set(cacheKey, { contributions: json.contributions, dividends: json.dividends });
+                },
+                onLoadingChange: setLoadingFlows,
+                onError: (err, hasCached) => {
+                    console.error('Failed to fetch cash flows:', err);
+                    if (!hasCached) {
+                        setFetchError(prev => prev || 'Unable to load cash flows and dividend schedules.');
+                    }
                 }
-            } catch (err) {
-                if (err instanceof DOMException && err.name === 'AbortError') return;
-                console.error('Failed to fetch cash flows:', err);
-                setFetchError(prev => prev || 'Unable to load cash flows and dividend schedules.');
-            } finally {
-                if (!controller.signal.aborted) {
-                    setLoadingFlows(false);
-                }
-            }
+            });
         };
 
         const timeout = setTimeout(() => {

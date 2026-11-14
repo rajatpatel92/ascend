@@ -3,6 +3,8 @@ import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: Request) {
     const session = await auth();
     if (!session?.user) {
