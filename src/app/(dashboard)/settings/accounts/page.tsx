@@ -1,24 +1,55 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import styles from '../page.module.css';
 import { useSession } from 'next-auth/react';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
+import { MdAccountBalance, MdAdd, MdClose, MdStorefront } from 'react-icons/md';
 
-interface User {
+interface UserRecord {
     id: string;
     username: string;
-    name?: string;
+    name?: string | null;
 }
 
+interface PlatformRecord {
+    id: string;
+    name: string;
+    slug: string;
+    currency: string;
+}
+
+interface AccountTypeRecord {
+    id: string;
+    name: string;
+    currency: string;
+}
+
+interface AccountRecord {
+    id: string;
+    name: string;
+    type: string;
+    currency: string;
+    platformId?: string;
+    platform: { id?: string; name: string };
+    isActive?: boolean;
+}
+
+interface SessionUser {
+    role?: string;
+}
+
+type AccountStatusFilter = 'ALL' | 'ACTIVE' | 'INACTIVE';
+
 export default function AccountsSettingsPage() {
-    const [accounts, setAccounts] = useState<{ id: string, name: string, type: string, currency: string, platform: { name: string }, isActive?: boolean }[]>([]);
-    const [platforms, setPlatforms] = useState<{ id: string, name: string, slug: string, currency: string }[]>([]);
-    const [accountTypes, setAccountTypes] = useState<{ id: string, name: string, currency: string }[]>([]);
-    const [users, setUsers] = useState<User[]>([]);
+    const [accounts, setAccounts] = useState<AccountRecord[]>([]);
+    const [platforms, setPlatforms] = useState<PlatformRecord[]>([]);
+    const [accountTypes, setAccountTypes] = useState<AccountTypeRecord[]>([]);
+    const [users, setUsers] = useState<UserRecord[]>([]);
 
     const [newAccountName, setNewAccountName] = useState('');
+    const [isCustomNewAccountName, setIsCustomNewAccountName] = useState(false);
+    const [customNewAccountInput, setCustomNewAccountInput] = useState('');
     const [newAccountType, setNewAccountType] = useState('');
     const [newAccountCurrency, setNewAccountCurrency] = useState('USD');
     const [selectedPlatformId, setSelectedPlatformId] = useState('');
@@ -26,464 +57,748 @@ export default function AccountsSettingsPage() {
     const [newPlatformName, setNewPlatformName] = useState('');
     const [newPlatformCurrency, setNewPlatformCurrency] = useState('USD');
 
-    const [editingId, setEditingId] = useState<string | null>(null);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const [editFormData, setEditFormData] = useState<any>({});
+    const [editingPlatformId, setEditingPlatformId] = useState<string | null>(null);
+    const [editPlatformData, setEditPlatformData] = useState<{ name: string; currency: string }>({
+        name: '',
+        currency: 'USD'
+    });
+
+    const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+    const [editAccountData, setEditAccountData] = useState<{
+        name: string;
+        type: string;
+        currency: string;
+        platformId: string;
+        isActive: boolean;
+    }>({
+        name: '',
+        type: '',
+        currency: 'USD',
+        platformId: '',
+        isActive: true
+    });
+    const [isCustomEditAccountName, setIsCustomEditAccountName] = useState(false);
 
     const [customOptions, setCustomOptions] = useState<string[]>([]);
+    const [statusFilter, setStatusFilter] = useState<AccountStatusFilter>('ALL');
+    const [errorBanner, setErrorBanner] = useState<string | null>(null);
+    const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
     const { data: session } = useSession();
-    const role = (session?.user as any)?.role || 'VIEWER';
+    const role = (session?.user as SessionUser | undefined)?.role || 'VIEWER';
 
-    async function fetchAccounts() {
-        const res = await fetch('/api/accounts?includeInactive=true');
-        const data = await res.json();
-        if (Array.isArray(data)) setAccounts(data);
-    }
-    // ...
-    // Note: I am skipping some functions to keep context short if possible, but replace_file_content needs contiguity.
-    // I will target the block around state declarations.
-
-    // Actually, I should just replace the top block to add state, and then `startEditing`.
-    // Let's do state first.
-
-
-    async function fetchPlatforms() {
-        const res = await fetch('/api/platforms');
-        const data = await res.json();
-        if (Array.isArray(data)) setPlatforms(data);
-    }
-
-    async function fetchAccountTypes() {
-        const res = await fetch('/api/settings/account-types');
-        const data = await res.json();
-        setAccountTypes(data);
-    }
-
-
-    async function fetchUsers() {
+    const loadAllData = useCallback(async (signal?: AbortSignal) => {
         try {
-            const res = await fetch('/api/users');
-            if (res.ok) {
-                const data = await res.json();
-                setUsers(data);
+            const [accRes, platRes, typeRes, userRes] = await Promise.all([
+                fetch('/api/accounts?includeInactive=true', { signal }),
+                fetch('/api/platforms', { signal }),
+                fetch('/api/settings/account-types', { signal }),
+                fetch('/api/users', { signal }).catch(() => null)
+            ]);
+
+            if (signal?.aborted) return;
+
+            if (accRes.ok) {
+                const data = await accRes.json();
+                if (Array.isArray(data)) setAccounts(data);
+            }
+            if (platRes.ok) {
+                const data = await platRes.json();
+                if (Array.isArray(data)) setPlatforms(data);
+            }
+            if (typeRes.ok) {
+                const data = await typeRes.json();
+                if (Array.isArray(data)) setAccountTypes(data);
+            }
+            if (userRes && userRes.ok) {
+                const data = await userRes.json();
+                if (Array.isArray(data)) setUsers(data);
             }
         } catch (err) {
-            console.error('Failed to fetch users', err);
+            if (err instanceof DOMException && err.name === 'AbortError') return;
+            console.error('Failed to load accounts settings data', err);
         }
-    }
+    }, []);
 
     useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        fetchAccounts();
-        fetchPlatforms();
-        fetchAccountTypes();
-        fetchUsers();
-    }, []);
+        const controller = new AbortController();
+        const run = async () => {
+            await loadAllData(controller.signal);
+        };
+        run();
+        return () => controller.abort();
+    }, [loadAllData]);
+
+    const handleAddPlatform = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newPlatformName.trim()) return;
+        setErrorBanner(null);
+        setSuccessBanner(null);
+
+        try {
+            const res = await fetch('/api/platforms', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newPlatformName.trim(), currency: newPlatformCurrency })
+            });
+            if (res.ok) {
+                setNewPlatformName('');
+                setSuccessBanner(`Platform "${newPlatformName.trim()}" added.`);
+                await loadAllData();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                setErrorBanner(err.error || 'Failed to add platform.');
+            }
+        } catch (error) {
+            console.error('Failed to add platform', error);
+            setErrorBanner('Network error while adding platform.');
+        }
+    };
+
+    const handleUpdatePlatform = async () => {
+        if (!editingPlatformId || !editPlatformData.name.trim()) return;
+        setErrorBanner(null);
+        try {
+            const res = await fetch(`/api/platforms/${editingPlatformId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: editPlatformData.name.trim(),
+                    currency: editPlatformData.currency
+                })
+            });
+            if (res.ok) {
+                setEditingPlatformId(null);
+                setSuccessBanner('Platform updated.');
+                await loadAllData();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                setErrorBanner(err.error || 'Failed to update platform.');
+            }
+        } catch (error) {
+            console.error('Failed to update platform', error);
+            setErrorBanner('Network error while updating platform.');
+        }
+    };
+
+    const handleDeletePlatform = async (id: string) => {
+        if (!confirm('Delete this platform? This cannot be undone.')) return;
+        setErrorBanner(null);
+        setSuccessBanner(null);
+        try {
+            const res = await fetch(`/api/platforms/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                setSuccessBanner('Platform deleted.');
+                await loadAllData();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                setErrorBanner(err.error || 'Failed to delete platform.');
+            }
+        } catch (error) {
+            console.error('Failed to delete platform', error);
+            setErrorBanner('Network error while deleting platform.');
+        }
+    };
 
     const handleAddAccount = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!newAccountName || !selectedPlatformId) {
-            alert('Please fill all fields');
+        const resolvedName = (isCustomNewAccountName ? customNewAccountInput : newAccountName).trim();
+        if (!resolvedName || !selectedPlatformId) {
+            setErrorBanner('Please select an account owner (or custom name) and platform.');
             return;
         }
+        setErrorBanner(null);
+        setSuccessBanner(null);
 
         try {
             const res = await fetch('/api/accounts', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    name: newAccountName,
+                    name: resolvedName,
                     type: newAccountType,
                     platformId: selectedPlatformId,
                     currency: newAccountCurrency
-                }),
+                })
             });
             if (res.ok) {
+                if (isCustomNewAccountName && !customOptions.includes(resolvedName)) {
+                    setCustomOptions((prev) => [...prev, resolvedName]);
+                }
                 setNewAccountName('');
-                if (accountTypes.length > 0) setNewAccountType(accountTypes[0].name);
+                setCustomNewAccountInput('');
+                setIsCustomNewAccountName(false);
                 setSelectedPlatformId('');
-                fetchAccounts();
+                setSuccessBanner(`Account "${resolvedName}" created.`);
+                await loadAllData();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                setErrorBanner(err.error || 'Failed to add account.');
             }
         } catch (error) {
             console.error('Failed to add account', error);
+            setErrorBanner('Network error while adding account.');
+        }
+    };
+
+    const startEditingAccount = (account: AccountRecord) => {
+        const isUser = users.some((u) => u.username === account.name);
+        if (!isUser && !customOptions.includes(account.name)) {
+            setCustomOptions((prev) => [...prev, account.name]);
+        }
+        setEditingAccountId(account.id);
+        setIsCustomEditAccountName(false);
+        setEditAccountData({
+            name: account.name,
+            type: account.type,
+            currency: account.currency,
+            platformId: account.platformId || account.platform?.id || '',
+            isActive: account.isActive !== false
+        });
+    };
+
+    const handleUpdateAccount = async () => {
+        if (!editingAccountId || !editAccountData.name.trim()) return;
+        setErrorBanner(null);
+        try {
+            const res = await fetch(`/api/accounts/${editingAccountId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: editAccountData.name.trim(),
+                    type: editAccountData.type,
+                    platformId: editAccountData.platformId,
+                    currency: editAccountData.currency,
+                    isActive: editAccountData.isActive
+                })
+            });
+            if (res.ok) {
+                setEditingAccountId(null);
+                setIsCustomEditAccountName(false);
+                setSuccessBanner('Account updated.');
+                await loadAllData();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                setErrorBanner(err.error || 'Failed to update account.');
+            }
+        } catch (error) {
+            console.error('Failed to update account', error);
+            setErrorBanner('Network error while updating account.');
         }
     };
 
     const handleDeleteAccount = async (id: string) => {
-        if (!confirm('Are you sure? This cannot be undone.')) return;
+        if (!confirm('Delete this account? This cannot be undone.')) return;
+        setErrorBanner(null);
+        setSuccessBanner(null);
         try {
             const res = await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
             if (res.ok) {
-                fetchAccounts();
+                setSuccessBanner('Account deleted.');
+                await loadAllData();
             } else {
-                const err = await res.json();
-                alert(err.error || 'Failed to delete account');
+                const err = await res.json().catch(() => ({}));
+                setErrorBanner(err.error || 'Failed to delete account.');
             }
         } catch (error) {
             console.error('Failed to delete account', error);
+            setErrorBanner('Network error while deleting account.');
         }
     };
 
-    const handleAddPlatform = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!newPlatformName) return;
+    const filteredAccounts = useMemo(() => {
+        if (statusFilter === 'ACTIVE') return accounts.filter((a) => a.isActive !== false);
+        if (statusFilter === 'INACTIVE') return accounts.filter((a) => a.isActive === false);
+        return accounts;
+    }, [accounts, statusFilter]);
 
-        try {
-            const res = await fetch('/api/platforms', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: newPlatformName, currency: newPlatformCurrency }),
-            });
-            if (res.ok) {
-                setNewPlatformName('');
-                fetchPlatforms();
-            }
-        } catch (error) {
-            console.error('Failed to add platform', error);
-        }
-    };
+    const activeAccountCount = useMemo(
+        () => accounts.filter((a) => a.isActive !== false).length,
+        [accounts]
+    );
 
-    const handleDeletePlatform = async (id: string) => {
-        if (!confirm('Are you sure? This cannot be undone.')) return;
-        try {
-            const res = await fetch(`/api/platforms/${id}`, { method: 'DELETE' });
-            if (res.ok) {
-                fetchPlatforms();
-            } else {
-                const err = await res.json();
-                alert(err.error || 'Failed to delete platform');
-            }
-        } catch (error) {
-            console.error('Failed to delete platform', error);
-        }
-    };
-
-    const startEditing = (item: any) => {
-        setEditingId(item.id);
-        const isUser = users.some(u => u.username === item.name);
-        if (!isUser) {
-            setCustomOptions(prev => prev.includes(item.name) ? prev : [...prev, item.name]);
-        }
-        setEditFormData({ ...item });
-    };
-
-    const cancelEditing = () => {
-        setEditingId(null);
-        setEditFormData({});
-    };
-
-    const handleUpdateAccount = async () => {
-        if (!editFormData.name) return;
-        try {
-            const res = await fetch(`/api/accounts/${editingId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: editFormData.name,
-                    type: editFormData.type,
-                    platformId: editFormData.platformId || editFormData.platform?.id,
-                    currency: editFormData.currency,
-                    isActive: editFormData.isActive
-                }),
-            });
-            if (res.ok) {
-                cancelEditing();
-                fetchAccounts();
-            }
-        } catch (error) {
-            console.error('Failed to update account', error);
-        }
-    };
-
-    const handleUpdatePlatform = async () => {
-        if (!editFormData.name) return;
-        try {
-            const res = await fetch(`/api/platforms/${editingId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: editFormData.name, currency: editFormData.currency }),
-            });
-            if (res.ok) {
-                cancelEditing();
-                fetchPlatforms();
-            }
-        } catch (error) {
-            console.error('Failed to update platform', error);
-        }
-    };
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const renderGroupedList = (items: any[], renderItem: (item: any) => React.ReactNode) => {
-        const grouped = items.reduce((acc, item) => {
+    const groupByCurrency = <T extends { currency?: string }>(items: T[]): Array<[string, T[]]> => {
+        const map: Record<string, T[]> = {};
+        for (const item of items) {
             const curr = item.currency || 'USD';
-            if (!acc[curr]) acc[curr] = [];
-            acc[curr].push(item);
-            return acc;
-        }, {} as Record<string, any[]>);
-
-        return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {(Object.entries(grouped) as [string, any[]][]).map(([curr, groupItems]) => (
-                    <div key={curr}>
-                        <h3 style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', borderBottom: '1px solid var(--card-border)', paddingBottom: '0.25rem' }}>{curr}</h3>
-                        <ul className={styles.list}>
-                            {groupItems.map(renderItem)}
-                        </ul>
-                    </div>
-                ))}
-            </div>
-        );
+            if (!map[curr]) map[curr] = [];
+            map[curr].push(item);
+        }
+        return Object.entries(map);
     };
 
     if (role === 'VIEWER') {
-        return <div className={styles.container}>Unauthorized</div>;
+        return (
+            <section className={styles.card}>
+                <div className={styles.emptyState}>
+                    Only Admin or Editor accounts can manage platforms and investment accounts.
+                </div>
+            </section>
+        );
     }
 
-    return (
-        <div className={styles.grid}>
-            {/* Platforms */}
-            <div className={`${styles.card} ${styles.platforms}`}>
-                <h2 className={styles.cardTitle}>Platforms</h2>
-                <form onSubmit={handleAddPlatform} className={styles.form}>
-                    <input
-                        type="text"
-                        value={newPlatformName}
-                        onChange={(e) => setNewPlatformName(e.target.value)}
-                        placeholder="New Platform Name"
-                        className={styles.input}
-                        style={{ flex: 2 }}
-                    />
-                    <select
-                        value={newPlatformCurrency}
-                        onChange={(e) => setNewPlatformCurrency(e.target.value)}
-                        className={styles.select}
-                        style={{ flex: 1 }}
-                    >
-                        {SUPPORTED_CURRENCIES.map(c => (
-                            <option key={c.code} value={c.code}>{c.code}</option>
-                        ))}
-                    </select>
-                    <button type="submit" className={styles.button}>Add</button>
-                </form>
+    const platformGroups = groupByCurrency(platforms);
+    const accountGroups = groupByCurrency(filteredAccounts);
 
-                {renderGroupedList(platforms, (platform) => (
-                    <li key={platform.id} className={styles.item}>
-                        {editingId === platform.id ? (
-                            <div className={styles.editForm}>
-                                <input
-                                    value={editFormData.name}
-                                    onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
-                                    className={styles.input}
-                                    style={{ flex: 2 }}
-                                />
-                                <select
-                                    value={editFormData.currency}
-                                    onChange={(e) => setEditFormData({ ...editFormData, currency: e.target.value })}
-                                    className={styles.select}
-                                    style={{ flex: 1 }}
-                                >
-                                    {SUPPORTED_CURRENCIES.map(c => (
-                                        <option key={c.code} value={c.code}>{c.code}</option>
-                                    ))}
-                                </select>
-                                <div className={styles.editActions}>
-                                    <button onClick={handleUpdatePlatform} className={styles.saveButton}>Save</button>
-                                    <button onClick={cancelEditing} className={styles.cancelButton}>Cancel</button>
+    return (
+        <div className={styles.stack}>
+            {errorBanner && (
+                <div role="alert" className={styles.errorBanner}>
+                    <span>{errorBanner}</span>
+                    <button
+                        type="button"
+                        className={styles.iconDismissBtn}
+                        onClick={() => setErrorBanner(null)}
+                        aria-label="Dismiss error"
+                    >
+                        <MdClose size={18} aria-hidden="true" />
+                    </button>
+                </div>
+            )}
+
+            {successBanner && (
+                <div role="status" className={styles.successBanner}>
+                    <span>{successBanner}</span>
+                    <button
+                        type="button"
+                        className={styles.iconDismissBtn}
+                        onClick={() => setSuccessBanner(null)}
+                        aria-label="Dismiss notification"
+                    >
+                        <MdClose size={18} aria-hidden="true" />
+                    </button>
+                </div>
+            )}
+
+            <div className={styles.settingsGrid}>
+                {/* Platforms Card */}
+                <section className={styles.card} aria-label="Brokerages and platforms">
+                    <div className={styles.cardHeader}>
+                        <div className={styles.cardTitleGroup}>
+                            <h2 className={styles.cardTitle}>
+                                <MdStorefront size={20} aria-hidden="true" />
+                                Platforms &amp; Brokerages
+                            </h2>
+                            <p className={styles.cardSubheading}>
+                                Institutions where your investment accounts are held.
+                            </p>
+                        </div>
+                        <span className={`${styles.statusPill} ${styles.statusNeutral}`}>
+                            {platforms.length} Platform{platforms.length === 1 ? '' : 's'}
+                        </span>
+                    </div>
+
+                    <form onSubmit={handleAddPlatform} className={styles.form}>
+                        <input
+                            type="text"
+                            value={newPlatformName}
+                            onChange={(e) => setNewPlatformName(e.target.value)}
+                            placeholder="New Platform (e.g. Wealthsimple)"
+                            aria-label="New platform name"
+                            className={styles.input}
+                            style={{ flex: '2 1 180px' }}
+                        />
+                        <select
+                            value={newPlatformCurrency}
+                            onChange={(e) => setNewPlatformCurrency(e.target.value)}
+                            aria-label="New platform currency"
+                            className={styles.select}
+                            style={{ flex: '1 1 95px' }}
+                        >
+                            {SUPPORTED_CURRENCIES.map((c) => (
+                                <option key={c.code} value={c.code}>{c.code}</option>
+                            ))}
+                        </select>
+                        <button type="submit" className={styles.button}>
+                            <MdAdd size={18} aria-hidden="true" />
+                            Add
+                        </button>
+                    </form>
+
+                    {platformGroups.length === 0 ? (
+                        <div className={styles.emptyState}>No platforms configured yet.</div>
+                    ) : (
+                        <div className={styles.groupedStack}>
+                            {platformGroups.map(([curr, groupItems]) => (
+                                <div key={curr} className={styles.groupSection}>
+                                    <div className={styles.groupHeader}>
+                                        <span>{curr}</span>
+                                        <span>{groupItems.length}</span>
+                                    </div>
+                                    <ul className={styles.list}>
+                                        {groupItems.map((platform) => (
+                                            <li key={platform.id} className={styles.item}>
+                                                {editingPlatformId === platform.id ? (
+                                                    <div className={styles.editForm}>
+                                                        <input
+                                                            value={editPlatformData.name}
+                                                            onChange={(e) => setEditPlatformData({ ...editPlatformData, name: e.target.value })}
+                                                            aria-label="Edit platform name"
+                                                            className={styles.input}
+                                                            style={{ flex: '2 1 150px' }}
+                                                        />
+                                                        <select
+                                                            value={editPlatformData.currency}
+                                                            onChange={(e) => setEditPlatformData({ ...editPlatformData, currency: e.target.value })}
+                                                            aria-label="Edit platform currency"
+                                                            className={styles.select}
+                                                            style={{ flex: '1 1 90px' }}
+                                                        >
+                                                            {SUPPORTED_CURRENCIES.map((c) => (
+                                                                <option key={c.code} value={c.code}>{c.code}</option>
+                                                            ))}
+                                                        </select>
+                                                        <div className={styles.editActions}>
+                                                            <button type="button" onClick={handleUpdatePlatform} className={styles.saveButton}>Save</button>
+                                                            <button type="button" onClick={() => setEditingPlatformId(null)} className={styles.cancelButton}>Cancel</button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        <div className={styles.accountInfo}>
+                                                            <span className={styles.accountName}>{platform.name}</span>
+                                                            <span className={styles.accountMeta}>{platform.currency}</span>
+                                                        </div>
+                                                        <div className={styles.itemActions}>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setEditingAccountId(null);
+                                                                    setEditingPlatformId(platform.id);
+                                                                    setEditPlatformData({ name: platform.name, currency: platform.currency });
+                                                                }}
+                                                                className={styles.editButton}
+                                                            >
+                                                                Edit
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeletePlatform(platform.id)}
+                                                                className={styles.deleteButton}
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
                                 </div>
-                            </div>
-                        ) : (
-                            <>
-                                <span>{platform.name}</span>
-                                <div className={styles.itemActions}>
-                                    <button onClick={() => startEditing(platform)} className={styles.editButton}>Edit</button>
+                            ))}
+                        </div>
+                    )}
+                </section>
+
+                {/* Accounts Card */}
+                <section className={styles.card} aria-label="Investment accounts">
+                    <div className={styles.cardHeader}>
+                        <div className={styles.cardTitleGroup}>
+                            <h2 className={styles.cardTitle}>
+                                <MdAccountBalance size={20} aria-hidden="true" />
+                                Accounts
+                            </h2>
+                            <p className={styles.cardSubheading}>
+                                Link account owners, tax classifications, and platforms.
+                            </p>
+                        </div>
+
+                        <div className={styles.pillGroup}>
+                            <span className={`${styles.statusPill} ${styles.statusPositive}`}>
+                                {activeAccountCount} Active
+                            </span>
+                            <div className={styles.filterPillGroup} role="group" aria-label="Filter accounts by status">
+                                {(
+                                    [
+                                        { id: 'ALL', label: `All (${accounts.length})` },
+                                        { id: 'ACTIVE', label: `Active (${activeAccountCount})` },
+                                        { id: 'INACTIVE', label: `Inactive (${accounts.length - activeAccountCount})` }
+                                    ] as ReadonlyArray<{ id: AccountStatusFilter; label: string }>
+                                ).map((tab) => (
                                     <button
-                                        onClick={() => handleDeletePlatform(platform.id)}
-                                        className={styles.deleteButton}
+                                        key={tab.id}
+                                        type="button"
+                                        className={styles.filterPillBtn}
+                                        aria-pressed={statusFilter === tab.id}
+                                        onClick={() => setStatusFilter(tab.id)}
                                     >
-                                        Delete
+                                        {tab.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    <form onSubmit={handleAddAccount} className={styles.formColumnWrap}>
+                        <div className={styles.field}>
+                            <label htmlFor="newAccountOwner" className={styles.label}>Account Owner</label>
+                            {isCustomNewAccountName ? (
+                                <div className={styles.form} style={{ gap: '0.35rem' }}>
+                                    <input
+                                        type="text"
+                                        value={customNewAccountInput}
+                                        onChange={(e) => setCustomNewAccountInput(e.target.value)}
+                                        placeholder="Enter account name"
+                                        className={styles.input}
+                                        style={{ flex: 1 }}
+                                    />
+                                    <button
+                                        type="button"
+                                        className={styles.cancelButton}
+                                        onClick={() => {
+                                            setIsCustomNewAccountName(false);
+                                            setCustomNewAccountInput('');
+                                        }}
+                                    >
+                                        List
                                     </button>
                                 </div>
-                            </>
-                        )}
-                    </li>
-                ))}
-            </div>
-
-            <div className={`${styles.card} ${styles.accounts}`}>
-                <h2 className={styles.cardTitle}>Accounts</h2>
-                <form onSubmit={handleAddAccount} className={styles.form}>
-                    <div style={{ flex: 2 }}>
-                        <select
-                            value={newAccountName}
-                            onChange={(e) => {
-                                if (e.target.value === 'CUSTOM_TRIGGER') {
-                                    const name = prompt("Enter Custom Account Name:");
-                                    if (name) {
-                                        setCustomOptions(prev => [...prev, name]);
-                                        setNewAccountName(name);
-                                    }
-                                } else {
-                                    setNewAccountName(e.target.value);
-                                }
-                            }}
-                            className={styles.select}
-                            style={{ width: '100%' }}
-                        >
-                            <option value="">Select Account Owner</option>
-                            {users.map(user => (
-                                <option key={user.id} value={user.username}>{user.name || user.username}</option>
-                            ))}
-                            <option disabled>──────────</option>
-                            {customOptions.map(name => (
-                                <option key={name} value={name}>{name}</option>
-                            ))}
-                            <option value="CUSTOM_TRIGGER">Custom Name...</option>
-                        </select>
-                    </div>
-                    <select
-                        value={newAccountCurrency}
-                        onChange={(e) => setNewAccountCurrency(e.target.value)}
-                        className={styles.select}
-                        style={{ flex: 1 }}
-                    >
-                        {SUPPORTED_CURRENCIES.map(c => (
-                            <option key={c.code} value={c.code}>{c.code}</option>
-                        ))}
-                    </select>
-                    <select
-                        value={newAccountType}
-                        onChange={(e) => setNewAccountType(e.target.value)}
-                        className={styles.select}
-                        style={{ flex: 1 }}
-                    >
-                        <option value="">Account Type</option>
-                        {accountTypes.filter(t => t.currency === newAccountCurrency).map(type => (
-                            <option key={type.id} value={type.name}>{type.name}</option>
-                        ))}
-                    </select>
-                    <select
-                        value={selectedPlatformId}
-                        onChange={(e) => setSelectedPlatformId(e.target.value)}
-                        className={styles.select}
-                        style={{ flex: 1 }}
-                    >
-                        <option value="">Platform</option>
-                        {platforms.filter(p => p.currency === newAccountCurrency).map(p => (
-                            <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                    </select>
-                    <button type="submit" className={styles.button}>Add</button>
-                </form>
-
-                {renderGroupedList(accounts, (account) => (
-                    <li 
-                        key={account.id} 
-                        className={styles.item}
-                        style={account.isActive === false ? { opacity: 0.6 } : undefined}
-                    >
-                        {editingId === account.id ? (
-                            <div className={styles.editForm}>
-                                <div style={{ flex: 2 }}>
-                                    <select
-                                        value={editFormData.name}
-                                        onChange={(e) => {
-                                            if (e.target.value === 'CUSTOM_TRIGGER') {
-                                                const name = prompt("Enter Custom Account Name:");
-                                                if (name) {
-                                                    setCustomOptions(prev => [...prev, name]);
-                                                    setEditFormData({ ...editFormData, name });
-                                                }
-                                            } else {
-                                                setEditFormData({ ...editFormData, name: e.target.value });
-                                            }
-                                        }}
-                                        className={styles.select}
-                                        style={{ width: '100%' }}
-                                    >
-                                        <option value="">Select Account Owner</option>
-                                        {users.map(user => (
-                                            <option key={user.id} value={user.username}>{user.name || user.username}</option>
-                                        ))}
-                                        <option disabled>──────────</option>
-                                        {customOptions.map(name => (
-                                            <option key={name} value={name}>{name}</option>
-                                        ))}
-                                        <option value="CUSTOM_TRIGGER">Custom Name...</option>
-                                    </select>
-                                </div>
+                            ) : (
                                 <select
-                                    value={editFormData.currency}
-                                    onChange={(e) => setEditFormData({ ...editFormData, currency: e.target.value })}
+                                    id="newAccountOwner"
+                                    value={newAccountName}
+                                    onChange={(e) => {
+                                        if (e.target.value === 'CUSTOM_TRIGGER') {
+                                            setIsCustomNewAccountName(true);
+                                            setNewAccountName('');
+                                        } else {
+                                            setNewAccountName(e.target.value);
+                                        }
+                                    }}
                                     className={styles.select}
-                                    style={{ flex: 1 }}
                                 >
-                                    {SUPPORTED_CURRENCIES.map(c => (
-                                        <option key={c.code} value={c.code}>{c.code}</option>
+                                    <option value="">Select Owner</option>
+                                    {users.map((user) => (
+                                        <option key={user.id} value={user.username}>
+                                            {user.name || user.username}
+                                        </option>
                                     ))}
+                                    {customOptions.length > 0 && <option disabled>──────────</option>}
+                                    {customOptions.map((name) => (
+                                        <option key={name} value={name}>{name}</option>
+                                    ))}
+                                    <option value="CUSTOM_TRIGGER">Custom Name...</option>
                                 </select>
-                                <select
-                                    value={editFormData.type}
-                                    onChange={(e) => setEditFormData({ ...editFormData, type: e.target.value })}
-                                    className={styles.select}
-                                    style={{ flex: 1 }}
-                                >
-                                    <option value="">Account Type</option>
-                                    {accountTypes.filter(t => t.currency === editFormData.currency).map(type => (
+                            )}
+                        </div>
+
+                        <div className={styles.field}>
+                            <label htmlFor="newAccountCurr" className={styles.label}>Currency</label>
+                            <select
+                                id="newAccountCurr"
+                                value={newAccountCurrency}
+                                onChange={(e) => {
+                                    setNewAccountCurrency(e.target.value);
+                                    setNewAccountType('');
+                                    setSelectedPlatformId('');
+                                }}
+                                className={styles.select}
+                            >
+                                {SUPPORTED_CURRENCIES.map((c) => (
+                                    <option key={c.code} value={c.code}>{c.code}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div className={styles.field}>
+                            <label htmlFor="newAccountType" className={styles.label}>Account Type</label>
+                            <select
+                                id="newAccountType"
+                                value={newAccountType}
+                                onChange={(e) => setNewAccountType(e.target.value)}
+                                className={styles.select}
+                            >
+                                <option value="">Account Type</option>
+                                {accountTypes
+                                    .filter((t) => t.currency === newAccountCurrency)
+                                    .map((type) => (
                                         <option key={type.id} value={type.name}>{type.name}</option>
                                     ))}
-                                </select>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: '80px' }}>
-                                    <input
-                                        type="checkbox"
-                                        id={`isActive-${account.id}`}
-                                        checked={editFormData.isActive !== false}
-                                        onChange={(e) => setEditFormData({ ...editFormData, isActive: e.target.checked })}
-                                    />
-                                    <label htmlFor={`isActive-${account.id}`} style={{ fontSize: '0.8rem', userSelect: 'none', color: 'var(--text-primary)' }}>Active</label>
+                            </select>
+                        </div>
+
+                        <div className={styles.field}>
+                            <label htmlFor="newAccountPlatform" className={styles.label}>Platform</label>
+                            <select
+                                id="newAccountPlatform"
+                                value={selectedPlatformId}
+                                onChange={(e) => setSelectedPlatformId(e.target.value)}
+                                className={styles.select}
+                            >
+                                <option value="">Platform</option>
+                                {platforms
+                                    .filter((p) => p.currency === newAccountCurrency)
+                                    .map((p) => (
+                                        <option key={p.id} value={p.id}>{p.name}</option>
+                                    ))}
+                            </select>
+                        </div>
+
+                        <button type="submit" className={styles.button}>
+                            <MdAdd size={18} aria-hidden="true" />
+                            Add Account
+                        </button>
+                    </form>
+
+                    {accountGroups.length === 0 ? (
+                        <div className={styles.emptyState}>No accounts match the selected filter.</div>
+                    ) : (
+                        <div className={styles.groupedStack}>
+                            {accountGroups.map(([curr, groupItems]) => (
+                                <div key={curr} className={styles.groupSection}>
+                                    <div className={styles.groupHeader}>
+                                        <span>{curr}</span>
+                                        <span>{groupItems.length}</span>
+                                    </div>
+                                    <ul className={styles.list}>
+                                        {groupItems.map((account) => {
+                                            const ownerDisplay = users.find((u) => u.username === account.name)?.name || account.name;
+                                            return (
+                                                <li
+                                                    key={account.id}
+                                                    className={`${styles.item} ${account.isActive === false ? styles.itemInactive : ''}`}
+                                                >
+                                                    {editingAccountId === account.id ? (
+                                                        <div className={styles.editForm}>
+                                                            {isCustomEditAccountName ? (
+                                                                <input
+                                                                    value={editAccountData.name}
+                                                                    onChange={(e) => setEditAccountData({ ...editAccountData, name: e.target.value })}
+                                                                    aria-label="Custom account name"
+                                                                    className={styles.input}
+                                                                    style={{ flex: '2 1 150px' }}
+                                                                />
+                                                            ) : (
+                                                                <select
+                                                                    value={editAccountData.name}
+                                                                    onChange={(e) => {
+                                                                        if (e.target.value === 'CUSTOM_TRIGGER') {
+                                                                            setIsCustomEditAccountName(true);
+                                                                        } else {
+                                                                            setEditAccountData({ ...editAccountData, name: e.target.value });
+                                                                        }
+                                                                    }}
+                                                                    aria-label="Account owner"
+                                                                    className={styles.select}
+                                                                    style={{ flex: '2 1 150px' }}
+                                                                >
+                                                                    <option value="">Select Owner</option>
+                                                                    {users.map((user) => (
+                                                                        <option key={user.id} value={user.username}>
+                                                                            {user.name || user.username}
+                                                                        </option>
+                                                                    ))}
+                                                                    {customOptions.length > 0 && <option disabled>──────────</option>}
+                                                                    {customOptions.map((name) => (
+                                                                        <option key={name} value={name}>{name}</option>
+                                                                    ))}
+                                                                    <option value="CUSTOM_TRIGGER">Custom Name...</option>
+                                                                </select>
+                                                            )}
+
+                                                            <select
+                                                                value={editAccountData.currency}
+                                                                onChange={(e) => setEditAccountData({ ...editAccountData, currency: e.target.value })}
+                                                                aria-label="Account currency"
+                                                                className={styles.select}
+                                                                style={{ flex: '1 1 85px' }}
+                                                            >
+                                                                {SUPPORTED_CURRENCIES.map((c) => (
+                                                                    <option key={c.code} value={c.code}>{c.code}</option>
+                                                                ))}
+                                                            </select>
+
+                                                            <select
+                                                                value={editAccountData.type}
+                                                                onChange={(e) => setEditAccountData({ ...editAccountData, type: e.target.value })}
+                                                                aria-label="Account type"
+                                                                className={styles.select}
+                                                                style={{ flex: '1 1 115px' }}
+                                                            >
+                                                                <option value="">Account Type</option>
+                                                                {accountTypes
+                                                                    .filter((t) => t.currency === editAccountData.currency)
+                                                                    .map((type) => (
+                                                                        <option key={type.id} value={type.name}>{type.name}</option>
+                                                                    ))}
+                                                            </select>
+
+                                                            <label className={styles.checkboxWrap}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={editAccountData.isActive}
+                                                                    onChange={(e) => setEditAccountData({ ...editAccountData, isActive: e.target.checked })}
+                                                                />
+                                                                <span>Active</span>
+                                                            </label>
+
+                                                            <div className={styles.editActions}>
+                                                                <button type="button" onClick={handleUpdateAccount} className={styles.saveButton}>Save</button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setEditingAccountId(null);
+                                                                        setIsCustomEditAccountName(false);
+                                                                    }}
+                                                                    className={styles.cancelButton}
+                                                                >
+                                                                    Cancel
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <>
+                                                            <div className={styles.accountInfo}>
+                                                                <span className={styles.accountName}>
+                                                                    <span>{ownerDisplay}</span>
+                                                                    {account.type && (
+                                                                        <span className={`${styles.statusPill} ${styles.statusInfo}`}>
+                                                                            {account.type}
+                                                                        </span>
+                                                                    )}
+                                                                    {account.isActive === false && (
+                                                                        <span className={`${styles.statusPill} ${styles.statusNegative}`}>
+                                                                            Inactive
+                                                                        </span>
+                                                                    )}
+                                                                </span>
+                                                                <span className={styles.accountMeta}>
+                                                                    <span>{account.platform?.name || 'No Platform'}</span>
+                                                                    <span>&bull;</span>
+                                                                    <span>{account.currency}</span>
+                                                                </span>
+                                                            </div>
+                                                            <div className={styles.itemActions}>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setEditingPlatformId(null);
+                                                                        startEditingAccount(account);
+                                                                    }}
+                                                                    className={styles.editButton}
+                                                                >
+                                                                    Edit
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleDeleteAccount(account.id)}
+                                                                    className={styles.deleteButton}
+                                                                >
+                                                                    Delete
+                                                                </button>
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
                                 </div>
-                                <div className={styles.editActions}>
-                                    <button onClick={handleUpdateAccount} className={styles.saveButton}>Save</button>
-                                    <button onClick={cancelEditing} className={styles.cancelButton}>Cancel</button>
-                                </div>
-                            </div>
-                        ) : (
-                            <>
-                                <div className={styles.accountInfo}>
-                                    <span className={styles.accountName}>
-                                        {(users.find(u => u.username === account.name)?.name || account.name)} - {account.type}
-                                        {account.isActive === false && (
-                                            <span style={{ 
-                                                marginLeft: '0.5rem', 
-                                                fontSize: '0.7rem', 
-                                                backgroundColor: 'var(--text-error)', 
-                                                color: '#fff', 
-                                                padding: '0.15rem 0.35rem', 
-                                                borderRadius: '0.25rem',
-                                                fontWeight: 'bold',
-                                                verticalAlign: 'middle'
-                                            }}>
-                                                Inactive
-                                            </span>
-                                        )}
-                                    </span>
-                                    <span className={styles.accountMeta}>{account.platform.name}</span>
-                                </div>
-                                <div className={styles.itemActions}>
-                                    <button onClick={() => startEditing(account)} className={styles.editButton}>Edit</button>
-                                    <button
-                                        onClick={() => handleDeleteAccount(account.id)}
-                                        className={styles.deleteButton}
-                                    >
-                                        Delete
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                    </li>
-                ))}
+                            ))}
+                        </div>
+                    )}
+                </section>
             </div>
         </div>
-
     );
 }

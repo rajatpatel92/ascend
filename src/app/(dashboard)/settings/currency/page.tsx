@@ -5,68 +5,135 @@ import styles from '../page.module.css';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
 import { useEffect, useState } from 'react';
 import { getExchangeRate } from '@/lib/currencyCache';
+import { MdCurrencyExchange, MdTableChart } from 'react-icons/md';
 
-function ExchangeRateCell({ from, to }: { from: string, to: string }) {
+const QUICK_CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD'];
+
+function ExchangeRateCell({ from, to }: { from: string; to: string }) {
     const [rate, setRate] = useState<number | null>(null);
 
     useEffect(() => {
         let mounted = true;
 
-        getExchangeRate(from, to).then(fetchedRate => {
+        getExchangeRate(from, to).then((fetchedRate) => {
             if (mounted && fetchedRate !== null) {
                 setRate(fetchedRate);
             }
         });
 
-        return () => { mounted = false; };
+        return () => {
+            mounted = false;
+        };
     }, [from, to]);
 
-    if (rate === null) return <td style={{ padding: '0.5rem', textAlign: 'right', color: 'var(--text-secondary)' }}>-</td>;
+    const isSelf = from === to;
+    if (rate === null) {
+        return <td className={isSelf ? styles.matrixSelfCell : undefined}>{isSelf ? '1.0000' : '—'}</td>;
+    }
 
-    return <td style={{ padding: '0.5rem', textAlign: 'right', color: 'var(--text-primary)' }}>{rate.toFixed(4)}</td>;
+    return <td className={isSelf ? styles.matrixSelfCell : undefined}>{rate.toFixed(4)}</td>;
 }
 
 export default function CurrencySettingsPage() {
-    const { currency, setCurrency } = useCurrency();
+    const { currency, setCurrency, format } = useCurrency();
+    const activeMeta = SUPPORTED_CURRENCIES.find((c) => c.code === currency);
 
     return (
-        <>
-            <div className={`${styles.card} ${styles.currency}`} style={{ marginBottom: '1.5rem' }}>
-                <h2 className={styles.cardTitle}>Default Currency</h2>
-                <div className={styles.field}>
-                    <label htmlFor="defaultCurrency" className={styles.label}>Select Currency</label>
-                    <select
-                        id="defaultCurrency"
-                        value={currency}
-                        onChange={(e) => setCurrency(e.target.value)}
-                        className={styles.select}
-                    >
-                        {SUPPORTED_CURRENCIES.map(c => (
-                            <option key={c.code} value={c.code}>
-                                {c.name} - {c.code} ({c.symbol})
-                            </option>
-                        ))}
-                    </select>
+        <div className={styles.stack}>
+            <section className={styles.card} aria-label="Default reporting currency">
+                <div className={styles.cardHeader}>
+                    <div className={styles.cardTitleGroup}>
+                        <h2 className={styles.cardTitle}>
+                            <MdCurrencyExchange size={20} aria-hidden="true" />
+                            Base Display Currency
+                        </h2>
+                        <p className={styles.cardSubheading}>
+                            All portfolio totals, analytics charts, and rebalance recommendations normalize into this currency.
+                        </p>
+                    </div>
+                    <span className={`${styles.statusPill} ${styles.statusInfo}`}>
+                        {currency} {activeMeta ? `(${activeMeta.symbol})` : ''}
+                    </span>
                 </div>
-            </div>
 
-            <div className={`${styles.card} ${styles.rates}`} style={{ overflowX: 'auto' }}>
-                <h2 className={styles.cardTitle}>Exchange Rates <span style={{ fontSize: '0.8rem', fontWeight: 'normal', color: 'var(--text-secondary)', marginLeft: '0.5rem' }}>(Refreshed every 8 hours)</span></h2>
-                <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem', minWidth: '800px' }}>
+                <div className={styles.grid}>
+                    <div className={styles.field}>
+                        <label htmlFor="defaultCurrency" className={styles.label}>
+                            <span>Select Currency</span>
+                            <span className={styles.labelMeta}>Sample: {format(10000)}</span>
+                        </label>
+                        <select
+                            id="defaultCurrency"
+                            value={currency}
+                            onChange={(e) => setCurrency(e.target.value)}
+                            className={styles.select}
+                        >
+                            {SUPPORTED_CURRENCIES.map((c) => (
+                                <option key={c.code} value={c.code}>
+                                    {c.name} - {c.code} ({c.symbol})
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className={styles.field}>
+                        <span className={styles.label}>Quick Switch</span>
+                        <div className={styles.chipRow} role="group" aria-label="Quick currency switcher">
+                            {QUICK_CURRENCIES.filter((code) => SUPPORTED_CURRENCIES.some((c) => c.code === code)).map((code) => (
+                                <button
+                                    key={code}
+                                    type="button"
+                                    className={styles.chipBtn}
+                                    aria-pressed={currency === code}
+                                    onClick={() => setCurrency(code)}
+                                >
+                                    {code}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section className={styles.card} aria-label="Live exchange rates matrix">
+                <div className={styles.cardHeader}>
+                    <div className={styles.cardTitleGroup}>
+                        <h2 className={styles.cardTitle}>
+                            <MdTableChart size={20} aria-hidden="true" />
+                            Exchange Rate Matrix
+                        </h2>
+                        <p className={styles.cardSubheading}>
+                            Cross-currency conversion rates cached across the platform and refreshed every 8 hours.
+                        </p>
+                    </div>
+                    <span className={`${styles.statusPill} ${styles.statusPositive}`}>
+                        Highlighted: {currency}
+                    </span>
+                </div>
+
+                <div className={styles.tableResponsive}>
+                    <table className={styles.matrixTable}>
                         <thead>
                             <tr>
-                                <th style={{ textAlign: 'left', padding: '0.5rem', color: 'var(--text-secondary)', fontWeight: 500, position: 'sticky', left: 0, background: 'var(--card-bg)' }}>From \ To</th>
-                                {SUPPORTED_CURRENCIES.map(c => (
-                                    <th key={c.code} style={{ textAlign: 'right', padding: '0.5rem', color: 'var(--text-secondary)', fontWeight: 500 }}>{c.code}</th>
+                                <th>From \ To</th>
+                                {SUPPORTED_CURRENCIES.map((c) => (
+                                    <th
+                                        key={c.code}
+                                        className={c.code === currency ? styles.matrixActiveHeader : undefined}
+                                    >
+                                        {c.code}
+                                    </th>
                                 ))}
                             </tr>
                         </thead>
                         <tbody>
-                            {SUPPORTED_CURRENCIES.map(from => (
-                                <tr key={from.code} style={{ borderTop: '1px solid var(--card-border)' }}>
-                                    <td style={{ fontWeight: 600, padding: '0.5rem', color: 'var(--text-primary)', position: 'sticky', left: 0, background: 'var(--card-bg)' }}>{from.code}</td>
-                                    {SUPPORTED_CURRENCIES.map(to => (
+                            {SUPPORTED_CURRENCIES.map((from) => (
+                                <tr
+                                    key={from.code}
+                                    className={from.code === currency ? styles.matrixActiveRow : undefined}
+                                >
+                                    <td>{from.code}</td>
+                                    {SUPPORTED_CURRENCIES.map((to) => (
                                         <ExchangeRateCell key={`${from.code}-${to.code}`} from={from.code} to={to.code} />
                                     ))}
                                 </tr>
@@ -74,7 +141,7 @@ export default function CurrencySettingsPage() {
                         </tbody>
                     </table>
                 </div>
-            </div>
-        </>
+            </section>
+        </div>
     );
 }

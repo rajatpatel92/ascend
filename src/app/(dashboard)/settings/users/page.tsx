@@ -1,42 +1,84 @@
 'use client';
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import styles from './page.module.css';
 import { useSession } from 'next-auth/react';
+import { useDate } from '@/context/DateContext';
+import { MdGroup, MdPersonAdd } from 'react-icons/md';
 
-interface User {
+interface UserRecord {
     id: string;
     username: string;
-    name?: string;
+    name?: string | null;
     role: string;
+    aiEnabled?: boolean;
     createdAt: string;
+}
+
+interface UserFormState {
+    username: string;
+    password: string;
+    role: string;
+    name: string;
+    aiEnabled: boolean;
+}
+
+interface SessionUser {
+    id?: string;
+    role?: string;
+}
+
+const INITIAL_FORM: UserFormState = {
+    username: '',
+    password: '',
+    role: 'VIEWER',
+    name: '',
+    aiEnabled: true
+};
+
+function getRoleBadgeClass(role: string): string {
+    if (role === 'ADMIN') return styles.pillAdmin;
+    if (role === 'EDITOR') return styles.pillEditor;
+    return styles.pillViewer;
 }
 
 export default function UserManagementPage() {
     const { data: session } = useSession();
-    const [users, setUsers] = useState<User[]>([]);
+    const { formatDate } = useDate();
+    const [users, setUsers] = useState<UserRecord[]>([]);
     const [showForm, setShowForm] = useState(false);
-    const [formData, setFormData] = useState({ username: '', password: '', role: 'VIEWER', name: '' });
+    const [formData, setFormData] = useState<UserFormState>(INITIAL_FORM);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-
     const [editingId, setEditingId] = useState<string | null>(null);
 
-    useEffect(() => {
-        fetchUsers();
-    }, []);
-
-    const fetchUsers = async () => {
+    const fetchUsers = useCallback(async (signal?: AbortSignal) => {
         try {
-            const res = await fetch('/api/users');
+            const res = await fetch('/api/users', { signal });
             if (res.ok) {
                 const data = await res.json();
-                setUsers(data);
+                if (Array.isArray(data)) setUsers(data);
             }
         } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') return;
             console.error('Failed to fetch users', err);
         }
+    }, []);
+
+    useEffect(() => {
+        const controller = new AbortController();
+        const run = async () => {
+            await fetchUsers(controller.signal);
+        };
+        run();
+        return () => controller.abort();
+    }, [fetchUsers]);
+
+    const resetForm = () => {
+        setFormData(INITIAL_FORM);
+        setEditingId(null);
+        setShowForm(false);
+        setError('');
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -48,202 +90,236 @@ export default function UserManagementPage() {
             const url = editingId ? `/api/users/${editingId}` : '/api/users';
             const method = editingId ? 'PUT' : 'POST';
 
-            const body: any = { ...formData };
-            if (editingId && !body.password) delete body.password; // Don't send empty password on edit
-            if (editingId) delete body.username; // Username is immutable
+            const payload: Record<string, string | boolean> = {
+                role: formData.role,
+                name: formData.name,
+                aiEnabled: formData.aiEnabled
+            };
+            if (!editingId) {
+                payload.username = formData.username;
+                payload.password = formData.password;
+            } else if (formData.password) {
+                payload.password = formData.password;
+            }
 
             const res = await fetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
+                body: JSON.stringify(payload)
             });
 
             if (!res.ok) {
                 const msg = await res.text();
-                throw new Error(msg);
+                throw new Error(msg || `HTTP ${res.status}`);
             }
 
             resetForm();
-            fetchUsers();
-        } catch (err: any) {
-            setError(err.message);
+            await fetchUsers();
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : 'Failed to save user.');
         } finally {
             setLoading(false);
         }
     };
 
-    const resetForm = () => {
-        setFormData({ username: '', password: '', role: 'VIEWER', name: '', aiEnabled: true } as any);
-        setEditingId(null);
-        setShowForm(false);
-        setError('');
-    };
-
-    const handleEdit = (user: User) => {
+    const handleEdit = (user: UserRecord) => {
         setFormData({
             username: user.username,
-            password: '', // Password not retrieved
+            password: '',
             role: user.role,
             name: user.name || '',
-            aiEnabled: (user as any).aiEnabled ?? true
-        } as any);
+            aiEnabled: user.aiEnabled ?? true
+        });
         setEditingId(user.id);
         setShowForm(true);
+        setError('');
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     const handleDelete = async (id: string) => {
         if (!confirm('Are you sure you want to delete this user?')) return;
+        setError('');
 
         try {
             const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
             if (res.ok) {
-                fetchUsers();
+                await fetchUsers();
             } else {
                 const msg = await res.text();
-                alert(msg);
+                setError(msg || 'Failed to delete user.');
             }
         } catch (err) {
             console.error('Failed to delete user', err);
+            setError('Network error while deleting user.');
         }
     };
 
     if (!session) {
-        return <div className={styles.container}>Unauthorized</div>;
+        return (
+            <section className={styles.card}>
+                <div className={styles.errorBanner}>Unauthorized</div>
+            </section>
+        );
     }
 
-    const isAdmin = (session.user as any).role === 'ADMIN';
+    const sessionUser = session.user as SessionUser;
+    const isAdmin = sessionUser.role === 'ADMIN';
 
     return (
-        <>
-            <div className={`${styles.card} ${styles.users}`} style={{ marginBottom: '1.5rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                    <h2 className={styles.cardTitle} style={{ margin: 0 }}>User Management</h2>
+        <section className={styles.card} aria-label="User management">
+            <div className={styles.cardHeader}>
+                <div className={styles.cardTitleGroup}>
+                    <h2 className={styles.cardTitle}>
+                        <MdGroup size={20} aria-hidden="true" />
+                        User Management
+                    </h2>
+                    <p className={styles.cardSubheading}>
+                        Manage workspace members, role permissions, and AI assistant access.
+                    </p>
+                </div>
+
+                <div className={styles.headerActions}>
+                    <span className={`${styles.pill} ${styles.pillViewer}`}>
+                        {users.length} User{users.length === 1 ? '' : 's'}
+                    </span>
                     {isAdmin && (
                         <button
+                            type="button"
                             className={showForm && !editingId ? styles.cancelButton : styles.addButton}
                             onClick={() => {
                                 if (showForm) resetForm();
                                 else setShowForm(true);
                             }}
                         >
+                            {!showForm && <MdPersonAdd size={18} aria-hidden="true" />}
                             {showForm ? 'Cancel' : 'Add User'}
                         </button>
                     )}
                 </div>
+            </div>
 
-                {showForm && (
-                    <div className={styles.formCard} style={{ marginBottom: '1rem', border: '1px solid var(--card-border)', padding: '1rem', borderRadius: '0.5rem' }}>
-                        <form onSubmit={handleSubmit} className={styles.form}>
-                            <div className={styles.inputGroup}>
-                                <label className={styles.label}>Name</label>
-                                <input
-                                    type="text"
-                                    className={styles.input}
-                                    value={formData.name}
-                                    onChange={e => setFormData({ ...formData, name: e.target.value })}
-                                    placeholder="Display Name (Optional)"
-                                />
-                            </div>
-                            <div className={styles.inputGroup}>
-                                <label className={styles.label}>Username</label>
-                                <input
-                                    type="text"
-                                    className={styles.input}
-                                    value={formData.username}
-                                    onChange={e => setFormData({ ...formData, username: e.target.value })}
-                                    required
-                                    disabled={!!editingId} // Username cannot be changed
-                                    style={editingId ? { background: 'var(--background-subtle)', cursor: 'not-allowed' } : {}}
-                                />
-                            </div>
-                            <div className={styles.inputGroup}>
-                                <label className={styles.label}>Password</label>
-                                <input
-                                    type="password"
-                                    className={styles.input}
-                                    value={formData.password}
-                                    onChange={e => setFormData({ ...formData, password: e.target.value })}
-                                    required={!editingId}
-                                    placeholder={editingId ? "Leave blank to keep current" : ""}
-                                />
-                            </div>
-                            <div className={styles.inputGroup}>
-                                <label className={styles.label}>Role</label>
-                                <select
-                                    className={styles.select}
-                                    value={formData.role}
-                                    onChange={e => setFormData({ ...formData, role: e.target.value })}
-                                    disabled={!isAdmin}
-                                >
-                                    <option value="VIEWER">Viewer</option>
-                                    <option value="EDITOR">Editor</option>
-                                    <option value="ADMIN">Admin</option>
-                                </select>
-                            </div>
-                            <div className={styles.inputGroup} style={{ flexDirection: 'row', alignItems: 'center', gap: '10px' }}>
-                                <input
-                                    type="checkbox"
-                                    id="aiEnabled"
-                                    checked={(formData as any).aiEnabled ?? true}
-                                    onChange={e => setFormData({ ...formData, aiEnabled: e.target.checked } as any)}
-                                    style={{ width: 'auto' }}
-                                />
-                                <label htmlFor="aiEnabled" className={styles.label} style={{ marginBottom: 0, cursor: 'pointer' }}>Enable AI Features</label>
-                            </div>
-                            <button type="submit" className={styles.addButton} disabled={loading}>
-                                {loading ? 'Saving...' : (editingId ? 'Update User' : 'Create User')}
-                            </button>
-                        </form>
-                        {error && <div style={{ color: 'var(--error)', marginTop: '1rem' }}>{error}</div>}
-                    </div>
-                )}
+            {error && (
+                <div role="alert" className={styles.errorBanner}>
+                    {error}
+                </div>
+            )}
 
-                <div className={styles.tableWrapper}>
-                    <table className={styles.table}>
-                        <thead>
-                            <tr>
-                                <th className={styles.th}>Name</th>
-                                <th className={styles.th}>Username</th>
-                                <th className={styles.th}>Role</th>
-                                <th className={styles.th}>AI Access</th>
-                                <th className={styles.th}>Created At</th>
-                                <th className={styles.th}>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {users.map(user => (
+            {showForm && (
+                <div className={styles.formCard}>
+                    <form onSubmit={handleSubmit} className={styles.form}>
+                        <div className={styles.inputGroup}>
+                            <label htmlFor="user-name" className={styles.label}>Display Name</label>
+                            <input
+                                id="user-name"
+                                type="text"
+                                className={styles.input}
+                                value={formData.name}
+                                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                                placeholder="Display Name (Optional)"
+                            />
+                        </div>
+                        <div className={styles.inputGroup}>
+                            <label htmlFor="user-username" className={styles.label}>Username</label>
+                            <input
+                                id="user-username"
+                                type="text"
+                                className={styles.input}
+                                value={formData.username}
+                                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                                required
+                                disabled={Boolean(editingId)}
+                            />
+                        </div>
+                        <div className={styles.inputGroup}>
+                            <label htmlFor="user-password" className={styles.label}>Password</label>
+                            <input
+                                id="user-password"
+                                type="password"
+                                className={styles.input}
+                                value={formData.password}
+                                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                                required={!editingId}
+                                placeholder={editingId ? 'Leave blank to keep current' : ''}
+                            />
+                        </div>
+                        <div className={styles.inputGroup}>
+                            <label htmlFor="user-role" className={styles.label}>Role</label>
+                            <select
+                                id="user-role"
+                                className={styles.select}
+                                value={formData.role}
+                                onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                                disabled={!isAdmin}
+                            >
+                                <option value="VIEWER">Viewer</option>
+                                <option value="EDITOR">Editor</option>
+                                <option value="ADMIN">Admin</option>
+                            </select>
+                        </div>
+                        <label className={styles.checkboxWrap}>
+                            <input
+                                type="checkbox"
+                                checked={formData.aiEnabled}
+                                onChange={(e) => setFormData({ ...formData, aiEnabled: e.target.checked })}
+                            />
+                            <span>Enable AI Features</span>
+                        </label>
+                        <button type="submit" className={styles.addButton} disabled={loading}>
+                            {loading ? 'Saving...' : editingId ? 'Update User' : 'Create User'}
+                        </button>
+                    </form>
+                </div>
+            )}
+
+            <div className={styles.tableWrapper}>
+                <table className={styles.table}>
+                    <thead>
+                        <tr>
+                            <th className={styles.th}>Name</th>
+                            <th className={styles.th}>Username</th>
+                            <th className={styles.th}>Role</th>
+                            <th className={styles.th}>AI Access</th>
+                            <th className={styles.th}>Created</th>
+                            <th className={styles.th}>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {users.map((user) => {
+                            const isSelf = user.id === sessionUser.id;
+                            return (
                                 <tr key={user.id}>
-                                    <td className={styles.td}>{user.name || '-'}</td>
-                                    <td className={styles.td}>{user.username}</td>
-                                    <td className={styles.td}>{user.role}</td>
                                     <td className={styles.td}>
-                                        <span style={{
-                                            padding: '2px 8px',
-                                            borderRadius: '12px',
-                                            background: (user as any).aiEnabled ? 'var(--success-bg)' : 'var(--error-bg)',
-                                            color: (user as any).aiEnabled ? 'var(--success)' : 'var(--error)',
-                                            fontSize: '0.8rem'
-                                        }}>
-                                            {(user as any).aiEnabled ? 'Enabled' : 'Disabled'}
+                                        <span className={styles.userCell}>
+                                            <span>{user.name || '—'}</span>
+                                            {isSelf && <span className={`${styles.pill} ${styles.pillAdmin}`}>You</span>}
                                         </span>
                                     </td>
-                                    <td className={styles.td}>{new Date(user.createdAt).toLocaleDateString()}</td>
+                                    <td className={styles.td}>{user.username}</td>
                                     <td className={styles.td}>
-                                        {/* Show actions if it's not the current user (for deletion) OR if it IS the current user (for editing) */
-                                            /* Actually, simpler: Show EDIT for everyone (if admin or self). Show DELETE only if admin and not self. */
-                                        }
+                                        <span className={`${styles.pill} ${getRoleBadgeClass(user.role)}`}>
+                                            {user.role}
+                                        </span>
+                                    </td>
+                                    <td className={styles.td}>
+                                        <span className={`${styles.pill} ${user.aiEnabled ? styles.pillPositive : styles.pillNegative}`}>
+                                            {user.aiEnabled ? 'Enabled' : 'Disabled'}
+                                        </span>
+                                    </td>
+                                    <td className={styles.td}>{formatDate(user.createdAt)}</td>
+                                    <td className={styles.td}>
                                         <div className={styles.itemActions}>
-                                            {(isAdmin || user.id === session.user?.id) && (
+                                            {(isAdmin || isSelf) && (
                                                 <button
+                                                    type="button"
                                                     className={styles.editButton}
                                                     onClick={() => handleEdit(user)}
                                                 >
                                                     Edit
                                                 </button>
                                             )}
-                                            {isAdmin && user.id !== session.user?.id && (
+                                            {isAdmin && !isSelf && (
                                                 <button
+                                                    type="button"
                                                     className={styles.deleteButton}
                                                     onClick={() => handleDelete(user.id)}
                                                 >
@@ -253,16 +329,15 @@ export default function UserManagementPage() {
                                         </div>
                                     </td>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-                <div style={{ marginTop: '1rem', padding: '0.75rem', background: 'var(--background-subtle)', borderRadius: '0.5rem', border: '1px solid var(--card-border)' }}>
-                    <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: 0 }}>
-                        <strong>Note:</strong> All users have unrestricted access to view the entire portfolio. No user specific portfolios are supported at this stage.
-                    </p>
-                </div>
+                            );
+                        })}
+                    </tbody>
+                </table>
             </div>
-        </>
+
+            <div className={styles.noteBanner}>
+                <strong>Note:</strong> All users have unrestricted read access to view the shared household portfolio. Roles govern editing and administrative permissions.
+            </div>
+        </section>
     );
 }

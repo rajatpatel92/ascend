@@ -1,158 +1,364 @@
-.container {
-    padding: 2rem;
-    max-width: 1200px;
-    margin: 0 auto;
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 1.125rem;
+    padding: 1.4rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.04);
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+    min-width: 0;
 }
 
-@media (max-width: 1024px) {
-    .container {
-        padding-top: 5rem !important;
-        /* Space for fixed sidebar toggle */
-    }
-}
-
-.header {
+.cardHeader {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: 2rem;
+    align-items: flex-start;
+    gap: 0.75rem 1rem;
+    flex-wrap: wrap;
+    padding-bottom: 0.9rem;
+    border-bottom: 1px solid var(--card-border);
 }
 
-.title {
-    font-size: 2rem;
+.cardTitleGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.cardTitle {
+    margin: 0;
+    font-size: 1.05rem;
     font-weight: 700;
     color: var(--text-primary);
+    letter-spacing: -0.01em;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.cardSubheading {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.headerActions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
 }
 
 .addButton {
-    padding: 0.75rem 1.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-height: 44px;
+    padding: 0.55rem 1rem;
     background: var(--primary);
-    color: white;
+    color: #ffffff;
     border: none;
-    border-radius: 0.5rem;
+    border-radius: 0.625rem;
+    font: inherit;
+    font-size: 0.875rem;
     font-weight: 600;
     cursor: pointer;
-    transition: background-color 0.2s;
+    transition: background-color 0.15s ease, opacity 0.15s ease;
 }
 
-.addButton:hover {
+.addButton:hover:not(:disabled) {
     background: var(--primary-hover);
 }
 
-.tableWrapper {
-    background: var(--card-bg);
-    border-radius: 1rem;
-    border: 1px solid var(--card-border);
-    overflow-x: auto;
+.addButton:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
-.table {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-.th,
-.td {
-    padding: 1rem;
-    text-align: left;
-    border-bottom: 1px solid var(--card-border);
-    color: var(--text-primary);
-}
-
-.th {
-    background: var(--background-subtle);
-    font-weight: 600;
-    color: var(--text-secondary);
-}
-
-.deleteButton {
-    padding: 0.25rem 0.75rem;
-    background: transparent;
-    border: 1px solid var(--danger);
-    color: var(--danger);
-    border-radius: 0.375rem;
-    font-size: 0.75rem;
-    cursor: pointer;
-    font-weight: normal;
-    /* Reset font weight if needed */
-    transition: all 0.2s;
-    box-shadow: none;
-}
-
-.deleteButton:hover {
-    background: var(--danger);
-    color: white;
-    transform: none;
-    box-shadow: none;
-}
-
-.editButton {
-    padding: 0.25rem 0.75rem;
-    background: transparent;
-    border: 1px solid var(--text-secondary);
-    color: var(--text-secondary);
-    border-radius: 0.375rem;
-    font-size: 0.75rem;
-    font-weight: normal;
-    cursor: pointer;
-    transition: all 0.2s;
-    box-shadow: none;
-}
-
-.editButton:hover {
-    border-color: var(--text-primary);
-    color: var(--text-primary);
-    background: transparent;
-}
-
-.itemActions {
-    display: flex;
-    gap: 0.5rem;
+.cancelButton {
+    display: inline-flex;
     align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-height: 44px;
+    padding: 0.55rem 1rem;
+    background: var(--card-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    border-radius: 0.625rem;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.cancelButton:hover {
+    background: var(--hover-bg);
 }
 
 .formCard {
-    background: var(--card-bg);
-    padding: 2rem;
-    border-radius: 1rem;
+    background: var(--background);
+    padding: 1.15rem;
+    border-radius: 0.875rem;
     border: 1px solid var(--card-border);
-    margin-bottom: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
 }
 
 .form {
-    display: flex;
-    gap: 1rem;
-    align-items: flex-end;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.85rem;
+    align-items: end;
 }
 
 .inputGroup {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.4rem;
+    min-width: 0;
 }
 
 .label {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
 .input,
 .select {
-    padding: 0.75rem;
-    border-radius: 0.5rem;
-    border: 1px solid var(--border);
-    background: var(--background);
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.625rem;
+    border: 1px solid #94a3b8;
+    background: var(--input-bg);
     color: var(--text-primary);
-    min-width: 200px;
+    font: inherit;
+    font-size: 0.875rem;
 }
 
-.cancelButton {
-    padding: 0.75rem 1.5rem;
-    background: var(--background-subtle);
+:global([data-theme='dark']) .input,
+:global([data-theme='dark']) .select {
+    border-color: #64748b;
+    color-scheme: dark;
+}
+
+.input:disabled {
+    background: var(--hover-bg);
+    color: var(--text-secondary);
+    cursor: not-allowed;
+}
+
+.input:focus-visible,
+.select:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+    border-color: var(--primary);
+}
+
+.checkboxWrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 44px;
+    font-size: 0.875rem;
+    font-weight: 600;
     color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: 0.5rem;
     cursor: pointer;
+    user-select: none;
+}
+
+.checkboxWrap input {
+    accent-color: var(--primary);
+    width: 17px;
+    height: 17px;
+    cursor: pointer;
+}
+
+.errorBanner {
+    padding: 0.75rem 0.95rem;
+    border-radius: 0.65rem;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #b91c1c;
+    font-size: 0.84rem;
+    font-weight: 500;
+}
+
+:global([data-theme='dark']) .errorBanner {
+    color: #f87171;
+}
+
+.tableWrapper {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+}
+
+.th,
+.td {
+    padding: 0.85rem 0.9rem;
+    text-align: left;
+    border-bottom: 1px solid var(--card-border);
+    color: var(--text-primary);
+    vertical-align: middle;
+}
+
+.th {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.table tr:last-child .td {
+    border-bottom: none;
+}
+
+.userCell {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 600;
+}
+
+.pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.18rem 0.58rem;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.pillAdmin {
+    background: rgba(37, 99, 235, 0.14);
+    color: #1d4ed8;
+}
+
+:global([data-theme='dark']) .pillAdmin {
+    background: rgba(59, 130, 246, 0.22);
+    color: #93c5fd;
+}
+
+.pillEditor {
+    background: rgba(16, 185, 129, 0.14);
+    color: #047857;
+}
+
+:global([data-theme='dark']) .pillEditor {
+    color: #34d399;
+}
+
+.pillViewer {
+    background: var(--hover-bg);
+    color: var(--text-secondary);
+}
+
+.pillPositive {
+    background: rgba(16, 185, 129, 0.14);
+    color: #047857;
+}
+
+:global([data-theme='dark']) .pillPositive {
+    color: #34d399;
+}
+
+.pillNegative {
+    background: rgba(239, 68, 68, 0.14);
+    color: #b91c1c;
+}
+
+:global([data-theme='dark']) .pillNegative {
+    color: #f87171;
+}
+
+.itemActions {
+    display: flex;
+    gap: 0.45rem;
+    align-items: center;
+}
+
+.editButton {
+    min-height: 34px;
+    padding: 0.28rem 0.7rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    color: var(--text-primary);
+    border-radius: 0.5rem;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.editButton:hover {
+    background: var(--hover-bg);
+    border-color: var(--text-secondary);
+}
+
+.deleteButton {
+    min-height: 34px;
+    padding: 0.28rem 0.7rem;
+    background: transparent;
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    color: #b91c1c;
+    border-radius: 0.5rem;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+:global([data-theme='dark']) .deleteButton {
+    color: #f87171;
+}
+
+.deleteButton:hover {
+    background: #ef4444;
+    border-color: #ef4444;
+    color: #ffffff;
+}
+
+.noteBanner {
+    padding: 0.8rem 1rem;
+    border-radius: 0.75rem;
+    background: var(--background);
+    border: 1px solid var(--card-border);
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+.noteBanner strong {
+    color: var(--text-primary);
+}
+
+@media (max-width: 640px) {
+    .card {
+        padding: 1rem;
+        border-radius: 0.875rem;
+    }
+
+    .th,
+    .td {
+        padding: 0.65rem 0.55rem;
+        font-size: 0.8rem;
+    }
 }
