@@ -48,10 +48,36 @@
     margin: 0;
 }
 
+.headerControls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.headerProfileSelect {
+    min-height: 44px;
+    padding: 0.45rem 0.75rem;
+    border-radius: 0.625rem;
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.headerProfileSelect:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
 .headerBadge {
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
+    min-height: 44px;
     padding: 0.5rem 0.9rem;
     border-radius: 0.75rem;
     background: var(--card-bg);
@@ -76,10 +102,33 @@
     color: #b91c1c;
     font-size: 0.875rem;
     font-weight: 500;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
 }
 
 :global([data-theme='dark']) .errorBanner {
     color: #f87171;
+}
+
+.successBanner {
+    margin-bottom: 1.25rem;
+    padding: 0.85rem 1rem;
+    border-radius: 0.75rem;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    color: #047857;
+    font-size: 0.875rem;
+    font-weight: 500;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+:global([data-theme='dark']) .successBanner {
+    color: #34d399;
 }
 
 .pageGrid {
@@ -309,18 +358,109 @@
     color: #f87171;
 }
 
-/* Tier 2: 340px Parameter Form + Tabbed Visualization Workspace */
-.workspaceGrid {
-    display: grid;
-    grid-template-columns: 340px minmax(0, 1fr);
-    gap: 1.25rem;
-    align-items: start;
+/* Action Buttons & Studio Controls */
+.primaryBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    min-height: 44px;
+    padding: 0.55rem 1rem;
+    background: var(--primary);
+    color: #ffffff;
+    border: none;
+    border-radius: 0.625rem;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease, opacity 0.15s ease;
+    white-space: nowrap;
 }
 
-.workspaceGrid > * {
-    min-width: 0;
+.primaryBtn:hover:not(:disabled) {
+    background: var(--primary-hover);
 }
 
+.primaryBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.primaryBtn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.secondaryBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    min-height: 44px;
+    padding: 0.55rem 1rem;
+    background: var(--card-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    border-radius: 0.625rem;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    white-space: nowrap;
+}
+
+.secondaryBtn:hover:not(:disabled) {
+    background: var(--hover-bg);
+}
+
+.secondaryBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.secondaryBtn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.secondaryBtnActive {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.compactBtn {
+    min-height: 36px;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+}
+
+.iconDeleteBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    min-height: 36px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 0.5rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.iconDeleteBtn:hover:not(:disabled) {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.iconDeleteBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Panels & Collapsible Simulation Studio */
 .panelCard {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
@@ -341,11 +481,228 @@
     letter-spacing: -0.01em;
 }
 
-/* Semantic Parameter Form */
-.paramForm {
+.panelSubheading {
+    margin: 0.2rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.studioHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.studioActions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+/* Profile Management Bar */
+.profileBar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem 1.25rem;
+    flex-wrap: wrap;
+    padding: 0.85rem 1rem;
+    border-radius: 0.875rem;
+    background: var(--background);
+    border: 1px solid var(--card-border);
+}
+
+.profileBarLeft {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.profileLabel {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.profileSelect {
+    min-height: 36px;
+    padding: 0.35rem 0.65rem;
+    border-radius: 0.5rem;
+    border: 1px solid #94a3b8;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 600;
+}
+
+:global([data-theme='dark']) .profileSelect {
+    border-color: #64748b;
+    color-scheme: dark;
+}
+
+.newProfileForm {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.compactInput {
+    min-height: 36px;
+    padding: 0.35rem 0.65rem;
+    border-radius: 0.5rem;
+    border: 1px solid #94a3b8;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.84rem;
+    min-width: 175px;
+}
+
+:global([data-theme='dark']) .compactInput {
+    border-color: #64748b;
+}
+
+.profileMetaSummary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    flex-wrap: wrap;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.profileMetaSummary strong {
+    color: var(--text-primary);
+}
+
+/* Collapsed Scenario Summary Strip */
+.scenarioSummaryBar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem 1rem;
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    border-radius: 0.95rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+}
+
+.scenarioSummaryPills {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem 0.65rem;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.scenarioPillStrong {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.24rem 0.7rem;
+    border-radius: 9999px;
+    background: rgba(37, 99, 235, 0.12);
+    color: #1d4ed8;
+    font-size: 0.78rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+:global([data-theme='dark']) .scenarioPillStrong {
+    background: rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+}
+
+.scenarioPill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.24rem 0.65rem;
+    border-radius: 9999px;
+    background: var(--hover-bg);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.scenarioPill strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.scenarioEditBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.32rem 0.7rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--card-border);
+    background: var(--background);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.scenarioEditBtn:hover {
+    background: var(--hover-bg);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.scenarioEditBtn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* 3-Column Semantic Parameter Form */
+.paramGrid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.15rem;
+    align-items: stretch;
+}
+
+.lifestyleCallout {
+    margin-top: auto;
+    padding: 0.75rem 0.85rem;
+    border-radius: 0.75rem;
+    background: var(--hover-bg);
+    border: 1px solid var(--card-border);
     display: flex;
     flex-direction: column;
-    gap: 1.15rem;
+    gap: 0.25rem;
+}
+
+.lifestyleCalloutLabel {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.lifestyleCalloutValue {
+    font-family: var(--font-display), var(--font-sans), sans-serif;
+    font-size: 1.35rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
 }
 
 .fieldset {
@@ -942,8 +1299,8 @@
 }
 
 @media (max-width: 1080px) {
-    .workspaceGrid {
-        grid-template-columns: minmax(0, 1fr);
+    .paramGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
@@ -953,7 +1310,19 @@
         padding-top: 4.75rem;
     }
 
+    .headerControls {
+        width: 100%;
+    }
+
+    .headerProfileSelect {
+        flex: 1 1 auto;
+    }
+
     .kpiStrip {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .paramGrid {
         grid-template-columns: minmax(0, 1fr);
     }
 

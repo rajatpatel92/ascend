@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ResponsiveContainer,
     BarChart,
@@ -11,11 +11,22 @@ import {
     CartesianGrid,
     ReferenceLine
 } from 'recharts';
+import { MdClose, MdSettings, MdTune } from 'react-icons/md';
 import { useCurrency } from '@/context/CurrencyContext';
+import usePersistentState from '@/hooks/usePersistentState';
+import {
+    buildFireProfileSlugId,
+    hasFireProfileChanges,
+    normalizeFireCurrency,
+    sanitizeFireParams,
+    type FireProfile,
+    type FireProfileStore,
+    type FireSimulationParams
+} from '@/lib/fire-profiles';
+import FireConfigPanel from './_components/FireConfigPanel';
 import styles from './page.module.css';
 
 type PhaseType = 'Accumulation' | 'Retirement';
-type CalculationMode = 'FIXED_RATE' | 'FIXED_HORIZON';
 type ActiveTab = 'chart' | 'table';
 type PhaseFilter = 'ALL' | PhaseType;
 
@@ -26,15 +37,6 @@ interface YearProjection {
     gains: number;
     total: number;
     withdrawal: number;
-}
-
-const SWR_PRESETS = [3.5, 4.0, 4.5] as const;
-
-function getDefaultFireDate(): string {
-    const d = new Date();
-    const y = d.getFullYear() + 10;
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    return `${y}-${m}`;
 }
 
 function formatMonthYear(yearMonth: string): string {
@@ -61,16 +63,26 @@ export default function FireAnalysisPage() {
     const [loadingPortfolio, setLoadingPortfolio] = useState<boolean>(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
 
-    // Simulation inputs
-    const [fireDate, setFireDate] = useState<string>(getDefaultFireDate);
-    const [monthlyContribution, setMonthlyContribution] = useState<number>(2000);
-    const [expectedReturn, setExpectedReturn] = useState<number>(7.0);
-    const [inflationRate, setInflationRate] = useState<number>(2.5);
-    const [currentMonthlyExpense, setCurrentMonthlyExpense] = useState<number>(2000);
+    // Saved FIRE profiles & collapsible simulation studio state
+    const [profiles, setProfiles] = useState<FireProfile[]>([]);
+    const [activeProfileId, setActiveProfileId] = useState<string>('default');
+    const [isParamsOpen, setIsParamsOpen] = usePersistentState<boolean>('fire_params_open', false);
+    const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false);
+    const [profileError, setProfileError] = useState<string | null>(null);
+    const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
-    const [calculationMode, setCalculationMode] = useState<CalculationMode>('FIXED_RATE');
-    const [withdrawalRate, setWithdrawalRate] = useState<number>(4.0);
-    const [withdrawalDuration, setWithdrawalDuration] = useState<number>(30);
+    // Simulation inputs
+    const [params, setParams] = useState<FireSimulationParams>(() => sanitizeFireParams(undefined));
+    const {
+        fireDate,
+        monthlyContribution,
+        expectedReturn,
+        inflationRate,
+        currentMonthlyExpense,
+        calculationMode,
+        withdrawalRate,
+        withdrawalDuration
+    } = params;
 
     // Tab and table filter states
     const [activeTab, setActiveTab] = useState<ActiveTab>('chart');
@@ -79,6 +91,7 @@ export default function FireAnalysisPage() {
     const chartTabRef = useRef<HTMLButtonElement>(null);
     const tableTabRef = useRef<HTMLButtonElement>(null);
     const prevCurrencyRef = useRef<string>(currency);
+    const hasHydratedProfilesRef = useRef<boolean>(false);
 
     useEffect(() => {
         const updateTheme = () => {
@@ -96,7 +109,6 @@ export default function FireAnalysisPage() {
     // Fetch current portfolio value directly in the selected currency
     useEffect(() => {
         const controller = new AbortController();
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setLoadingPortfolio(true);
 
         fetch(`/api/portfolio?currency=${encodeURIComponent(currency)}`, { signal: controller.signal })
@@ -123,6 +135,61 @@ export default function FireAnalysisPage() {
         return () => controller.abort();
     }, [currency]);
 
+    const convertRef = useRef(convert);
+    useEffect(() => {
+        convertRef.current = convert;
+    }, [convert]);
+
+    const applyProfileToState = useCallback(
+        (profile: FireProfile, targetCurrency: string) => {
+            const sanitized = sanitizeFireParams(profile.params);
+            const sameCurrency =
+                normalizeFireCurrency(profile.currency) === normalizeFireCurrency(targetCurrency);
+
+            const convertedContribution = sameCurrency
+                ? sanitized.monthlyContribution
+                : Math.round(convertRef.current(sanitized.monthlyContribution, profile.currency));
+            const convertedExpense = sameCurrency
+                ? sanitized.currentMonthlyExpense
+                : Math.round(convertRef.current(sanitized.currentMonthlyExpense, profile.currency));
+
+            setActiveProfileId(profile.id);
+            setParams({
+                ...sanitized,
+                monthlyContribution: convertedContribution,
+                currentMonthlyExpense: convertedExpense
+            });
+            prevCurrencyRef.current = targetCurrency;
+        },
+        []
+    );
+
+    // Fetch saved FIRE profiles once exchange rates are ready for currency conversion
+    useEffect(() => {
+        if (currencyLoading || hasHydratedProfilesRef.current) return;
+        if (rates?.[currency] !== 1) return;
+
+        const controller = new AbortController();
+        fetch(`/api/fire/profiles?currency=${encodeURIComponent(currency)}`, { signal: controller.signal })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((store: FireProfileStore | null) => {
+                if (!store || !Array.isArray(store.profiles) || store.profiles.length === 0) return;
+                hasHydratedProfilesRef.current = true;
+                setProfiles(store.profiles);
+                const active =
+                    store.profiles.find((p) => p.id === store.activeProfileId) || store.profiles[0];
+                if (active) {
+                    applyProfileToState(active, currency);
+                }
+            })
+            .catch((err: unknown) => {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to load FIRE profiles:', err);
+            });
+
+        return () => controller.abort();
+    }, [currencyLoading, rates, currency, applyProfileToState]);
+
     // Convert currency-denominated inputs when active currency changes
     useEffect(() => {
         const oldCurrency = prevCurrencyRef.current;
@@ -132,8 +199,11 @@ export default function FireAnalysisPage() {
             rates?.[currency] === 1 &&
             (rates?.[oldCurrency] ?? 0) > 0
         ) {
-            setMonthlyContribution((prev) => Math.round(convert(prev, oldCurrency)));
-            setCurrentMonthlyExpense((prev) => Math.round(convert(prev, oldCurrency)));
+            setParams((prev) => ({
+                ...prev,
+                monthlyContribution: Math.round(convert(prev.monthlyContribution, oldCurrency)),
+                currentMonthlyExpense: Math.round(convert(prev.currentMonthlyExpense, oldCurrency))
+            }));
             prevCurrencyRef.current = currency;
         }
     }, [currency, currencyLoading, rates, convert]);
@@ -407,6 +477,158 @@ export default function FireAnalysisPage() {
         }
     };
 
+    const handleChangeParam = useCallback(
+        <K extends keyof FireSimulationParams>(key: K, value: FireSimulationParams[K]) => {
+            setParams((prev) => ({ ...prev, [key]: value }));
+        },
+        []
+    );
+
+    const activeProfile = useMemo(
+        () => profiles.find((p) => p.id === activeProfileId),
+        [profiles, activeProfileId]
+    );
+
+    const hasUnsavedChanges = useMemo(
+        () => hasFireProfileChanges(activeProfile, params, currency, convert),
+        [activeProfile, params, currency, convert]
+    );
+
+    const persistProfile = async (
+        profileId: string,
+        profileName: string,
+        successMessage: string
+    ) => {
+        setIsSavingProfile(true);
+        setProfileError(null);
+        setSuccessBanner(null);
+
+        try {
+            const payload: FireProfile = {
+                id: profileId,
+                name: profileName,
+                currency: normalizeFireCurrency(currency),
+                params: sanitizeFireParams(params),
+                updatedAt: new Date().toISOString()
+            };
+
+            const res = await fetch('/api/fire/profiles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ profile: payload, currency })
+            });
+
+            if (!res.ok) {
+                if (res.status === 403) {
+                    setProfileError('Only Admin or Editor accounts can modify FIRE profiles.');
+                } else {
+                    const errBody = await res.json().catch(() => ({}));
+                    setProfileError(errBody.error || `Failed to save profile (HTTP ${res.status}).`);
+                }
+                return;
+            }
+
+            const updatedStore = (await res.json()) as FireProfileStore;
+            setProfiles(updatedStore.profiles);
+            const nextActive =
+                updatedStore.profiles.find((p) => p.id === updatedStore.activeProfileId) ||
+                updatedStore.profiles[0];
+            if (nextActive) {
+                applyProfileToState(nextActive, currency);
+            }
+            setSuccessBanner(successMessage);
+        } catch (error) {
+            console.error('Failed to save FIRE profile:', error);
+            setProfileError('Network error while saving FIRE profile.');
+        } finally {
+            setIsSavingProfile(false);
+        }
+    };
+
+    const handleSaveProfile = async () => {
+        const name = activeProfile?.name || 'Default FIRE Plan';
+        await persistProfile(
+            activeProfile?.id || 'default',
+            name,
+            `Profile "${name}" saved (${currency}).`
+        );
+    };
+
+    const handleSaveAsNewProfile = async (newName: string) => {
+        const newId = buildFireProfileSlugId(newName);
+        await persistProfile(
+            newId,
+            newName,
+            `Created and activated profile "${newName}".`
+        );
+    };
+
+    const handleSelectProfile = async (nextProfileId: string) => {
+        const target = profiles.find((p) => p.id === nextProfileId);
+        if (!target) return;
+
+        setProfileError(null);
+        setSuccessBanner(null);
+        applyProfileToState(target, currency);
+
+        try {
+            const res = await fetch('/api/fire/profiles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ activeProfileId: nextProfileId, activateOnly: true, currency })
+            });
+            if (res.ok) {
+                setSuccessBanner(`Switched to profile "${target.name}".`);
+            } else if (res.status === 403) {
+                setSuccessBanner(`Viewing profile "${target.name}" locally (read-only session).`);
+            }
+        } catch (error) {
+            console.error('Failed to switch FIRE profile:', error);
+        }
+    };
+
+    const handleDeleteProfile = async (profileId: string) => {
+        setIsSavingProfile(true);
+        setProfileError(null);
+        setSuccessBanner(null);
+
+        try {
+            const res = await fetch(`/api/fire/profiles?id=${encodeURIComponent(profileId)}`, {
+                method: 'DELETE'
+            });
+            if (!res.ok) {
+                if (res.status === 403) {
+                    setProfileError('Only Admin or Editor accounts can delete FIRE profiles.');
+                } else {
+                    const errBody = await res.json().catch(() => ({}));
+                    setProfileError(errBody.error || `Failed to delete profile (HTTP ${res.status}).`);
+                }
+                return;
+            }
+
+            const store = (await res.json()) as FireProfileStore;
+            setProfiles(store.profiles);
+            const nextActive =
+                store.profiles.find((p) => p.id === store.activeProfileId) || store.profiles[0];
+            if (nextActive) {
+                applyProfileToState(nextActive, currency);
+            }
+            setSuccessBanner('Profile deleted.');
+        } catch (error) {
+            console.error('Failed to delete FIRE profile:', error);
+            setProfileError('Network error while deleting FIRE profile.');
+        } finally {
+            setIsSavingProfile(false);
+        }
+    };
+
+    const handleResetToProfile = () => {
+        if (!activeProfile) return;
+        setProfileError(null);
+        applyProfileToState(activeProfile, currency);
+        setSuccessBanner(`Restored saved parameters for "${activeProfile.name}".`);
+    };
+
     const gridStroke = isDark ? 'rgba(148, 163, 184, 0.14)' : 'rgba(15, 23, 42, 0.08)';
     const axisStroke = isDark ? '#94a3b8' : '#64748b';
     const fireMarkerColor = isDark ? '#fbbf24' : '#b45309';
@@ -434,21 +656,141 @@ export default function FireAnalysisPage() {
                         Simulate your accumulation trajectory, safe withdrawal sustainability, and inflation-adjusted retirement lifestyle.
                     </p>
                 </div>
-                <div className={styles.headerBadge}>
-                    <span>Current Baseline:</span>
-                    <span className={styles.headerBadgeStrong}>
-                        {loadingPortfolio ? 'Loading...' : format(currentPortfolioValue, { maximumFractionDigits: 0 })}
-                    </span>
+
+                <div className={styles.headerControls}>
+                    {profiles.length > 0 && (
+                        <select
+                            aria-label="Active FIRE profile"
+                            className={styles.headerProfileSelect}
+                            value={activeProfileId}
+                            onChange={(e) => handleSelectProfile(e.target.value)}
+                        >
+                            {profiles.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                    {p.name}
+                                </option>
+                            ))}
+                        </select>
+                    )}
+
+                    <div className={styles.headerBadge}>
+                        <span>Current Baseline:</span>
+                        <span className={styles.headerBadgeStrong}>
+                            {loadingPortfolio ? 'Loading...' : format(currentPortfolioValue, { maximumFractionDigits: 0 })}
+                        </span>
+                    </div>
+
+                    <button
+                        type="button"
+                        className={`${styles.secondaryBtn} ${isParamsOpen ? styles.secondaryBtnActive : ''}`}
+                        onClick={() => setIsParamsOpen((prev) => !prev)}
+                        aria-expanded={isParamsOpen}
+                    >
+                        <MdSettings size={18} aria-hidden="true" />
+                        <span>{isParamsOpen ? 'Hide Parameters' : 'Simulation Parameters'}</span>
+                    </button>
                 </div>
             </header>
 
             {fetchError && (
                 <div className={styles.errorBanner} role="alert">
-                    {fetchError}
+                    <span>{fetchError}</span>
+                </div>
+            )}
+
+            {profileError && (
+                <div className={styles.errorBanner} role="alert">
+                    <span>{profileError}</span>
+                    <button
+                        type="button"
+                        className={styles.iconDeleteBtn}
+                        onClick={() => setProfileError(null)}
+                        aria-label="Dismiss error"
+                    >
+                        <MdClose size={18} aria-hidden="true" />
+                    </button>
+                </div>
+            )}
+
+            {successBanner && (
+                <div className={styles.successBanner} role="status">
+                    <span>{successBanner}</span>
+                    <button
+                        type="button"
+                        className={styles.iconDeleteBtn}
+                        onClick={() => setSuccessBanner(null)}
+                        aria-label="Dismiss notification"
+                    >
+                        <MdClose size={18} aria-hidden="true" />
+                    </button>
                 </div>
             )}
 
             <div className={styles.pageGrid}>
+                {/* Collapsible Simulation Parameters & Profile Studio */}
+                <FireConfigPanel
+                    isOpen={isParamsOpen}
+                    currency={currency}
+                    params={params}
+                    profiles={profiles}
+                    activeProfileId={activeProfileId}
+                    hasUnsavedChanges={hasUnsavedChanges}
+                    isSaving={isSavingProfile}
+                    effectiveFireDate={simulation.effectiveFireDate}
+                    isPastDateClamped={simulation.isPastDateClamped}
+                    formattedEffectiveFireDate={formatMonthYear(simulation.effectiveFireDate)}
+                    formattedFutureMonthlyExpense={format(simulation.futureMonthlyExpense, { maximumFractionDigits: 0 })}
+                    formattedRequiredFireNumber={format(simulation.requiredFireNumber, { maximumFractionDigits: 0 })}
+                    fireYear={simulation.fireYear}
+                    effectiveSwr={simulation.effectiveSwr}
+                    realReturnPct={simulation.realReturnPct}
+                    onChangeParam={handleChangeParam}
+                    onSelectProfile={handleSelectProfile}
+                    onSaveProfile={handleSaveProfile}
+                    onSaveAsNewProfile={handleSaveAsNewProfile}
+                    onDeleteProfile={handleDeleteProfile}
+                    onResetToProfile={handleResetToProfile}
+                />
+
+                {!isParamsOpen && (
+                    <div className={styles.scenarioSummaryBar}>
+                        <div className={styles.scenarioSummaryPills}>
+                            <span className={styles.scenarioPillStrong}>
+                                {activeProfile?.name || 'Default FIRE Plan'}
+                                {hasUnsavedChanges ? ' *' : ''}
+                            </span>
+                            <span className={styles.scenarioPill}>
+                                Target: <strong>{formatMonthYear(simulation.effectiveFireDate)}</strong>
+                            </span>
+                            <span className={styles.scenarioPill}>
+                                Contribution: <strong>{format(monthlyContribution, { maximumFractionDigits: 0 })}/mo</strong>
+                            </span>
+                            <span className={styles.scenarioPill}>
+                                Return / Inflation: <strong>{expectedReturn.toFixed(1)}% / {inflationRate.toFixed(1)}%</strong>
+                            </span>
+                            <span className={styles.scenarioPill}>
+                                Expenses: <strong>{format(currentMonthlyExpense, { maximumFractionDigits: 0 })}/mo</strong>
+                            </span>
+                            <span className={styles.scenarioPill}>
+                                Strategy:{' '}
+                                <strong>
+                                    {calculationMode === 'FIXED_RATE'
+                                        ? `${withdrawalRate.toFixed(1)}% SWR`
+                                        : `${withdrawalDuration}y Horizon`}
+                                </strong>
+                            </span>
+                        </div>
+                        <button
+                            type="button"
+                            className={styles.scenarioEditBtn}
+                            onClick={() => setIsParamsOpen(true)}
+                        >
+                            <MdTune size={15} aria-hidden="true" />
+                            <span>Edit Parameters</span>
+                        </button>
+                    </div>
+                )}
+
                 {/* Tier 1: 4-Card FIRE Readiness KPI Strip */}
                 <section className={styles.kpiStrip} aria-label="FIRE readiness summary">
                     {/* Hero Card: Projected FIRE Nest Egg */}
@@ -590,207 +932,8 @@ export default function FireAnalysisPage() {
                     </article>
                 </section>
 
-                {/* Tier 2: Parameter Form (Left) + Tabbed Chart / Table Workspace (Right) */}
-                <div className={styles.workspaceGrid}>
-                    <aside className={styles.panelCard}>
-                        <h2 id="fire-params-heading" className={styles.panelHeading}>
-                            Simulation Parameters
-                        </h2>
-
-                        <form
-                            className={styles.paramForm}
-                            onSubmit={(e) => e.preventDefault()}
-                            aria-labelledby="fire-params-heading"
-                        >
-                            {/* Group 1: Accumulation & Growth */}
-                            <fieldset className={styles.fieldset}>
-                                <legend className={styles.legend}>Accumulation &amp; Growth</legend>
-
-                                <div className={styles.field}>
-                                    <label className={styles.label} htmlFor="fire-target-date">
-                                        Target FIRE Date
-                                    </label>
-                                    <input
-                                        id="fire-target-date"
-                                        name="fireDate"
-                                        type="month"
-                                        className={styles.input}
-                                        value={fireDate}
-                                        aria-describedby={simulation.isPastDateClamped ? 'fire-date-hint' : undefined}
-                                        onChange={(e) => setFireDate(e.target.value)}
-                                    />
-                                    {simulation.isPastDateClamped && (
-                                        <p id="fire-date-hint" className={styles.fieldHint}>
-                                            Adjusted to {formatMonthYear(simulation.effectiveFireDate)} for forward simulation.
-                                        </p>
-                                    )}
-                                </div>
-
-                                <div className={styles.field}>
-                                    <label className={styles.label} htmlFor="fire-monthly-contribution">
-                                        Monthly Contribution ({currency})
-                                    </label>
-                                    <input
-                                        id="fire-monthly-contribution"
-                                        name="monthlyContribution"
-                                        type="number"
-                                        min={0}
-                                        step={100}
-                                        className={styles.input}
-                                        value={monthlyContribution}
-                                        onChange={(e) => setMonthlyContribution(Number(e.target.value))}
-                                    />
-                                </div>
-
-                                <div className={styles.fieldRow}>
-                                    <div className={styles.field}>
-                                        <label className={styles.label} htmlFor="fire-expected-return">
-                                            Return (%)
-                                        </label>
-                                        <input
-                                            id="fire-expected-return"
-                                            name="expectedReturn"
-                                            type="number"
-                                            min={0}
-                                            max={25}
-                                            step={0.1}
-                                            className={styles.input}
-                                            value={expectedReturn}
-                                            onChange={(e) => setExpectedReturn(Number(e.target.value))}
-                                        />
-                                    </div>
-
-                                    <div className={styles.field}>
-                                        <label className={styles.label} htmlFor="fire-inflation-rate">
-                                            Inflation (%)
-                                        </label>
-                                        <input
-                                            id="fire-inflation-rate"
-                                            name="inflationRate"
-                                            type="number"
-                                            min={0}
-                                            max={15}
-                                            step={0.1}
-                                            className={styles.input}
-                                            value={inflationRate}
-                                            onChange={(e) => setInflationRate(Number(e.target.value))}
-                                        />
-                                    </div>
-                                </div>
-                            </fieldset>
-
-                            {/* Group 2: Retirement Lifestyle */}
-                            <fieldset className={styles.fieldset}>
-                                <legend className={styles.legend}>Retirement Lifestyle</legend>
-
-                                <div className={styles.field}>
-                                    <label className={styles.label} htmlFor="fire-monthly-expense">
-                                        Monthly Expenses Today ({currency})
-                                    </label>
-                                    <input
-                                        id="fire-monthly-expense"
-                                        name="currentMonthlyExpense"
-                                        type="number"
-                                        min={0}
-                                        step={100}
-                                        className={styles.input}
-                                        value={currentMonthlyExpense}
-                                        onChange={(e) => setCurrentMonthlyExpense(Number(e.target.value))}
-                                        aria-describedby="fire-expense-hint"
-                                    />
-                                    <p id="fire-expense-hint" className={styles.fieldHint}>
-                                        Inflation-adjusted at FIRE ({simulation.fireYear}):{' '}
-                                        <strong className={styles.kpiStrong}>
-                                            {format(simulation.futureMonthlyExpense, { maximumFractionDigits: 0 })}/mo
-                                        </strong>
-                                    </p>
-                                </div>
-                            </fieldset>
-
-                            {/* Group 3: Withdrawal Strategy */}
-                            <fieldset className={styles.fieldset}>
-                                <legend className={styles.legend}>Withdrawal Strategy</legend>
-
-                                <div className={styles.modeToggle} role="group" aria-label="Withdrawal calculation mode">
-                                    <button
-                                        type="button"
-                                        className={styles.modeBtn}
-                                        aria-pressed={calculationMode === 'FIXED_RATE'}
-                                        onClick={() => setCalculationMode('FIXED_RATE')}
-                                    >
-                                        Fixed Rate (SWR)
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className={styles.modeBtn}
-                                        aria-pressed={calculationMode === 'FIXED_HORIZON'}
-                                        onClick={() => setCalculationMode('FIXED_HORIZON')}
-                                    >
-                                        Fixed Horizon
-                                    </button>
-                                </div>
-
-                                {calculationMode === 'FIXED_RATE' ? (
-                                    <div className={styles.field}>
-                                        <label className={styles.label} htmlFor="fire-swr-input">
-                                            Safe Withdrawal Rate (%)
-                                        </label>
-                                        <input
-                                            id="fire-swr-input"
-                                            name="withdrawalRate"
-                                            type="number"
-                                            min={0.5}
-                                            max={15}
-                                            step={0.1}
-                                            className={styles.input}
-                                            value={withdrawalRate}
-                                            onChange={(e) => setWithdrawalRate(Number(e.target.value))}
-                                        />
-                                        <div className={styles.presetRow} role="group" aria-label="Common safe withdrawal rate presets">
-                                            {SWR_PRESETS.map((preset) => (
-                                                <button
-                                                    key={preset}
-                                                    type="button"
-                                                    className={styles.presetChip}
-                                                    aria-pressed={Math.abs(withdrawalRate - preset) < 0.05}
-                                                    onClick={() => setWithdrawalRate(preset)}
-                                                >
-                                                    {preset.toFixed(1)}%
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div className={styles.field}>
-                                        <label className={styles.label} htmlFor="fire-horizon-input">
-                                            Retirement Duration (Years)
-                                        </label>
-                                        <input
-                                            id="fire-horizon-input"
-                                            name="withdrawalDuration"
-                                            type="number"
-                                            min={5}
-                                            max={80}
-                                            step={1}
-                                            className={styles.input}
-                                            value={withdrawalDuration}
-                                            onChange={(e) => setWithdrawalDuration(Number(e.target.value))}
-                                            aria-describedby="fire-horizon-hint"
-                                        />
-                                        <p id="fire-horizon-hint" className={styles.fieldHint}>
-                                            Implied starting SWR:{' '}
-                                            <strong className={styles.kpiStrong}>
-                                                {simulation.effectiveSwr.toFixed(2)}%
-                                            </strong>
-                                        </p>
-                                    </div>
-                                )}
-                            </fieldset>
-                        </form>
-                    </aside>
-
-                    {/* Right Tabbed Projection Chart / Breakdown Table */}
-                    <section className={styles.panelCard} aria-label="FIRE projection visualizations">
+                {/* Tier 2: Full-Width Tabbed Projection Chart / Breakdown Table */}
+                <section className={styles.panelCard} aria-label="FIRE projection visualizations">
                         <div className={styles.tabHeaderRow}>
                             <div className={styles.tabListWrap}>
                                 <div
@@ -1040,7 +1183,6 @@ export default function FireAnalysisPage() {
                             )}
                         </div>
                     </section>
-                </div>
             </div>
         </div>
     );
