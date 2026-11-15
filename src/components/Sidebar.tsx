@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { useSession, signOut } from 'next-auth/react';
 import styles from './Sidebar.module.css';
 import AscendLogo from './AscendLogo';
+import SidebarOwnerSnapshot from './SidebarOwnerSnapshot';
 import { useCurrency } from '@/context/CurrencyContext';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
 import { useTheme } from '@/context/ThemeContext';
@@ -233,6 +234,8 @@ export default function Sidebar() {
                         </div>
                     ))}
                 </nav>
+
+                <SidebarOwnerSnapshot collapsed={collapsedDesktop} />
 
                 <div className={styles.footer}>
                     <div className={styles.controls}>
