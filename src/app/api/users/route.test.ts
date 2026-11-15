@@ -45,7 +45,10 @@ export async function resolve(specifier, context, nextResolve) {
     };
   }
   if (specifier.startsWith("@/")) {
-    const relativePath = specifier.replace("@/", "./src/");
+    let relativePath = specifier.replace("@/", "./src/");
+    if (!relativePath.endsWith('.ts') && !relativePath.endsWith('.js') && !relativePath.endsWith('.json')) {
+      relativePath += '.ts';
+    }
     return nextResolve(new URL(relativePath, "file://" + process.cwd() + "/").href, context);
   }
   return nextResolve(specifier, context);
@@ -159,7 +162,7 @@ test('POST /api/users', async (t) => {
     assert.strictEqual(body, 'Username already exists');
   });
 
-  await t.test('successfully creates a user with default aiEnabled=true when omitted', async () => {
+  await t.test('successfully creates a user', async () => {
     (globalThis as any).mockAuth = () => ({
       user: { id: 'admin1', username: 'admin', role: 'ADMIN' }
     });
@@ -201,49 +204,7 @@ test('POST /api/users', async (t) => {
     assert.strictEqual(createArgs.data.password, 'hashed_secret_password');
     assert.strictEqual(createArgs.data.role, 'EDITOR');
     assert.strictEqual(createArgs.data.name, 'John Doe');
-    assert.strictEqual(createArgs.data.aiEnabled, true);
-  });
-
-  await t.test('successfully creates a user with explicitly false aiEnabled', async () => {
-    (globalThis as any).mockAuth = () => ({
-      user: { id: 'admin1', username: 'admin', role: 'ADMIN' }
-    });
-
-    let createArgs: any = null;
-    (globalThis as any).mockPrismaUser.findUnique = async () => null;
-    (globalThis as any).mockPrismaUser.create = async (args: any) => {
-      createArgs = args;
-      return {
-        id: 'new-user-id-2',
-        username: args.data.username,
-        role: args.data.role
-      };
-    };
-
-    const req = new Request('http://localhost/api/users', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'jane_doe',
-        password: 'another_password',
-        role: 'USER',
-        name: 'Jane Doe',
-        aiEnabled: false
-      })
-    });
-
-    const res = await POST(req);
-    assert.strictEqual(res.status, 200);
-
-    const json = await res.json();
-    assert.deepStrictEqual(json, {
-      id: 'new-user-id-2',
-      username: 'jane_doe',
-      role: 'USER'
-    });
-
-    assert.ok(createArgs);
-    assert.strictEqual(createArgs.data.aiEnabled, false);
+    assert.strictEqual('aiEnabled' in createArgs.data, false);
   });
 
   await t.test('returns 500 Internal Server Error when creation fails', async () => {
@@ -305,7 +266,7 @@ test('GET /api/users', async (t) => {
     (globalThis as any).mockPrismaUser.findMany = async (args: any) => {
       findManyArgs = args;
       return [
-        { id: 'user-123', username: 'regular_user', name: 'Regular User', role: 'VIEWER', createdAt: new Date(), aiEnabled: true }
+        { id: 'user-123', username: 'regular_user', name: 'Regular User', role: 'VIEWER', createdAt: new Date() }
       ];
     };
 
@@ -331,8 +292,8 @@ test('GET /api/users', async (t) => {
       (globalThis as any).mockPrismaUser.findMany = async (args: any) => {
         findManyArgs = args;
         return [
-          { id: 'user-1', username: 'u1', name: 'User 1', role: 'ADMIN', createdAt: new Date(), aiEnabled: true },
-          { id: 'user-2', username: 'u2', name: 'User 2', role: 'USER', createdAt: new Date(), aiEnabled: true }
+          { id: 'user-1', username: 'u1', name: 'User 1', role: 'ADMIN', createdAt: new Date() },
+          { id: 'user-2', username: 'u2', name: 'User 2', role: 'USER', createdAt: new Date() }
         ];
       };
 

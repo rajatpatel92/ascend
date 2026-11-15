@@ -11,7 +11,6 @@ interface UserRecord {
     username: string;
     name?: string | null;
     role: string;
-    aiEnabled?: boolean;
     createdAt: string;
 }
 
@@ -20,7 +19,6 @@ interface UserFormState {
     password: string;
     role: string;
     name: string;
-    aiEnabled: boolean;
 }
 
 interface SessionUser {
@@ -32,8 +30,7 @@ const INITIAL_FORM: UserFormState = {
     username: '',
     password: '',
     role: 'VIEWER',
-    name: '',
-    aiEnabled: true
+    name: ''
 };
 
 function getRoleBadgeClass(role: string): string {
@@ -90,10 +87,9 @@ export default function UserManagementPage() {
             const url = editingId ? `/api/users/${editingId}` : '/api/users';
             const method = editingId ? 'PUT' : 'POST';
 
-            const payload: Record<string, string | boolean> = {
+            const payload: Record<string, string> = {
                 role: formData.role,
-                name: formData.name,
-                aiEnabled: formData.aiEnabled
+                name: formData.name
             };
             if (!editingId) {
                 payload.username = formData.username;
@@ -127,8 +123,7 @@ export default function UserManagementPage() {
             username: user.username,
             password: '',
             role: user.role,
-            name: user.name || '',
-            aiEnabled: user.aiEnabled ?? true
+            name: user.name || ''
         });
         setEditingId(user.id);
         setShowForm(true);
@@ -174,7 +169,7 @@ export default function UserManagementPage() {
                         User Management
                     </h2>
                     <p className={styles.cardSubheading}>
-                        Manage workspace members, role permissions, and AI assistant access.
+                        Manage workspace members and role permissions.
                     </p>
                 </div>
 
@@ -256,14 +251,6 @@ export default function UserManagementPage() {
                                 <option value="ADMIN">Admin</option>
                             </select>
                         </div>
-                        <label className={styles.checkboxWrap}>
-                            <input
-                                type="checkbox"
-                                checked={formData.aiEnabled}
-                                onChange={(e) => setFormData({ ...formData, aiEnabled: e.target.checked })}
-                            />
-                            <span>Enable AI Features</span>
-                        </label>
                         <button type="submit" className={styles.addButton} disabled={loading}>
                             {loading ? 'Saving...' : editingId ? 'Update User' : 'Create User'}
                         </button>
@@ -278,7 +265,6 @@ export default function UserManagementPage() {
                             <th className={styles.th}>Name</th>
                             <th className={styles.th}>Username</th>
                             <th className={styles.th}>Role</th>
-                            <th className={styles.th}>AI Access</th>
                             <th className={styles.th}>Created</th>
                             <th className={styles.th}>Actions</th>
                         </tr>
@@ -298,11 +284,6 @@ export default function UserManagementPage() {
                                     <td className={styles.td}>
                                         <span className={`${styles.pill} ${getRoleBadgeClass(user.role)}`}>
                                             {user.role}
-                                        </span>
-                                    </td>
-                                    <td className={styles.td}>
-                                        <span className={`${styles.pill} ${user.aiEnabled ? styles.pillPositive : styles.pillNegative}`}>
-                                            {user.aiEnabled ? 'Enabled' : 'Disabled'}
                                         </span>
                                     </td>
                                     <td className={styles.td}>{formatDate(user.createdAt)}</td>

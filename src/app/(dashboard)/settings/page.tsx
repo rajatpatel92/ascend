@@ -8,7 +8,6 @@ import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
 import { MdDarkMode, MdLightMode, MdTune } from 'react-icons/md';
 
 import BenchmarkSettings from '@/components/settings/BenchmarkSettings';
-import AISettings from '@/components/settings/AISettings';
 
 export default function SettingsHubPage() {
     const { theme, setTheme } = useTheme();
@@ -107,10 +106,6 @@ export default function SettingsHubPage() {
             </section>
 
             <BenchmarkSettings />
-
-            <div className={styles.fullSpan}>
-                <AISettings />
-            </div>
         </div>
     );
 }

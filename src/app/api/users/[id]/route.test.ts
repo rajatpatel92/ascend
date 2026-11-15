@@ -20,7 +20,10 @@ export async function resolve(specifier, context, nextResolve) {
     return { shortCircuit: true, url: "data:text/javascript," + encodeURIComponent("export default { hash: async (p, rounds) => p + \\"_hashed\\" };") };
   }
   if (specifier.startsWith("@/")) {
-    const relativePath = specifier.replace("@/", "./src/");
+    let relativePath = specifier.replace("@/", "./src/");
+    if (!relativePath.endsWith('.ts') && !relativePath.endsWith('.js') && !relativePath.endsWith('.json')) {
+      relativePath += '.ts';
+    }
     return nextResolve(new URL(relativePath, "file://" + process.cwd() + "/").href, context);
   }
   return nextResolve(specifier, context);
@@ -176,7 +179,7 @@ test('PUT /api/users/[id]', async (t) => {
     assert.strictEqual(body, 'Unauthorized to change role');
   });
 
-  await t.test('allows non-ADMIN to update own profile fields (name, aiEnabled)', async () => {
+  await t.test('allows non-ADMIN to update own profile name', async () => {
     let updateCalledWith: any = null;
     updateImpl = async (args: any) => {
       updateCalledWith = args;
@@ -189,14 +192,14 @@ test('PUT /api/users/[id]', async (t) => {
     const req = new Request('http://localhost/api/users/user-1', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Updated Name', aiEnabled: true })
+      body: JSON.stringify({ name: 'Updated Name' })
     });
     const res = await PUT(req, { params: Promise.resolve({ id: 'user-1' }) });
 
     assert.strictEqual(res.status, 200);
     assert.deepStrictEqual(updateCalledWith, {
       where: { id: 'user-1' },
-      data: { name: 'Updated Name', aiEnabled: true }
+      data: { name: 'Updated Name' }
     });
   });
 

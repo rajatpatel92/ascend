@@ -45,11 +45,10 @@ export async function PUT(
     }
 
     try {
-        const { name, password, role, aiEnabled } = await req.json();
+        const { name, password, role } = await req.json();
 
         const updateData: any = {};
         if (name !== undefined) updateData.name = name;
-        if (aiEnabled !== undefined) updateData.aiEnabled = aiEnabled;
 
         if (role) {
             if ((session.user as any).role !== 'ADMIN') {

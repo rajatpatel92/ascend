@@ -29,7 +29,6 @@ export async function GET(req: Request) {
                 name: true,
                 role: true,
                 createdAt: true,
-                aiEnabled: true,
             },
             orderBy: { createdAt: 'desc' }
         });
@@ -47,7 +46,7 @@ export async function POST(req: Request) {
     }
 
     try {
-        const { username, password, role, name, aiEnabled } = await req.json();
+        const { username, password, role, name } = await req.json();
 
         if (!username || !password || !role) {
             return new NextResponse("Missing required fields", { status: 400 });
@@ -69,7 +68,6 @@ export async function POST(req: Request) {
                 password: hashedPassword,
                 role,
                 name,
-                aiEnabled: aiEnabled ?? true // Default to true if not provided (though handled by schema default too)
             }
         });
 

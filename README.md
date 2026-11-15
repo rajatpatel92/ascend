@@ -23,11 +23,7 @@ A comprehensive, self-hosted portfolio management application designed to track 
 -   **Performance Tracking**:
     -   **XIRR Calculation**: Accurate return on investment considering cash flows.
     -   **Portfolio Evolution**: Visualize Portfolio growth vs. average contributions over time. Visualize dividend history over time.
--   **Portfolio Intelligence (AI)**:
-    -   **Natural Language Analysis**: Chat with your portfolio using advanced LLMs (Google Gemini, OpenAI, Claude).
-    -   **Deep Insights**: Get personalized answers about asset allocation, risk exposure, and diversification.
-    -   **Context-Aware**: The AI understands your current holdings, currency exposure, and sector breakdowns for accurate advice.
--   **Privacy Focused**: Self-hosted solution ensures you own your financial data. AI keys are stored locally.
+-   **Privacy Focused**: Self-hosted solution ensures you own your financial data.
 -   **Dark Mode**: Sleek, eye-friendly interface.
 
 ## Installation
@@ -181,7 +177,6 @@ For development or running without Docker.
 -   **Styling**: CSS Modules
 -   **Charts**: Recharts & Chart.js
 -   **Authentication**: NextAuth.js
--   **AI Integration**: Google Gemini, OpenAI, Anthropic Claude
 
 ## Acknowledgments
 

@@ -25,7 +25,6 @@ import {
     MdExpandMore,
     MdCalculate,
     MdBarChart,
-    MdAutoAwesome,
     MdBalance
 } from 'react-icons/md';
 import { signOut } from 'next-auth/react';
@@ -37,7 +36,7 @@ interface NavItem {
     children?: NavItem[];
 }
 
-export default function Sidebar({ aiEnabled }: { aiEnabled?: boolean }) {
+export default function Sidebar() {
     const pathname = usePathname();
     const { currency, setCurrency } = useCurrency();
     const { theme, toggleTheme } = useTheme();
@@ -45,24 +44,10 @@ export default function Sidebar({ aiEnabled }: { aiEnabled?: boolean }) {
     const [mounted, setMounted] = useState(false);
     const [expandedMenus, setExpandedMenus] = useState<string[]>([]);
 
-    const [isAIEnabled, setIsAIEnabled] = useState(aiEnabled ?? false);
-
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setMounted(true);
-
-        // If prop is provided, sync state (handled by initial state mostly, but good for updates)
-        if (aiEnabled !== undefined) {
-            setIsAIEnabled(aiEnabled);
-            return;
-        }
-
-        // Fallback to fetch if not provided (e.g. standalone usage)
-        fetch('/api/ai/config')
-            .then(res => res.json())
-            .then(data => setIsAIEnabled(data.isAIEnabled))
-            .catch(() => setIsAIEnabled(false));
-    }, [aiEnabled]);
+    }, []);
 
     const { data: session } = useSession();
     const role = (session?.user as any)?.role || 'VIEWER';
@@ -83,10 +68,6 @@ export default function Sidebar({ aiEnabled }: { aiEnabled?: boolean }) {
         { name: 'Activities', href: '/activities', icon: <MdFormatListBulleted size={20} /> },
         { name: 'Rebalancer', href: '/rebalancer', icon: <MdBalance size={20} /> },
     ];
-
-    if (isAIEnabled) {
-        navItems.push({ name: 'AI Analysis', href: '/ai-analysis', icon: <MdAutoAwesome size={20} /> });
-    }
 
     if (role === 'ADMIN' || role === 'EDITOR') {
         navItems.push({ name: 'Settings', href: '/settings', icon: <MdSettings size={20} /> });

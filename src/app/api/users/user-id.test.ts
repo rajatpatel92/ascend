@@ -30,7 +30,10 @@ export async function resolve(specifier, context, nextResolve) {
     };
   }
   if (specifier.startsWith("@/")) {
-    const relativePath = specifier.replace("@/", "./src/");
+    let relativePath = specifier.replace("@/", "./src/");
+    if (!relativePath.endsWith('.ts') && !relativePath.endsWith('.js') && !relativePath.endsWith('.json')) {
+      relativePath += '.ts';
+    }
     return nextResolve(new URL(relativePath, "file://" + process.cwd() + "/").href, context);
   }
   return nextResolve(specifier, context);
@@ -105,7 +108,7 @@ test('PUT /api/users/[id] Handler Direct Function Execution Tests', async (t) =>
         assert.strictEqual(text, 'Unauthorized to change role');
     });
 
-    await t.test('allows user to update their own name and aiEnabled', async () => {
+    await t.test('allows user to update their own name', async () => {
         let updatedWhere: any = null;
         let updatedData: any = null;
 
@@ -120,13 +123,13 @@ test('PUT /api/users/[id] Handler Direct Function Execution Tests', async (t) =>
 
         const req = new Request('http://localhost/api/users/user1', {
             method: 'PUT',
-            body: JSON.stringify({ name: 'Updated User1', aiEnabled: true })
+            body: JSON.stringify({ name: 'Updated User1' })
         });
         const res = await PUT(req, { params: Promise.resolve({ id: 'user1' }) });
 
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(updatedWhere, { id: 'user1' });
-        assert.deepStrictEqual(updatedData, { name: 'Updated User1', aiEnabled: true });
+        assert.deepStrictEqual(updatedData, { name: 'Updated User1' });
     });
 
     await t.test('hashes password when password field is provided', async () => {

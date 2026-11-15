@@ -23,8 +23,8 @@ describe('getSafeRedirectUrl', () => {
         const result2 = getSafeRedirectUrl('/dashboard', baseUrl);
         assert.equal(result2.toString(), 'http://localhost:3000/dashboard');
 
-        const result3 = getSafeRedirectUrl('/ai-analysis?tab=overview', baseUrl);
-        assert.equal(result3.toString(), 'http://localhost:3000/ai-analysis?tab=overview');
+        const result3 = getSafeRedirectUrl('/rebalancer?tab=overview', baseUrl);
+        assert.equal(result3.toString(), 'http://localhost:3000/rebalancer?tab=overview');
     });
 
     it('allows same-origin full URLs', () => {
