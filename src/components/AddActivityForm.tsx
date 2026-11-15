@@ -627,9 +627,11 @@ export default function AddActivityForm({
                         <span className={styles.totalSub}>
                             {isSplit
                                 ? 'Multiplies shares held across the account on split date'
-                                : ['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT', 'DIVIDEND', 'INTEREST'].includes(type)
-                                    ? 'Gross amount minus brokerage fee'
-                                    : 'Gross amount plus brokerage fee'}
+                                : type === 'DRIP'
+                                    ? 'Reinvested dividend cost basis (gross + fee; excluded from out-of-pocket inflows)'
+                                    : ['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT', 'DIVIDEND', 'INTEREST'].includes(type)
+                                        ? 'Gross amount minus brokerage fee'
+                                        : 'Gross amount plus brokerage fee'}
                         </span>
                     </div>
                     <div className={styles.totalValue}>

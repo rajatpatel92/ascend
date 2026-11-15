@@ -67,14 +67,14 @@ export async function POST(request: Request) {
                     platformId: platformId
                 });
 
-                // 4. Handle Reinvestment (DRIP)
+                // 4. Handle Reinvestment (DRIP) - Leg 2 share acquisition
                 if (div.reinvest && div.price > 0) {
                     const rawQty = div.amount / div.price;
                     const reinvestQty = Math.round(rawQty * 10000) / 10000;
 
                     activitiesToCreate.push({
                         investmentId: investment.id,
-                        type: 'BUY',
+                        type: 'DRIP',
                         date: new Date(div.date),
                         quantity: reinvestQty,
                         price: div.price,

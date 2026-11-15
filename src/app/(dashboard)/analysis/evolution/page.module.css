@@ -365,6 +365,14 @@
     color: #c4b5fd;
 }
 
+.tealText {
+    color: #0f766e;
+}
+
+:global([data-theme='dark']) .tealText {
+    color: #2dd4bf;
+}
+
 /* Tier 2: Master Evolution Chart */
 .evolutionCard {
     background: var(--card-bg);

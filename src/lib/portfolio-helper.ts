@@ -34,9 +34,20 @@ export async function getHoldingsAtDate(symbol: string, date: Date): Promise<Rec
         const accId = activity.accountId || 'unknown';
         const absQty = Math.abs(Number(activity.quantity) || 0);
 
-        if (activity.type === 'BUY' || activity.type === 'TRANSFER_IN') {
+        if (
+            activity.type === 'BUY' ||
+            activity.type === 'DRIP' ||
+            activity.type === 'ADD' ||
+            activity.type === 'DEPOSIT' ||
+            activity.type === 'TRANSFER_IN'
+        ) {
             holdings[accId] = (holdings[accId] || 0) + absQty;
-        } else if (activity.type === 'SELL' || activity.type === 'TRANSFER_OUT') {
+        } else if (
+            activity.type === 'SELL' ||
+            activity.type === 'REMOVE' ||
+            activity.type === 'WITHDRAWAL' ||
+            activity.type === 'TRANSFER_OUT'
+        ) {
             holdings[accId] = (holdings[accId] || 0) - absQty;
             if (holdings[accId] < 1e-9) holdings[accId] = 0;
         } else if ((activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') && absQty > 0) {
@@ -96,9 +107,22 @@ export function calculateHoldingsFromActivities(
         const absQty = Math.abs(Number(activity.quantity) || 0);
         const behavior = behaviorMap?.get(activity.type);
 
-        if (behavior === 'ADD' || activity.type === 'BUY' || activity.type === 'TRANSFER_IN') {
+        if (
+            behavior === 'ADD' ||
+            activity.type === 'BUY' ||
+            activity.type === 'DRIP' ||
+            activity.type === 'ADD' ||
+            activity.type === 'DEPOSIT' ||
+            activity.type === 'TRANSFER_IN'
+        ) {
             holdings[accId] = (holdings[accId] || 0) + absQty;
-        } else if (behavior === 'REMOVE' || activity.type === 'SELL' || activity.type === 'TRANSFER_OUT') {
+        } else if (
+            behavior === 'REMOVE' ||
+            activity.type === 'SELL' ||
+            activity.type === 'REMOVE' ||
+            activity.type === 'WITHDRAWAL' ||
+            activity.type === 'TRANSFER_OUT'
+        ) {
             holdings[accId] = (holdings[accId] || 0) - absQty;
             if (holdings[accId] < 1e-9) holdings[accId] = 0;
         } else if ((behavior === 'SPLIT' || activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') && absQty > 0) {

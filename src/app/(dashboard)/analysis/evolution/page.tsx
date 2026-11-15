@@ -38,6 +38,7 @@ interface ContributionPoint {
 interface DividendPoint {
     date: string;
     amount: number;
+    drip?: number;
 }
 
 interface EvolutionHistoryResponse {
@@ -163,7 +164,7 @@ export default function EvolutionPage() {
         };
 
         const fetchFlows = () => {
-            const cacheKey = ClientCache.generateKey('evolution_flows_v5', { filters: normalizedFilters, currency });
+            const cacheKey = ClientCache.generateKey('evolution_flows_v6', { filters: normalizedFilters, currency });
             return fetchWithStaleWhileRevalidate<EvolutionFlowsResponse>({
                 cache: ClientCache,
                 cacheKey,
@@ -342,12 +343,14 @@ export default function EvolutionPage() {
 
     const divStats = useMemo(() => {
         const total = filteredDividends.reduce((s, d) => s + d.amount, 0);
+        const totalDrip = filteredDividends.reduce((s, d) => s + (d.drip ?? 0), 0);
+        const dripPct = total > 0 ? Math.min(100, (totalDrip / total) * 100) : 0;
         const avg = filteredDividends.length > 0 ? total / filteredDividends.length : 0;
         const peak = filteredDividends.reduce(
             (best, cur) => (cur.amount > best.amount ? cur : best),
             { date: '', amount: 0 }
         );
-        return { total, avg, peak };
+        return { total, totalDrip, dripPct, avg, peak };
     }, [filteredDividends]);
 
     const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -762,6 +765,12 @@ export default function EvolutionPage() {
                                 <h2 className={styles.cardTitle}>Dividend Income Velocity</h2>
                                 <div className={styles.flowSummaryRow}>
                                     <span>Total: <strong className={styles.violetText}>{format(divStats.total, { maximumFractionDigits: 0 })}</strong></span>
+                                    {divStats.totalDrip > 0 && (
+                                        <span>
+                                            DRIP: <strong className={styles.tealText}>{format(divStats.totalDrip, { maximumFractionDigits: 0 })}</strong>
+                                            {divStats.total > 0 ? ` (${divStats.dripPct.toFixed(0)}%)` : ''}
+                                        </span>
+                                    )}
                                     <span>Avg/{dividendPeriod}: <strong>{format(divStats.avg, { maximumFractionDigits: 0 })}</strong></span>
                                     <span>Peak: <strong>{format(divStats.peak.amount, { maximumFractionDigits: 0 })}</strong></span>
                                 </div>

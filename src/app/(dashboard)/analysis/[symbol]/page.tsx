@@ -10,6 +10,7 @@ import { useDate } from '@/context/DateContext';
 import StockChart from '@/components/StockChart';
 import SymbolSkeleton from '@/components/SymbolSkeleton';
 import { formatQuantity } from '@/lib/format';
+import { computeActivityNetAmount } from '@/lib/activities-filters';
 import styles from './page.module.css';
 
 interface AccountAllocation {
@@ -42,6 +43,9 @@ interface AnalysisData {
         sectorAllocations?: { [key: string]: number }[];
         countryAllocations?: any[];
         totalDividends?: number;
+        totalDripAmount?: number;
+        dripCount?: number;
+        totalDripShares?: number;
         dividendRate?: number;
         dividendYield?: number;
     };
@@ -439,6 +443,22 @@ function AnalysisContent() {
                                         </strong>
                                     </span>
                                 </div>
+                                {(data.stats.dripCount ?? 0) > 0 && (
+                                    <div className={styles.kpiSubRow}>
+                                        <span>
+                                            DRIP Reinvested:{' '}
+                                            <strong className={styles.tealText}>
+                                                {format(convert(data.stats.totalDripAmount || 0, data.currency))}
+                                            </strong>
+                                            {data.stats.totalDividends && data.stats.totalDividends > 0
+                                                ? ` (${Math.min(100, ((data.stats.totalDripAmount || 0) / data.stats.totalDividends) * 100).toFixed(0)}%)`
+                                                : ''}
+                                        </span>
+                                        <span>
+                                            <strong>{formatQuantity(data.stats.totalDripShares || 0)}</strong> sh
+                                        </span>
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -745,7 +765,7 @@ function AnalysisContent() {
                                             const actCurrency = activity.currency || data.currency;
                                             const convertedPrice = convert(activity.price, actCurrency);
                                             const convertedFee = activity.fee ? convert(activity.fee, actCurrency) : 0;
-                                            const totalRaw = activity.quantity * activity.price + (activity.type === 'BUY' ? (activity.fee || 0) : activity.type === 'SELL' ? -(activity.fee || 0) : 0);
+                                            const totalRaw = computeActivityNetAmount(activity);
                                             const convertedTotal = convert(totalRaw, actCurrency);
 
                                             const user = users.find(u => u.username === activity.account?.name);

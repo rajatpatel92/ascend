@@ -9,11 +9,21 @@ export async function GET() {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     try {
-        const types = await prisma.activityType.findMany({
+        let types = await prisma.activityType.findMany({
             orderBy: { name: 'asc' }
         });
+        if (!types.some((t) => t.name === 'DRIP')) {
+            await prisma.activityType.upsert({
+                where: { name: 'DRIP' },
+                update: { behavior: 'ADD', isSystem: true },
+                create: { name: 'DRIP', behavior: 'ADD', isSystem: true }
+            });
+            types = await prisma.activityType.findMany({
+                orderBy: { name: 'asc' }
+            });
+        }
         return NextResponse.json(types);
-    } catch (error) {
+    } catch {
         return NextResponse.json({ error: 'Failed to fetch activity types' }, { status: 500 });
     }
 }

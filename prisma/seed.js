@@ -141,12 +141,15 @@ async function main() {
     // Seed Activity Types
     const activityTypes = [
         { name: 'BUY', behavior: 'ADD', isSystem: true },
+        { name: 'DRIP', behavior: 'ADD', isSystem: true },
         { name: 'SELL', behavior: 'REMOVE', isSystem: true },
         { name: 'DIVIDEND', behavior: 'NEUTRAL', isSystem: true },
         { name: 'INTEREST', behavior: 'NEUTRAL', isSystem: true },
         { name: 'STOCK_SPLIT', behavior: 'SPLIT', isSystem: true },
         { name: 'DEPOSIT', behavior: 'ADD', isSystem: true },
         { name: 'WITHDRAWAL', behavior: 'REMOVE', isSystem: true },
+        { name: 'TRANSFER_IN', behavior: 'ADD', isSystem: true },
+        { name: 'TRANSFER_OUT', behavior: 'REMOVE', isSystem: true },
     ];
     for (const type of activityTypes) {
         await prisma.activityType.upsert({

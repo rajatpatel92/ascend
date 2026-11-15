@@ -152,7 +152,7 @@ export async function GET(request: NextRequest) {
                 symAccounts.set(accKey, accEntry);
             }
 
-            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN' || a.type === 'ADD') {
+            if (a.type === 'BUY' || a.type === 'DRIP' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN' || a.type === 'ADD') {
                 accEntry.quantity += absQty;
             } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT' || a.type === 'REMOVE') {
                 accEntry.quantity = Math.max(0, accEntry.quantity - absQty);

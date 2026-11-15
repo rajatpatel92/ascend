@@ -128,6 +128,17 @@ test('PortfolioAnalytics.computeHoldingsState', async (t) => {
         const result = PortfolioAnalytics.computeHoldingsState(activities);
         assert.deepStrictEqual(result, { AAPL: 40 });
     });
+
+    await t.test('handles DRIP activities as share additions', () => {
+        const activities = [
+            { type: 'BUY', quantity: 10, investment: { symbol: 'VFV.TO' }, price: 100 },
+            { type: 'DIVIDEND', quantity: 10, investment: { symbol: 'VFV.TO' }, price: 5 },
+            { type: 'DRIP', quantity: 0.5, investment: { symbol: 'VFV.TO' }, price: 100 },
+        ] as unknown as Parameters<typeof PortfolioAnalytics.computeHoldingsState>[0];
+
+        const result = PortfolioAnalytics.computeHoldingsState(activities);
+        assert.deepStrictEqual(result, { 'VFV.TO': 10.5 });
+    });
 });
 
 test('PortfolioAnalytics.calculateIntradayHistory', async (t) => {
@@ -1155,6 +1166,93 @@ test('PortfolioAnalytics.calculateFlows & out-of-pocket principal', async (t) =>
             assert.strictEqual(benchJan5.value, 5000);
             const expectedFxReturn = ((1.40 - 1.30) / 1.30) * 100;
             assert.ok(Math.abs(compRes.summary.benchmarkReturn - expectedFxReturn) < 0.05);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
+
+    await t.test('tracks DRIP separately from out-of-pocket inflows, prioritizes DRIP over same-day BUY, and preserves Carino profit attribution', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'DRIPSTK') {
+                    return { '2026-01-01': 100, '2026-01-05': 100 };
+                }
+                if (sym === '^GSPC') {
+                    return { '2026-01-01': 5000, '2026-01-05': 5000 };
+                }
+                return {};
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2026-01-01T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'DRIPSTK', currency: 'USD' }
+                },
+                // Deliberately put same-day manual BUY before DIVIDEND and DRIP to verify deterministic day ordering
+                {
+                    type: 'BUY',
+                    quantity: 1,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2026-01-05T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'DRIPSTK', currency: 'USD' }
+                },
+                {
+                    type: 'DIVIDEND',
+                    quantity: 10,
+                    price: 5, // $50 dividend
+                    fee: 0,
+                    date: new Date('2026-01-05T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'DRIPSTK', currency: 'USD' }
+                },
+                {
+                    type: 'DRIP',
+                    quantity: 0.5,
+                    price: 100, // $50 reinvested
+                    fee: 0,
+                    date: new Date('2026-01-05T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'DRIPSTK', currency: 'USD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const flowRes = await PortfolioAnalytics.calculateFlows(activities, 'USD');
+            const jan1Flow = flowRes.contributions.day.find(d => d.date === '2026-01-01');
+            const jan5Flow = flowRes.contributions.day.find(d => d.date === '2026-01-05');
+            assert.strictEqual(jan1Flow?.inflow, 1000);
+            // DRIP consumes the $50 dividend pool first, so the manual BUY of $100 remains full $100 out-of-pocket inflow
+            assert.strictEqual(jan5Flow?.inflow, 100);
+
+            const jan5Div = flowRes.dividends.day.find(d => d.date === '2026-01-05');
+            assert.strictEqual(jan5Div?.amount, 50);
+            assert.strictEqual(jan5Div?.drip, 50);
+
+            const compRes = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'USD'
+            );
+            const day5 = compRes.portfolio.find(p => p.date === '2026-01-05');
+            assert.ok(day5);
+            // 11.5 shares * $100 = $1150; $50 dividend on $1000 prior MV => NAV 105; unreinvested dividends = 0
+            assert.ok(Math.abs(day5.marketValue - 1150) < 0.01);
+            assert.strictEqual(day5.netFlow, 100);
+            assert.ok(Math.abs(day5.nav - 105) < 0.01);
+            assert.strictEqual(day5.unreinvestedDividends, 0);
+
+            const dripPerf = compRes.performers.top.find(p => p.symbol === 'DRIPSTK');
+            assert.ok(dripPerf);
+            // Profit = 1150 end - 0 start - (1000 + 100 + 50) inflows + 50 dividends = 50
+            assert.ok(Math.abs(dripPerf.profit - 50) < 0.01);
         } finally {
             MarketDataService.getDailyHistory = originalGetDailyHistory;
         }

@@ -597,6 +597,7 @@ export default function ActivitiesPage() {
                     <div className={styles.kpiValue}>{summary.totalCount}</div>
                     <div className={styles.kpiSub}>
                         {summary.buyCount} buys · {summary.sellCount} sells
+                        {summary.dripCount > 0 ? ` · ${summary.dripCount} ${summary.dripCount === 1 ? 'DRIP' : 'DRIPs'}` : ''}
                         {activeFilterCount > 0 ? ` · ${activeFilterCount} filter(s)` : ''}
                     </div>
                 </div>

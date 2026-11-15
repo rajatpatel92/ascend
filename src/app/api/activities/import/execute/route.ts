@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
 
             return {
                 date: new Date(activity.parsedDate),
-                type: activity.Type,
+                type: String(activity.Type || '').trim().toUpperCase(),
                 quantity: finalQuantity,
                 price: finalPrice,
                 fee: finalFee,

@@ -148,6 +148,7 @@ async function main() {
     // Seed Activity Types
     const activityTypes = [
         { name: 'BUY', behavior: 'ADD', isSystem: true },
+        { name: 'DRIP', behavior: 'ADD', isSystem: true },
         { name: 'SELL', behavior: 'REMOVE', isSystem: true },
         { name: 'DIVIDEND', behavior: 'NEUTRAL', isSystem: true },
         { name: 'INTEREST', behavior: 'NEUTRAL', isSystem: true },

@@ -65,6 +65,7 @@ export interface ActivitiesSummary {
     uniqueSymbolsCount: number;
     buyCount: number;
     sellCount: number;
+    dripCount: number;
     capitalInflows: number;
     capitalOutflows: number;
     netCapitalFlow: number;
@@ -82,16 +83,19 @@ const PROCEEDS_OR_INCOME_FEE_DEDUCTED = new Set([
 
 const COST_INCLUDING_FEE = new Set([
     'BUY',
+    'DRIP',
     'ADD',
     'DEPOSIT',
     'TRANSFER_IN',
     'FEE'
 ]);
 
+// # Reason: DRIP is an internal dividend reinvestment, not new external out-of-pocket capital.
 const CAPITAL_INFLOW_TYPES = new Set(['BUY', 'ADD', 'DEPOSIT', 'TRANSFER_IN']);
 const CAPITAL_OUTFLOW_TYPES = new Set(['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT']);
 const BUY_COUNT_TYPES = new Set(['BUY', 'ADD']);
 const SELL_COUNT_TYPES = new Set(['SELL', 'REMOVE']);
+const DRIP_COUNT_TYPES = new Set(['DRIP']);
 
 function toLocalYmd(d: Date): string {
     const pad = (n: number) => n.toString().padStart(2, '0');
@@ -303,6 +307,7 @@ export function computeActivitiesSummary(
     const symbols = new Set<string>();
     let buyCount = 0;
     let sellCount = 0;
+    let dripCount = 0;
     let capitalInflows = 0;
     let capitalOutflows = 0;
     let totalFees = 0;
@@ -316,6 +321,8 @@ export function computeActivitiesSummary(
             buyCount++;
         } else if (SELL_COUNT_TYPES.has(activity.type)) {
             sellCount++;
+        } else if (DRIP_COUNT_TYPES.has(activity.type)) {
+            dripCount++;
         }
 
         const fromCurrency = activity.currency || activity.investment?.currencyCode || 'USD';
@@ -342,6 +349,7 @@ export function computeActivitiesSummary(
         uniqueSymbolsCount: symbols.size,
         buyCount,
         sellCount,
+        dripCount,
         capitalInflows,
         capitalOutflows,
         netCapitalFlow: capitalInflows - capitalOutflows,

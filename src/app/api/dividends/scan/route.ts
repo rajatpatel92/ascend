@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import YahooFinance from 'yahoo-finance2';
 import { calculateHoldingsFromActivities } from '@/lib/portfolio-helper';
+import { buildBehaviorMap } from '@/lib/activity-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -93,12 +94,31 @@ export async function POST(request: Request) {
             startDate.setFullYear(endDate.getFullYear() - 1);
         }
 
+        const activityTypes = await prisma.activityType.findMany();
+        const behaviorMap = buildBehaviorMap(activityTypes);
+        const holdingAffectingTypes = Array.from(new Set([
+            'BUY',
+            'DRIP',
+            'ADD',
+            'DEPOSIT',
+            'SELL',
+            'REMOVE',
+            'WITHDRAWAL',
+            'SPLIT',
+            'STOCK_SPLIT',
+            'TRANSFER_IN',
+            'TRANSFER_OUT',
+            ...activityTypes
+                .filter(t => t.behavior === 'ADD' || t.behavior === 'REMOVE' || t.behavior === 'SPLIT')
+                .map(t => t.name)
+        ]));
+
         // Pre-fetch all activities for these symbols to avoid N+1 queries
         // 1. Fetch holdings-affecting activities (all time up to end of scan period)
         const holdingsActivities = await prisma.activity.findMany({
             where: {
                 investment: { symbol: { in: symbolsToScan } },
-                type: { in: ['BUY', 'SELL', 'SPLIT', 'STOCK_SPLIT', 'TRANSFER_IN', 'TRANSFER_OUT'] },
+                type: { in: holdingAffectingTypes },
                 date: { lte: endDate }
             },
             include: { investment: { select: { symbol: true } } },
@@ -159,7 +179,7 @@ export async function POST(request: Request) {
                         checkDate.setUTCDate(checkDate.getUTCDate() - 1);
                         checkDate.setUTCHours(23, 59, 59, 999);
 
-                        const holdingsByAccount = calculateHoldingsFromActivities(symbolHoldingsActivities, checkDate);
+                        const holdingsByAccount = calculateHoldingsFromActivities(symbolHoldingsActivities, checkDate, behaviorMap);
 
                         // # Reason: Yahoo Finance chart() returns split-adjusted dividend per-share amounts.
                         // Reverse any post-dividend splits back to the actual historical payout per pre-split share.

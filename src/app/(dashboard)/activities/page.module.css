@@ -818,6 +818,16 @@
     color: #34d399;
 }
 
+.badge.DRIP {
+    background: rgba(13, 148, 136, 0.14);
+    color: #0f766e;
+}
+
+:global([data-theme='dark']) .badge.DRIP {
+    background: rgba(20, 184, 166, 0.18);
+    color: #2dd4bf;
+}
+
 .badge.SELL,
 .badge.REMOVE,
 .badge.WITHDRAWAL,

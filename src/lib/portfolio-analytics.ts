@@ -31,6 +31,7 @@ interface FlowData {
 interface DividendData {
     date: string;
     amount: number;
+    drip?: number;
 }
 
 export class PortfolioAnalytics {
@@ -268,8 +269,9 @@ export class PortfolioAnalytics {
         const typeOrder = (t: string): number => {
             if (t === 'STOCK_SPLIT' || t === 'SPLIT') return 0;
             if (t === 'DIVIDEND') return 1;
-            if (t === 'BUY' || t === 'DEPOSIT' || t === 'TRANSFER_IN') return 2;
-            return 3;
+            if (t === 'DRIP') return 2;
+            if (t === 'BUY' || t === 'ADD' || t === 'DEPOSIT' || t === 'TRANSFER_IN') return 3;
+            return 4;
         };
         const sorted = [...activities].sort((a, b) => {
             const diff = new Date(a.date).getTime() - new Date(b.date).getTime();
@@ -292,8 +294,9 @@ export class PortfolioAnalytics {
     /**
      * Processes one UTC day's non-split activities in deterministic order:
      * 1) DIVIDEND credits the account's dividend cash pool (available for same-day DRIP or future BUYs).
-     * 2) BUY consumes from that pool first so reinvested dividends are excluded from out-of-pocket contributions.
-     * 3) SELL/WITHDRAWAL/TRANSFER_OUT subtracts fees from proceeds and triggers oversell deficit protection.
+     * 2) DRIP acquires shares using internal dividend proceeds (0 out-of-pocket inflow) and draws from the pool first.
+     * 3) BUY/ADD consumes from any remaining dividend pool so legacy DRIPs are excluded from out-of-pocket contributions.
+     * 4) SELL/REMOVE/WITHDRAWAL/TRANSFER_OUT subtracts fees from proceeds and triggers oversell deficit protection.
      */
     private static applyNonSplitActivitiesForDay(params: {
         activities: (Activity & { investment: { symbol: string; currency: string } })[];
@@ -311,6 +314,7 @@ export class PortfolioAnalytics {
         netFlow: number;
         grossTradeFlow: number;
         dailyDividends: number;
+        dailyDrip: number;
         dailyDivBySym: Record<string, number>;
         symTradeFlowDelta: Record<string, { netInflow: number; buys: number }>;
     } {
@@ -320,6 +324,7 @@ export class PortfolioAnalytics {
         let outOfPocketOutflow = 0;
         let grossTradeFlow = 0;
         let dailyDividends = 0;
+        let dailyDrip = 0;
         const dailyDivBySym: Record<string, number> = {};
         const symTradeFlowDelta: Record<string, { netInflow: number; buys: number }> = {};
 
@@ -334,9 +339,18 @@ export class PortfolioAnalytics {
         };
 
         const divActivities = activities.filter(a => a.type === 'DIVIDEND');
-        const flowActivities = activities.filter(a => a.type !== 'DIVIDEND');
+        // # Reason: Process explicit DRIPs before same-day BUY/ADD orders even when timestamps tie,
+        // so reinvested dividends draw down dividendCashPool before manual purchases.
+        const flowPriority = (t: string): number => {
+            if (t === 'DRIP') return 0;
+            if (t === 'BUY' || t === 'ADD' || t === 'DEPOSIT' || t === 'TRANSFER_IN') return 1;
+            return 2;
+        };
+        const flowActivities = activities
+            .filter(a => a.type !== 'DIVIDEND')
+            .sort((a, b) => flowPriority(a.type) - flowPriority(b.type));
 
-        // # Reason: Process DIVIDENDs before same-day BUYs so automated DRIPs (which share the exact same date)
+        // # Reason: Process DIVIDENDs before same-day DRIP/BUY so reinvested dividends
         // draw from the dividend proceeds instead of inflating out-of-pocket capital contributions.
         for (const a of divActivities) {
             const symbol = a.investment.symbol;
@@ -366,7 +380,7 @@ export class PortfolioAnalytics {
                 symTradeFlowDelta[symbol] = { netInflow: 0, buys: 0 };
             }
 
-            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
+            if (a.type === 'DRIP' || a.type === 'BUY' || a.type === 'ADD' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
                 const absQty = Math.abs(a.quantity);
                 const flowVal = (absQty * a.price) + (a.fee || 0);
                 const flowConverted = flowVal * fxRate;
@@ -374,7 +388,14 @@ export class PortfolioAnalytics {
                 symTradeFlowDelta[symbol].netInflow += flowConverted;
                 symTradeFlowDelta[symbol].buys += flowConverted;
 
-                if (a.type === 'BUY' && flowConverted > 0) {
+                if (a.type === 'DRIP') {
+                    dailyDrip += flowConverted;
+                    if (flowConverted > 0) {
+                        const poolAvailable = dividendCashPool[poolKey] || 0;
+                        dividendCashPool[poolKey] = Math.max(0, poolAvailable - flowConverted);
+                    }
+                    // # Reason: DRIP represents internal reinvestment of earned dividends, not new out-of-pocket principal.
+                } else if ((a.type === 'BUY' || a.type === 'ADD') && flowConverted > 0) {
                     const poolAvailable = dividendCashPool[poolKey] || 0;
                     const reinvestedFromDiv = Math.min(flowConverted, poolAvailable);
                     dividendCashPool[poolKey] = Math.max(0, poolAvailable - reinvestedFromDiv);
@@ -385,7 +406,7 @@ export class PortfolioAnalytics {
 
                 holdingsByAccount[symbol][poolKey] = Math.max(0, (holdingsByAccount[symbol][poolKey] || 0) + absQty);
                 this.syncTotalHoldings(holdings, holdingsByAccount, symbol);
-            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
+            } else if (a.type === 'SELL' || a.type === 'REMOVE' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
                 const absQty = Math.abs(a.quantity);
                 const flowVal = (absQty * a.price) - (a.fee || 0);
                 const proceedsConverted = flowVal * fxRate;
@@ -420,6 +441,7 @@ export class PortfolioAnalytics {
             netFlow: outOfPocketInflow - outOfPocketOutflow,
             grossTradeFlow,
             dailyDividends,
+            dailyDrip,
             dailyDivBySym,
             symTradeFlowDelta
         };
@@ -468,10 +490,11 @@ export class PortfolioAnalytics {
             e.outflow += outflow;
         };
 
-        const processDivMap = (map: Map<string, DividendData>, key: string, dateStr: string, amount: number) => {
-            if (!map.has(key)) map.set(key, { date: dateStr, amount: 0 });
+        const processDivMap = (map: Map<string, DividendData>, key: string, dateStr: string, amount: number, drip: number) => {
+            if (!map.has(key)) map.set(key, { date: dateStr, amount: 0, drip: 0 });
             const e = map.get(key)!;
             e.amount += amount;
+            e.drip = (e.drip || 0) + drip;
         };
 
         const dayGroups = this.groupActivitiesByUtcDay(sortedActivities);
@@ -499,7 +522,7 @@ export class PortfolioAnalytics {
                 });
             }
 
-            const { outOfPocketInflow, outOfPocketOutflow, dailyDividends } = this.applyNonSplitActivitiesForDay({
+            const { outOfPocketInflow, outOfPocketOutflow, dailyDividends, dailyDrip } = this.applyNonSplitActivitiesForDay({
                 activities: otherActivities,
                 dateStr,
                 targetCurrency,
@@ -527,10 +550,10 @@ export class PortfolioAnalytics {
                 processMap(flows.year, yKey, `${yKey}-01-01`, outOfPocketInflow, outOfPocketOutflow);
             }
 
-            if (dailyDividends > 0) {
-                processDivMap(dividends.day, dateStr, dateStr, dailyDividends);
-                processDivMap(dividends.month, mKey, `${mKey}-01`, dailyDividends);
-                processDivMap(dividends.year, yKey, `${yKey}-01-01`, dailyDividends);
+            if (dailyDividends > 0 || dailyDrip > 0) {
+                processDivMap(dividends.day, dateStr, dateStr, dailyDividends, dailyDrip);
+                processDivMap(dividends.month, mKey, `${mKey}-01`, dailyDividends, dailyDrip);
+                processDivMap(dividends.year, yKey, `${yKey}-01-01`, dailyDividends, dailyDrip);
             }
         }
 
@@ -556,7 +579,7 @@ export class PortfolioAnalytics {
                     flows.month.set(key, { date: `${key}-01`, inflow: 0, outflow: 0 });
                 }
                 if (!dividends.month.has(key)) {
-                    dividends.month.set(key, { date: `${key}-01`, amount: 0 });
+                    dividends.month.set(key, { date: `${key}-01`, amount: 0, drip: 0 });
                 }
                 month += 1;
                 if (month > 11) {
@@ -574,7 +597,7 @@ export class PortfolioAnalytics {
                     flows.year.set(key, { date: `${key}-01-01`, inflow: 0, outflow: 0 });
                 }
                 if (!dividends.year.has(key)) {
-                    dividends.year.set(key, { date: `${key}-01-01`, amount: 0 });
+                    dividends.year.set(key, { date: `${key}-01-01`, amount: 0, drip: 0 });
                 }
             }
         }
@@ -1311,7 +1334,7 @@ export class PortfolioAnalytics {
             const accKey = this.getAccountPoolKey(a);
             if (!holdingsByAccount[s]) holdingsByAccount[s] = {};
 
-            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN' || a.type === 'ADD') {
+            if (a.type === 'BUY' || a.type === 'DRIP' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN' || a.type === 'ADD') {
                 holdingsByAccount[s][accKey] = (holdingsByAccount[s][accKey] || 0) + Math.abs(a.quantity);
                 this.syncTotalHoldings(h, holdingsByAccount, s);
             } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT' || a.type === 'REMOVE') {

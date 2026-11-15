@@ -71,6 +71,9 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
 
         let firstBuyDate: Date | null = null;
         let totalDividends = 0;
+        let totalDripAmount = 0;
+        let dripCount = 0;
+        const dripSharesByAccount: Record<string, number> = {};
         const rawActivities: PortfolioActivityLike[] = [];
 
         for (const activity of investment.activities) {
@@ -100,6 +103,9 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                                 if (!appliedSplits.has(dedupKey)) {
                                     appliedSplits.add(dedupKey);
                                     acc.quantity *= multiplier;
+                                    if (dripSharesByAccount[key]) {
+                                        dripSharesByAccount[key] *= multiplier;
+                                    }
                                 }
                             }
                         }
@@ -112,6 +118,9 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                                 if (!appliedSplits.has(dedupKey)) {
                                     appliedSplits.add(dedupKey);
                                     acc.quantity *= multiplier;
+                                    if (dripSharesByAccount[key]) {
+                                        dripSharesByAccount[key] *= multiplier;
+                                    }
                                 }
                             }
                         }
@@ -142,6 +151,11 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                 const acc = accountState[accKey];
                 acc.quantity += absQty;
                 acc.costBasis += amount + fee;
+                if (activity.type === 'DRIP') {
+                    totalDripAmount += amount + fee;
+                    dripCount += 1;
+                    dripSharesByAccount[accKey] = (dripSharesByAccount[accKey] || 0) + absQty;
+                }
                 if (!firstBuyDate || new Date(activity.date) < firstBuyDate) {
                     firstBuyDate = new Date(activity.date);
                 }
@@ -319,6 +333,8 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
             ? marketData.dividendYield
             : (effectiveDividendRate && price > 0 ? effectiveDividendRate / price : undefined);
 
+        const totalDripShares = Object.values(dripSharesByAccount).reduce((sum, q) => sum + q, 0);
+
         return NextResponse.json({
             symbol,
             name: investment.name,
@@ -333,6 +349,9 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                 percentReturn,
                 totalFees,
                 totalDividends,
+                totalDripAmount,
+                dripCount,
+                totalDripShares,
                 investmentAge,
                 activityCount: investment.activities.length,
                 fiftyTwoWeekHigh: marketData?.fiftyTwoWeekHigh,

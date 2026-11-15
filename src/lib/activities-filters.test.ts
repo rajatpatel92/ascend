@@ -166,6 +166,7 @@ test('computeActivityNetAmount and computeActivitiesSummary compute accurate net
     assert.strictEqual(summary.uniqueSymbolsCount, 3);
     assert.strictEqual(summary.buyCount, 1);
     assert.strictEqual(summary.sellCount, 1);
+    assert.strictEqual(summary.dripCount, 0);
     assert.strictEqual(summary.capitalInflows, 1005); // DIVIDEND excluded
     assert.strictEqual(Number(summary.capitalOutflows.toFixed(2)), 546); // 390 * 1.4
     assert.strictEqual(Number(summary.netCapitalFlow.toFixed(2)), 459); // 1005 - 546 (net inflow)
@@ -250,4 +251,62 @@ test('computeActivitiesSummary handles net capital outflow, DEPOSIT/WITHDRAWAL, 
     // Paired transfers alone net strictly to 0
     const transfersOnly = computeActivitiesSummary([outflowAndTransferActivities[2], outflowAndTransferActivities[3]], (amt) => amt);
     assert.strictEqual(transfersOnly.netCapitalFlow, 0);
+});
+
+test('DRIP computes fee-inclusive net cost, increments dripCount, and is excluded from external capital inflows', () => {
+    const activitiesWithDrip: ActivityRecord[] = [
+        {
+            id: 'd1',
+            type: 'BUY',
+            date: '2026-01-05T00:00:00.000Z',
+            quantity: 10,
+            price: 100,
+            fee: 0,
+            currency: 'CAD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p1', name: 'Wealthsimple' },
+            account: { id: 'acc1', name: 'rajat', type: 'TFSA' }
+        },
+        {
+            id: 'd2',
+            type: 'DIVIDEND',
+            date: '2026-02-05T00:00:00.000Z',
+            quantity: 10,
+            price: 2.5,
+            fee: 0,
+            currency: 'CAD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p1', name: 'Wealthsimple' },
+            account: { id: 'acc1', name: 'rajat', type: 'TFSA' }
+        },
+        {
+            id: 'd3',
+            type: 'DRIP',
+            date: '2026-02-05T00:00:00.000Z',
+            quantity: 0.24,
+            price: 100,
+            fee: 1,
+            currency: 'CAD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p1', name: 'Wealthsimple' },
+            account: { id: 'acc1', name: 'rajat', type: 'TFSA' }
+        }
+    ];
+
+    // Row Total / cost basis for DRIP = (0.24 * 100) + 1 = 25
+    assert.strictEqual(computeActivityNetAmount(activitiesWithDrip[2]), 25);
+
+    const summary = computeActivitiesSummary(activitiesWithDrip, (amt) => amt);
+    assert.strictEqual(summary.totalCount, 3);
+    assert.strictEqual(summary.buyCount, 1);
+    assert.strictEqual(summary.sellCount, 0);
+    assert.strictEqual(summary.dripCount, 1);
+    // External capital inflows only include the manual BUY (1000), NOT the DRIP (25)
+    assert.strictEqual(summary.capitalInflows, 1000);
+    assert.strictEqual(summary.netCapitalFlow, 1000);
+    assert.strictEqual(summary.totalFees, 1);
+
+    // Filter by DRIP returns only DRIP entries
+    const dripOnly = filterActivities(activitiesWithDrip, { range: 'ALL', type: 'DRIP' });
+    assert.deepStrictEqual(dripOnly.map((a) => a.id), ['d3']);
 });

@@ -10,6 +10,7 @@ export function buildBehaviorMap(activityTypes: Array<{ name: string; behavior: 
     }
 
     if (!behaviorMap.has('BUY')) behaviorMap.set('BUY', 'ADD');
+    if (!behaviorMap.has('DRIP')) behaviorMap.set('DRIP', 'ADD');
     if (!behaviorMap.has('SELL')) behaviorMap.set('SELL', 'REMOVE');
     if (!behaviorMap.has('DIVIDEND')) behaviorMap.set('DIVIDEND', 'NEUTRAL');
     if (!behaviorMap.has('STOCK_SPLIT')) behaviorMap.set('STOCK_SPLIT', 'SPLIT');
