@@ -224,6 +224,12 @@
     }
 }
 
+@media (max-width: 768px) {
+    .title {
+        font-size: 1.45rem;
+    }
+}
+
 @media (max-width: 640px) {
     .container {
         padding: 1rem 0.75rem;

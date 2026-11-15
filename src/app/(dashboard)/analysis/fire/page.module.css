@@ -175,9 +175,7 @@
     color: #eff6ff;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.35;
 }
 
 .heroValue {
@@ -229,8 +227,9 @@
 .kpiHeader {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    gap: 0.5rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.5rem;
     min-width: 0;
 }
 
@@ -240,9 +239,9 @@
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.35;
+    flex: 1 1 100px;
+    min-width: 0;
 }
 
 .kpiMain {
@@ -615,7 +614,8 @@
     color: #1d4ed8;
     font-size: 0.78rem;
     font-weight: 700;
-    white-space: nowrap;
+    line-height: 1.35;
+    max-width: 100%;
 }
 
 :global([data-theme='dark']) .scenarioPillStrong {
@@ -633,6 +633,7 @@
     color: var(--text-secondary);
     font-size: 0.78rem;
     font-variant-numeric: tabular-nums;
+    max-width: 100%;
     white-space: nowrap;
 }
 
@@ -1292,7 +1293,7 @@
     .table td:nth-of-type(5)::before { content: "Annual Withdrawal"; }
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1340px) {
     .kpiStrip {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -1308,6 +1309,10 @@
     .container {
         padding: 1.25rem;
         padding-top: 4.75rem;
+    }
+
+    .title {
+        font-size: 1.45rem;
     }
 
     .headerControls {

@@ -114,6 +114,7 @@
   color: #eff6ff;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  line-height: 1.35;
 }
 
 .heroValue {
@@ -165,13 +166,13 @@
 .heroMetaLabel {
   font-size: 0.75rem;
   color: #eff6ff;
-  white-space: nowrap;
+  line-height: 1.3;
 }
 
 .heroMetaValue {
   font-size: 0.8125rem;
   font-weight: 600;
-  white-space: nowrap;
+  line-height: 1.3;
   font-variant-numeric: tabular-nums;
 }
 
@@ -192,9 +193,10 @@
 .kpiHeader {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
+  align-items: flex-start;
+  gap: 0.35rem 0.5rem;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .kpiLabel {
@@ -203,6 +205,9 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  line-height: 1.35;
+  flex: 1 1 100px;
+  min-width: 0;
 }
 
 .kpiTag {
@@ -212,6 +217,8 @@
   background: var(--hover-bg);
   padding: 0.15rem 0.5rem;
   border-radius: 9999px;
+  flex-shrink: 0;
+  max-width: 100%;
 }
 
 .kpiPill {
@@ -220,6 +227,8 @@
   padding: 0.15rem 0.55rem;
   border-radius: 9999px;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  max-width: 100%;
 }
 
 .positivePill {
@@ -659,16 +668,16 @@
     padding: 1.125rem;
     border-radius: 0.875rem;
   }
+
+  .greeting {
+    font-size: 1.45rem;
+  }
 }
 
 @media (max-width: 640px) {
   .heroMetaGrid {
     grid-template-columns: 1fr;
     gap: 0.5rem;
-  }
-
-  .greeting {
-    font-size: 1.45rem;
   }
 
   .heroValue {

@@ -12,7 +12,7 @@
 }
 
 .title {
-    font-size: 2rem;
+    font-size: 1.875rem;
     font-weight: 700;
     color: var(--text-primary);
     letter-spacing: -0.025em;
@@ -351,5 +351,11 @@
 
     .mobileActions {
         display: block;
+    }
+}
+
+@media (max-width: 768px) {
+    .title {
+        font-size: 1.45rem;
     }
 }
