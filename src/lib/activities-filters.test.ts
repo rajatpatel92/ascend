@@ -152,7 +152,7 @@ test('normalizeActivityYmd handles ISO and calendar dates', () => {
     assert.strictEqual(normalizeActivityYmd('invalid-date'), '');
 });
 
-test('computeActivityNetAmount and computeActivitiesSummary compute accurate cash totals', () => {
+test('computeActivityNetAmount and computeActivitiesSummary compute accurate net capital flows and fees', () => {
     assert.strictEqual(computeActivityNetAmount(sampleActivities[0]), 1005); // BUY: 10*100 + 5
     assert.strictEqual(computeActivityNetAmount(sampleActivities[1]), 5); // DIVIDEND: 10*0.5 - 0
     assert.strictEqual(computeActivityNetAmount(sampleActivities[2]), 390); // SELL: 2*200 - 10
@@ -164,7 +164,90 @@ test('computeActivityNetAmount and computeActivitiesSummary compute accurate cas
 
     assert.strictEqual(summary.totalCount, 4);
     assert.strictEqual(summary.uniqueSymbolsCount, 3);
-    assert.strictEqual(summary.totalInvested, 1005);
-    assert.strictEqual(Number(summary.totalProceeds.toFixed(2)), 546); // 390 * 1.4
-    assert.strictEqual(summary.totalIncome, 5);
+    assert.strictEqual(summary.buyCount, 1);
+    assert.strictEqual(summary.sellCount, 1);
+    assert.strictEqual(summary.capitalInflows, 1005); // DIVIDEND excluded
+    assert.strictEqual(Number(summary.capitalOutflows.toFixed(2)), 546); // 390 * 1.4
+    assert.strictEqual(Number(summary.netCapitalFlow.toFixed(2)), 459); // 1005 - 546 (net inflow)
+    assert.strictEqual(Number(summary.totalFees.toFixed(2)), 19); // 5 + 10 * 1.4
+});
+
+test('computeActivitiesSummary handles net capital outflow, DEPOSIT/WITHDRAWAL, paired transfers, and standalone FEE', () => {
+    const outflowAndTransferActivities: ActivityRecord[] = [
+        {
+            id: 't1',
+            type: 'DEPOSIT',
+            date: '2026-01-10T00:00:00.000Z',
+            quantity: 1,
+            price: 500,
+            fee: 0,
+            currency: 'USD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p1', name: 'Wealthsimple' },
+            account: { id: 'acc1', name: 'rajat', type: 'TFSA' }
+        },
+        {
+            id: 't2',
+            type: 'WITHDRAWAL',
+            date: '2026-02-10T00:00:00.000Z',
+            quantity: 1,
+            price: 1200,
+            fee: 15,
+            currency: 'USD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p1', name: 'Wealthsimple' },
+            account: { id: 'acc1', name: 'rajat', type: 'TFSA' }
+        },
+        {
+            id: 't3',
+            type: 'TRANSFER_OUT',
+            date: '2026-02-15T00:00:00.000Z',
+            quantity: 5,
+            price: 100,
+            fee: 0,
+            currency: 'USD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p1', name: 'Wealthsimple' },
+            account: { id: 'acc1', name: 'rajat', type: 'TFSA' }
+        },
+        {
+            id: 't4',
+            type: 'TRANSFER_IN',
+            date: '2026-02-15T00:00:00.000Z',
+            quantity: 5,
+            price: 100,
+            fee: 0,
+            currency: 'USD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p2', name: 'Questrade' },
+            account: { id: 'acc2', name: 'rajat', type: 'TFSA' }
+        },
+        {
+            id: 't5',
+            type: 'FEE',
+            date: '2026-02-20T00:00:00.000Z',
+            quantity: 1,
+            price: 25,
+            fee: 0,
+            currency: 'USD',
+            investment: { symbol: 'VFV.TO', name: 'Vanguard S&P 500', currencyCode: 'CAD', type: 'ETF' },
+            platform: { id: 'p2', name: 'Questrade' },
+            account: { id: 'acc2', name: 'rajat', type: 'TFSA' }
+        }
+    ];
+
+    const summary = computeActivitiesSummary(outflowAndTransferActivities, (amt) => amt);
+
+    // DEPOSIT (500) + TRANSFER_IN (500) = 1000
+    assert.strictEqual(summary.capitalInflows, 1000);
+    // WITHDRAWAL (1200 - 15 = 1185) + TRANSFER_OUT (500) = 1685
+    assert.strictEqual(summary.capitalOutflows, 1685);
+    // Paired transfers cancel cleanly -> net capital outflow of 685 (-685)
+    assert.strictEqual(summary.netCapitalFlow, -685);
+    // WITHDRAWAL fee (15) + standalone FEE (25) = 40
+    assert.strictEqual(summary.totalFees, 40);
+
+    // Paired transfers alone net strictly to 0
+    const transfersOnly = computeActivitiesSummary([outflowAndTransferActivities[2], outflowAndTransferActivities[3]], (amt) => amt);
+    assert.strictEqual(transfersOnly.netCapitalFlow, 0);
 });

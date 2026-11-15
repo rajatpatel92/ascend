@@ -63,9 +63,12 @@ export interface ActivityFilterOptions {
 export interface ActivitiesSummary {
     totalCount: number;
     uniqueSymbolsCount: number;
-    totalInvested: number;
-    totalProceeds: number;
-    totalIncome: number;
+    buyCount: number;
+    sellCount: number;
+    capitalInflows: number;
+    capitalOutflows: number;
+    netCapitalFlow: number;
+    totalFees: number;
 }
 
 const PROCEEDS_OR_INCOME_FEE_DEDUCTED = new Set([
@@ -85,9 +88,10 @@ const COST_INCLUDING_FEE = new Set([
     'FEE'
 ]);
 
-const INVESTED_TYPES = new Set(['BUY', 'ADD', 'TRANSFER_IN']);
-const PROCEEDS_TYPES = new Set(['SELL', 'REMOVE', 'TRANSFER_OUT']);
-const INCOME_TYPES = new Set(['DIVIDEND', 'INTEREST']);
+const CAPITAL_INFLOW_TYPES = new Set(['BUY', 'ADD', 'DEPOSIT', 'TRANSFER_IN']);
+const CAPITAL_OUTFLOW_TYPES = new Set(['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT']);
+const BUY_COUNT_TYPES = new Set(['BUY', 'ADD']);
+const SELL_COUNT_TYPES = new Set(['SELL', 'REMOVE']);
 
 function toLocalYmd(d: Date): string {
     const pad = (n: number) => n.toString().padStart(2, '0');
@@ -297,33 +301,50 @@ export function computeActivitiesSummary(
     convertFn: (amount: number, fromCurrency: string) => number
 ): ActivitiesSummary {
     const symbols = new Set<string>();
-    let totalInvested = 0;
-    let totalProceeds = 0;
-    let totalIncome = 0;
+    let buyCount = 0;
+    let sellCount = 0;
+    let capitalInflows = 0;
+    let capitalOutflows = 0;
+    let totalFees = 0;
 
     for (const activity of activities) {
         if (activity.investment?.symbol) {
             symbols.add(activity.investment.symbol);
         }
 
+        if (BUY_COUNT_TYPES.has(activity.type)) {
+            buyCount++;
+        } else if (SELL_COUNT_TYPES.has(activity.type)) {
+            sellCount++;
+        }
+
         const fromCurrency = activity.currency || activity.investment?.currencyCode || 'USD';
         const netNative = computeActivityNetAmount(activity);
         const converted = convertFn(netNative, fromCurrency);
 
-        if (INVESTED_TYPES.has(activity.type)) {
-            totalInvested += converted;
-        } else if (PROCEEDS_TYPES.has(activity.type)) {
-            totalProceeds += converted;
-        } else if (INCOME_TYPES.has(activity.type)) {
-            totalIncome += converted;
+        if (CAPITAL_INFLOW_TYPES.has(activity.type)) {
+            capitalInflows += converted;
+        } else if (CAPITAL_OUTFLOW_TYPES.has(activity.type)) {
+            capitalOutflows += converted;
+        }
+
+        const feeNative =
+            activity.type === 'FEE'
+                ? Math.abs(activity.quantity) * activity.price + (activity.fee || 0)
+                : activity.fee || 0;
+        if (feeNative > 0) {
+            totalFees += convertFn(feeNative, fromCurrency);
         }
     }
 
     return {
         totalCount: activities.length,
         uniqueSymbolsCount: symbols.size,
-        totalInvested,
-        totalProceeds,
-        totalIncome
+        buyCount,
+        sellCount,
+        capitalInflows,
+        capitalOutflows,
+        netCapitalFlow: capitalInflows - capitalOutflows,
+        totalFees
     };
 }

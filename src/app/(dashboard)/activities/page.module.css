@@ -239,7 +239,7 @@
 /* Tier 1: KPI Strip */
 .kpiStrip {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1.15rem;
     margin-bottom: 1.5rem;
 }
@@ -290,6 +290,26 @@
     flex-shrink: 0;
 }
 
+.kpiTagInflow {
+    background: rgba(16, 185, 129, 0.14);
+    color: #047857;
+}
+
+:global([data-theme='dark']) .kpiTagInflow {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+}
+
+.kpiTagOutflow {
+    background: rgba(239, 68, 68, 0.12);
+    color: #b91c1c;
+}
+
+:global([data-theme='dark']) .kpiTagOutflow {
+    background: rgba(239, 68, 68, 0.18);
+    color: #f87171;
+}
+
 .kpiValue {
     font-family: var(--font-display), var(--font-sans), sans-serif;
     font-size: 1.65rem;
@@ -306,6 +326,14 @@
 
 :global([data-theme='dark']) .kpiValuePositive {
     color: #34d399;
+}
+
+.kpiValueNegative {
+    color: #b91c1c;
+}
+
+:global([data-theme='dark']) .kpiValueNegative {
+    color: #f87171;
 }
 
 .kpiSub {
@@ -1082,12 +1110,6 @@
 }
 
 /* Responsive Breakpoints */
-@media (max-width: 1340px) {
-    .kpiStrip {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-}
-
 @media (max-width: 1024px) {
     .container {
         padding: 1.25rem;
@@ -1131,6 +1153,11 @@
         font-size: 1rem;
     }
 
+    .kpiStrip {
+        grid-template-columns: 1fr;
+        gap: 0.85rem;
+    }
+
     .tableContainer {
         display: none;
     }
@@ -1159,11 +1186,6 @@
 
     .header {
         align-items: flex-start;
-    }
-
-    .kpiStrip {
-        grid-template-columns: 1fr;
-        gap: 0.85rem;
     }
 
     .kpiCard {

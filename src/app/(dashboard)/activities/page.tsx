@@ -176,6 +176,10 @@ export default function ActivitiesPage() {
         [filteredActivities, convert]
     );
 
+    const isFlowBalanced = Math.abs(summary.netCapitalFlow) < 0.005;
+    const isNetInflow = !isFlowBalanced && summary.netCapitalFlow > 0;
+    const isNetOutflow = !isFlowBalanced && summary.netCapitalFlow < 0;
+
     const activeFilterCount = useMemo(() => {
         let count = 0;
         if (range !== 'ALL') count++;
@@ -585,43 +589,62 @@ export default function ActivitiesPage() {
                 <div className={styles.kpiCard}>
                     <div className={styles.kpiHeader}>
                         <span className={styles.kpiLabel}>Filtered Entries</span>
-                        <span className={styles.kpiTag}>{summary.uniqueSymbolsCount} symbols</span>
+                        <span className={styles.kpiTag}>
+                            {summary.uniqueSymbolsCount}{' '}
+                            {summary.uniqueSymbolsCount === 1 ? 'symbol' : 'symbols'}
+                        </span>
                     </div>
                     <div className={styles.kpiValue}>{summary.totalCount}</div>
                     <div className={styles.kpiSub}>
-                        {activeFilterCount > 0
-                            ? `${activeFilterCount} active filter(s) applied`
-                            : 'Showing all recorded transactions'}
+                        {summary.buyCount} buys · {summary.sellCount} sells
+                        {activeFilterCount > 0 ? ` · ${activeFilterCount} filter(s)` : ''}
                     </div>
                 </div>
 
                 <div className={styles.kpiCard}>
                     <div className={styles.kpiHeader}>
-                        <span className={styles.kpiLabel}>Invested Capital</span>
+                        <span className={styles.kpiLabel}>
+                            {isFlowBalanced
+                                ? 'Net Capital Flow'
+                                : isNetInflow
+                                    ? 'Net Capital Inflow'
+                                    : 'Net Capital Outflow'}
+                        </span>
+                        <span
+                            className={`${styles.kpiTag} ${
+                                isNetInflow
+                                    ? styles.kpiTagInflow
+                                    : isNetOutflow
+                                        ? styles.kpiTagOutflow
+                                        : ''
+                            }`}
+                        >
+                            {isFlowBalanced ? 'Balanced' : isNetInflow ? 'Inflow' : 'Outflow'}
+                        </span>
+                    </div>
+                    <div
+                        className={`${styles.kpiValue} ${
+                            isNetInflow
+                                ? styles.kpiValuePositive
+                                : isNetOutflow
+                                    ? styles.kpiValueNegative
+                                    : ''
+                        }`}
+                    >
+                        {isFlowBalanced ? format(0) : format(Math.abs(summary.netCapitalFlow))}
+                    </div>
+                    <div className={styles.kpiSub}>
+                        In: {format(summary.capitalInflows)} · Out: {format(summary.capitalOutflows)}
+                    </div>
+                </div>
+
+                <div className={styles.kpiCard}>
+                    <div className={styles.kpiHeader}>
+                        <span className={styles.kpiLabel}>Brokerage Fees</span>
                         <span className={styles.kpiTag}>{currency}</span>
                     </div>
-                    <div className={styles.kpiValue}>{format(summary.totalInvested)}</div>
-                    <div className={styles.kpiSub}>Buys, additions &amp; transfers in</div>
-                </div>
-
-                <div className={styles.kpiCard}>
-                    <div className={styles.kpiHeader}>
-                        <span className={styles.kpiLabel}>Proceeds</span>
-                        <span className={styles.kpiTag}>{currency}</span>
-                    </div>
-                    <div className={styles.kpiValue}>{format(summary.totalProceeds)}</div>
-                    <div className={styles.kpiSub}>Sells, removals &amp; transfers out</div>
-                </div>
-
-                <div className={styles.kpiCard}>
-                    <div className={styles.kpiHeader}>
-                        <span className={styles.kpiLabel}>Dividends &amp; Interest</span>
-                        <span className={styles.kpiTag}>Income</span>
-                    </div>
-                    <div className={`${styles.kpiValue} ${summary.totalIncome > 0 ? styles.kpiValuePositive : ''}`}>
-                        {format(summary.totalIncome)}
-                    </div>
-                    <div className={styles.kpiSub}>Net cash distributions received</div>
+                    <div className={styles.kpiValue}>{format(summary.totalFees)}</div>
+                    <div className={styles.kpiSub}>Commissions &amp; transaction charges</div>
                 </div>
             </section>
 
