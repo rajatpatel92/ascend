@@ -12,7 +12,11 @@ export const metadata: Metadata = {
   description: 'Track your investments',
   manifest: '/manifest.json',
   icons: {
-    icon: '/favicon.png',
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/favicon.png', type: 'image/png', sizes: '512x512' },
+    ],
+    shortcut: '/favicon.ico',
     apple: '/favicon.png',
   },
   appleWebApp: {

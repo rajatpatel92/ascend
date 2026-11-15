@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import { signIn } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import styles from './page.module.css';
+import AscendLogo from '@/components/AscendLogo';
 
 export default function LoginPage() {
     const [username, setUsername] = useState('');
@@ -31,7 +31,7 @@ export default function LoginPage() {
                 router.push('/');
                 router.refresh();
             }
-        } catch (err) {
+        } catch {
             setError('An error occurred. Please try again.');
         }
     };
@@ -39,14 +39,8 @@ export default function LoginPage() {
     return (
         <div className={styles.container}>
             <div className={styles.card}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '2rem' }}>
-                    <div style={{ width: '300px', height: '150px', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: '#1e293b', borderRadius: '8px' }}>
-                        <img
-                            src="/logo.png"
-                            alt="Ascend"
-                            style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', transform: 'scale(1.3)' }}
-                        />
-                    </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '2rem', gap: '0.5rem' }}>
+                    <AscendLogo size="lg" subtitle="Portfolio Manager" />
                 </div>
                 <form onSubmit={handleSubmit} className={styles.form}>
                     <div className={styles.inputGroup}>

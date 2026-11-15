@@ -1,19 +1,17 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useSession } from 'next-auth/react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useSession, signOut } from 'next-auth/react';
 import styles from './Sidebar.module.css';
+import AscendLogo from './AscendLogo';
 import { useCurrency } from '@/context/CurrencyContext';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
 import { useTheme } from '@/context/ThemeContext';
 import {
     MdDashboard,
     MdFormatListBulleted,
-    MdShowChart,
     MdSettings,
     MdMenu,
     MdClose,
@@ -22,18 +20,41 @@ import {
     MdLogout,
     MdPieChart,
     MdCompareArrows,
-    MdExpandMore,
     MdCalculate,
     MdBarChart,
-    MdBalance
+    MdBalance,
+    MdChevronLeft,
+    MdChevronRight,
 } from 'react-icons/md';
-import { signOut } from 'next-auth/react';
 
 interface NavItem {
     name: string;
     href: string;
     icon: React.ReactNode;
-    children?: NavItem[];
+    exact?: boolean;
+}
+
+interface NavSection {
+    title: string;
+    items: NavItem[];
+}
+
+interface SessionUser {
+    id?: string;
+    name?: string | null;
+    username?: string | null;
+    email?: string | null;
+    role?: string;
+}
+
+const SIDEBAR_COLLAPSE_KEY = 'ascend_sidebar_collapsed';
+const emptySubscribe = () => () => {};
+
+function getInitials(displayName: string): string {
+    const parts = displayName.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return 'U';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
 export default function Sidebar() {
@@ -41,50 +62,66 @@ export default function Sidebar() {
     const { currency, setCurrency } = useCurrency();
     const { theme, toggleTheme } = useTheme();
     const [isOpen, setIsOpen] = useState(false);
-    const [mounted, setMounted] = useState(false);
-    const [expandedMenus, setExpandedMenus] = useState<string[]>([]);
+    const [isCollapsed, setIsCollapsed] = useState(false);
+    const mounted = useSyncExternalStore(emptySubscribe, () => true, () => false);
 
     useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setMounted(true);
+        try {
+            const saved = localStorage.getItem(SIDEBAR_COLLAPSE_KEY);
+            if (saved === 'true') {
+                // eslint-disable-next-line react-hooks/set-state-in-effect
+                setIsCollapsed(true);
+            }
+        } catch {
+            // Ignore localStorage access errors in restricted contexts
+        }
     }, []);
 
-    const { data: session } = useSession();
-    const role = (session?.user as any)?.role || 'VIEWER';
+    const toggleCollapse = () => {
+        setIsCollapsed((prev) => {
+            const next = !prev;
+            try {
+                localStorage.setItem(SIDEBAR_COLLAPSE_KEY, String(next));
+            } catch {
+                // Ignore localStorage errors
+            }
+            return next;
+        });
+    };
 
-    const navItems: NavItem[] = [
-        { name: 'Dashboard', href: '/', icon: <MdDashboard size={20} /> },
+    const { data: session } = useSession();
+    const user = (session?.user as SessionUser | undefined) ?? undefined;
+    const role = user?.role || 'VIEWER';
+    const displayName = user?.name || user?.username || user?.email || 'Account';
+    const initials = getInitials(displayName);
+    const roleLabel = role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+
+    const sections: NavSection[] = [
         {
-            name: 'Analysis',
-            href: '/analysis', // acts as ID for partial match
-            icon: <MdShowChart size={20} />,
-            children: [
-                { name: 'Allocation', href: '/analysis/allocation', icon: <MdPieChart size={20} /> },
-                { name: 'Comparison', href: '/analysis/comparison', icon: <MdCompareArrows size={20} /> },
-                { name: 'Evolution', href: '/analysis/evolution', icon: <MdBarChart size={20} /> },
-                { name: 'FIRE', href: '/analysis/fire', icon: <MdCalculate size={20} /> }
-            ]
+            title: 'Overview',
+            items: [
+                { name: 'Dashboard', href: '/', icon: <MdDashboard size={19} />, exact: true },
+                { name: 'Activities', href: '/activities', icon: <MdFormatListBulleted size={19} /> },
+            ],
         },
-        { name: 'Activities', href: '/activities', icon: <MdFormatListBulleted size={20} /> },
-        { name: 'Rebalancer', href: '/rebalancer', icon: <MdBalance size={20} /> },
+        {
+            title: 'Analytics',
+            items: [
+                { name: 'Allocation', href: '/analysis/allocation', icon: <MdPieChart size={19} /> },
+                { name: 'Evolution', href: '/analysis/evolution', icon: <MdBarChart size={19} /> },
+                { name: 'Comparison', href: '/analysis/comparison', icon: <MdCompareArrows size={19} /> },
+                { name: 'FIRE', href: '/analysis/fire', icon: <MdCalculate size={19} /> },
+                { name: 'Rebalancer', href: '/rebalancer', icon: <MdBalance size={19} /> },
+            ],
+        },
     ];
 
     if (role === 'ADMIN' || role === 'EDITOR') {
-        navItems.push({ name: 'Settings', href: '/settings', icon: <MdSettings size={20} /> });
-    }
-
-
-    // Auto-expand menu if active child
-    useEffect(() => {
-        navItems.forEach(item => {
-            if (item.children) {
-                const isChildActive = item.children.some(child => pathname === child.href || pathname?.startsWith(child.href));
-                if (isChildActive) {
-                    setExpandedMenus(prev => prev.includes(item.name) ? prev : [...prev, item.name]);
-                }
-            }
+        sections.push({
+            title: 'System',
+            items: [{ name: 'Settings', href: '/settings', icon: <MdSettings size={19} /> }],
         });
-    }, [pathname]);
+    }
 
     // Mark <main> inert and allow Escape dismissal while the mobile drawer is open
     useEffect(() => {
@@ -112,11 +149,7 @@ export default function Sidebar() {
         };
     }, [isOpen]);
 
-    const toggleMenu = (name: string) => {
-        setExpandedMenus(prev =>
-            prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
-        );
-    };
+    const collapsedDesktop = mounted && isCollapsed;
 
     return (
         <>
@@ -128,7 +161,7 @@ export default function Sidebar() {
                 aria-label="Open Menu"
                 aria-expanded={isOpen}
             >
-                <MdMenu size={24} />
+                <MdMenu size={22} />
             </button>
 
             {/* Overlay */}
@@ -140,101 +173,65 @@ export default function Sidebar() {
                 />
             )}
 
-            <aside className={`${styles.sidebar} ${isOpen ? styles.open : ''}`}>
-                <div className={styles.logo}>
-                    <div style={{ display: 'flex', alignItems: 'center', overflow: 'hidden', width: '200px', height: '80px' }}>
-                        <img
-                            src="/logo.png"
-                            alt="Ascend"
-                            style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', transform: 'scale(1.2)' }}
-                        />
-                    </div>
+            <aside
+                className={`${styles.sidebar} ${isOpen ? styles.open : ''} ${collapsedDesktop ? styles.collapsed : ''}`}
+            >
+                <div className={styles.brandHeader}>
+                    <Link
+                        href="/"
+                        className={styles.brandLink}
+                        onClick={() => setIsOpen(false)}
+                        aria-label="Ascend Dashboard"
+                        title="Ascend Portfolio"
+                    >
+                        <AscendLogo compact={collapsedDesktop} size="md" />
+                    </Link>
+
                     <button
+                        type="button"
+                        className={styles.collapseBtn}
+                        onClick={toggleCollapse}
+                        aria-label={collapsedDesktop ? 'Expand sidebar' : 'Collapse sidebar'}
+                        title={collapsedDesktop ? 'Expand sidebar' : 'Collapse sidebar'}
+                    >
+                        {collapsedDesktop ? <MdChevronRight size={18} /> : <MdChevronLeft size={18} />}
+                    </button>
+
+                    <button
+                        type="button"
                         className={styles.closeButton}
                         onClick={() => setIsOpen(false)}
                         aria-label="Close Menu"
                     >
-                        <MdClose size={24} />
+                        <MdClose size={22} />
                     </button>
                 </div>
 
-                <nav className={styles.nav}>
-                    {navItems.map((item) => {
-                        const isActive = pathname === item.href;
-                        // Removed auto-active logic for parent to reduce clutter
-                        const isChildActive = item.children?.some(c => pathname === c.href || pathname?.startsWith(c.href));
-                        const isExpanded = expandedMenus.includes(item.name);
+                <nav className={styles.nav} aria-label="Main navigation">
+                    {sections.map((section) => (
+                        <div key={section.title} className={styles.navSection}>
+                            <div className={styles.sectionTitle}>{section.title}</div>
+                            {section.items.map((item) => {
+                                const isActive = item.exact
+                                    ? pathname === item.href
+                                    : pathname === item.href || Boolean(pathname?.startsWith(`${item.href}/`));
 
-                        if (item.children) {
-                            return (
-                                <div key={item.name}>
-                                    <div
-                                        className={`${styles.link} ${isExpanded ? styles.expanded : ''}`} // Separate class for expanded state if needed, or just plain
-                                        onClick={() => toggleMenu(item.name)}
-                                        style={{
-                                            cursor: 'pointer',
-                                            justifyContent: 'space-between',
-                                            color: isChildActive ? 'var(--primary-color)' : undefined // Subtle highlight if child active
-                                        }}
+                                return (
+                                    <Link
+                                        key={item.href}
+                                        href={item.href}
+                                        className={`${styles.link} ${isActive ? styles.active : ''}`}
+                                        onClick={() => setIsOpen(false)}
+                                        title={collapsedDesktop ? item.name : undefined}
+                                        aria-current={isActive ? 'page' : undefined}
                                     >
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                                            <span className={styles.iconWrapper}>{item.icon}</span>
-                                            {item.name}
-                                        </div>
-                                        <motion.div
-                                            animate={{ rotate: isExpanded ? 180 : 0 }}
-                                            transition={{ duration: 0.2 }}
-                                        >
-                                            <MdExpandMore size={20} />
-                                        </motion.div>
-                                    </div>
-
-                                    <AnimatePresence initial={false}>
-                                        {isExpanded && (
-                                            <motion.div
-                                                initial="collapsed"
-                                                animate="open"
-                                                exit="collapsed"
-                                                variants={{
-                                                    open: { opacity: 1, height: "auto" },
-                                                    collapsed: { opacity: 0, height: 0 }
-                                                }}
-                                                transition={{ duration: 0.3, ease: 'easeInOut' }}
-                                                style={{ overflow: 'hidden' }}
-                                            >
-                                                <div style={{ paddingLeft: '1rem', display: 'flex', flexDirection: 'column', gap: '0.25rem', paddingBottom: '0.5rem' }}>
-                                                    {item.children.map(child => (
-                                                        <Link
-                                                            key={child.href}
-                                                            href={child.href}
-                                                            className={`${styles.link} ${pathname === child.href ? styles.active : ''}`}
-                                                            onClick={() => setIsOpen(false)}
-                                                            style={{ fontSize: '0.9rem' }}
-                                                        >
-                                                            <span className={styles.iconWrapper}>{child.icon}</span>
-                                                            {child.name}
-                                                        </Link>
-                                                    ))}
-                                                </div>
-                                            </motion.div>
-                                        )}
-                                    </AnimatePresence>
-                                </div>
-                            );
-                        }
-
-                        return (
-                            <Link
-                                key={item.href}
-                                href={item.href}
-                                className={`${styles.link} ${isActive ? styles.active : ''}`}
-                                onClick={() => setIsOpen(false)} // Close on navigation
-                            >
-                                <span className={styles.iconWrapper}>{item.icon}</span>
-                                {item.name}
-                            </Link>
-                        );
-                    })}
+                                        <span className={styles.iconWrapper}>{item.icon}</span>
+                                        <span className={styles.linkLabel}>{item.name}</span>
+                                    </Link>
+                                );
+                            })}
+                        </div>
+                    ))}
                 </nav>
 
                 <div className={styles.footer}>
@@ -242,46 +239,54 @@ export default function Sidebar() {
                         <select
                             className={styles.currencySelect}
                             value={currency}
-                            onChange={(e) => setCurrency(e.target.value as any)}
+                            onChange={(e) => setCurrency(e.target.value)}
+                            aria-label="Display Currency"
+                            title="Display Currency"
                         >
-                            {SUPPORTED_CURRENCIES.map(c => (
+                            {SUPPORTED_CURRENCIES.map((c) => (
                                 <option key={c.code} value={c.code}>
-                                    {c.code} ({c.symbol})
+                                    {collapsedDesktop ? c.code : `${c.code} (${c.symbol})`}
                                 </option>
                             ))}
                         </select>
 
-
-
                         <button
+                            type="button"
                             className={styles.themeToggle}
                             onClick={toggleTheme}
-                            aria-label="Toggle Dark Mode"
+                            aria-label={mounted && theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+                            title={mounted && theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
                         >
-                            {mounted && (theme === 'light' ? <MdDarkMode size={20} /> : <MdLightMode size={20} />)}
-                            {!mounted && <div style={{ width: 20, height: 20 }} />} {/* Placeholder to prevent layout shift */}
+                            {mounted ? (
+                                theme === 'light' ? <MdDarkMode size={18} /> : <MdLightMode size={18} />
+                            ) : (
+                                <div style={{ width: 18, height: 18 }} />
+                            )}
                         </button>
+                    </div>
+
+                    <div className={styles.userCard}>
+                        <div className={styles.userIdentity} title={`${displayName} (${roleLabel})`}>
+                            <div className={styles.avatar} aria-hidden="true">
+                                {initials}
+                            </div>
+                            <div className={styles.userMeta}>
+                                <span className={styles.userName}>{displayName}</span>
+                                <span className={styles.userRole}>{roleLabel}</span>
+                            </div>
+                        </div>
 
                         <button
+                            type="button"
                             className={styles.logoutButton}
                             onClick={async () => {
                                 await signOut({ redirect: false });
                                 window.location.href = '/login';
                             }}
                             aria-label="Logout"
-                            style={{
-                                background: 'none',
-                                border: 'none',
-                                color: 'var(--text-secondary)',
-                                cursor: 'pointer',
-                                padding: '0.5rem',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                transition: 'color 0.2s'
-                            }}
+                            title="Sign out"
                         >
-                            <MdLogout size={20} />
+                            <MdLogout size={18} />
                         </button>
                     </div>
                 </div>

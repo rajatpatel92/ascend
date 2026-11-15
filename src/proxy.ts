@@ -32,6 +32,6 @@ export default auth((req) => {
 
 export const config = {
     // https://nextjs.org/docs/app/building-your-application/routing/middleware#matcher
-    matcher: ['/((?!api|_next/static|_next/image|favicon.ico|logo.png|logo.jpg|sw.js|workbox-.*|manifest.json).*)'],
+    matcher: ['/((?!api|_next/static|_next/image|favicon.ico|favicon.svg|favicon.png|icon.png|icon-192.png|logo.png|logo.jpg|sw.js|workbox-.*|manifest.json).*)'],
 };
 

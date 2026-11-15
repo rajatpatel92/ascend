@@ -45,7 +45,7 @@
 .input {
     padding: 0.75rem;
     border-radius: 0.5rem;
-    border: 1px solid var(--border);
+    border: 1px solid var(--card-border);
     background: var(--background);
     color: var(--text-primary);
     font-size: 1rem;
@@ -54,7 +54,7 @@
 .input:focus {
     outline: none;
     border-color: var(--primary);
-    ring: 2px solid var(--primary-muted);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
 }
 
 .button {
@@ -74,7 +74,7 @@
 }
 
 .error {
-    color: var(--error);
+    color: var(--danger);
     font-size: 0.875rem;
     text-align: center;
     margin-top: 0.5rem;
