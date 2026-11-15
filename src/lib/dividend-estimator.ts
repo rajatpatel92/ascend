@@ -35,6 +35,7 @@ export interface PortfolioActivityLike {
     quantity: number;
     price: number;
     fee?: number | null;
+    accountId?: string | null;
 }
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
@@ -82,7 +83,7 @@ export function analyzeDividendHistory(
     if (!Array.isArray(rawEvents) || rawEvents.length === 0) return undefined;
 
     // Group same-day events (e.g., multi-account payouts on the same day) into distinct dates
-    const byDay = new Map<string, NormalizedDividendEvent>();
+    const byDay = new Map<string, { date: Date; sum: number; count: number }>();
     for (const raw of rawEvents) {
         const dateObj = new Date(raw?.date);
         const amount = Number(raw?.perShareAmount);
@@ -91,13 +92,16 @@ export function analyzeDividendHistory(
         const key = toUtcDateKey(dateObj);
         const existing = byDay.get(key);
         if (existing) {
-            existing.perShareAmount = (existing.perShareAmount + amount) / 2;
+            existing.sum += amount;
+            existing.count += 1;
         } else {
-            byDay.set(key, { date: dateObj, perShareAmount: amount });
+            byDay.set(key, { date: dateObj, sum: amount, count: 1 });
         }
     }
 
-    const validEvents = Array.from(byDay.values()).sort((a, b) => b.date.getTime() - a.date.getTime());
+    const validEvents: NormalizedDividendEvent[] = Array.from(byDay.values())
+        .map(item => ({ date: item.date, perShareAmount: item.sum / item.count }))
+        .sort((a, b) => b.date.getTime() - a.date.getTime());
     if (validEvents.length === 0) return undefined;
 
     const eventsLastYear = options.filterLastYearFromNow && options.now
@@ -108,8 +112,8 @@ export function analyzeDividendHistory(
         })()
         : validEvents;
 
-    // # Reason: A 365-day window can catch an extra edge-date payment (e.g., 13 monthly or 5 quarterly
-    // payouts) when ex-dates shift by a day or two YoY; trim the extra boundary payout for regular cadences.
+    // # Reason: A 365-day window can catch an extra edge-date payment (e.g., 13 monthly, 5 quarterly,
+    // 3 semi-annual, or 2 annual payouts) when ex-dates shift slightly YoY; trim the extra boundary payout.
     let annualEvents = eventsLastYear;
     if (eventsLastYear.length >= 2) {
         const intervals: number[] = [];
@@ -119,10 +123,16 @@ export function analyzeDividendHistory(
         }
         const isMonthlySeries = eventsLastYear.length === 13 && intervals.every(d => d >= 20 && d <= 40);
         const isQuarterlySeries = eventsLastYear.length === 5 && intervals.every(d => d >= 75 && d <= 105);
+        const isSemiAnnualSeries = eventsLastYear.length === 3 && intervals.every(d => d >= 150 && d <= 210);
+        const isAnnualSeries = eventsLastYear.length === 2 && intervals[0] >= 330;
         if (isMonthlySeries) {
             annualEvents = eventsLastYear.slice(0, 12);
         } else if (isQuarterlySeries) {
             annualEvents = eventsLastYear.slice(0, 4);
+        } else if (isSemiAnnualSeries) {
+            annualEvents = eventsLastYear.slice(0, 2);
+        } else if (isAnnualSeries) {
+            annualEvents = eventsLastYear.slice(0, 1);
         }
     }
 
@@ -190,13 +200,25 @@ export function analyzeDividendHistory(
 /**
  * Reconstructs split-adjusted per-share dividend events from recorded Ascend activities
  * for a single symbol (sorted ascending by date). Supports both per-share dividend entries
- * (`qty = shares, price = rate`) and lump-sum entries (`qty = 1, price = totalPayout`).
+ * (`qty = shares, price = rate`), lump-sum entries (`qty = 1, price = totalPayout`),
+ * and multi-account STOCK_SPLIT rows without ratio^N compounding.
  */
 export function buildPerShareDividendEventsFromActivities(
     activities: PortfolioActivityLike[],
     behaviorMap: Map<string, string>
 ): DividendEventPoint[] {
-    let runningShares = 0;
+    const sharesByAccount = new Map<string, number>();
+    const appliedCorporateSplits = new Set<string>();
+    const appliedAccountSplits = new Set<string>();
+
+    const getTotalRunningShares = (): number => {
+        let total = 0;
+        for (const qty of sharesByAccount.values()) {
+            total += qty;
+        }
+        return total;
+    };
+
     const perDay = new Map<string, {
         date: Date;
         totalNetCash: number;
@@ -206,11 +228,13 @@ export function buildPerShareDividendEventsFromActivities(
         hasExplicitShareQty: boolean;
     }>();
 
-    const eventsInOrder: { key: string; ratePerShare: number }[] = [];
+    const eventsInOrder: { date: Date; ratePerShare: number }[] = [];
 
     const flushDayIfPending = (key: string) => {
         const entry = perDay.get(key);
         if (!entry) return;
+        perDay.delete(key);
+
         let ratePerShare = 0;
         if (entry.hasExplicitShareQty && entry.weightedRateQty > QUANTITY_EPSILON) {
             ratePerShare = entry.weightedRateCash / entry.weightedRateQty;
@@ -218,7 +242,7 @@ export function buildPerShareDividendEventsFromActivities(
             ratePerShare = entry.totalNetCash / entry.sharesAtDay;
         }
         if (ratePerShare > 0) {
-            eventsInOrder.push({ key, ratePerShare });
+            eventsInOrder.push({ date: entry.date, ratePerShare });
         }
     };
 
@@ -236,34 +260,69 @@ export function buildPerShareDividendEventsFromActivities(
 
         const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
         const absQty = Math.abs(activity.quantity);
+        const accKey = activity.accountId || '__unassigned__';
 
         if (behavior === 'ADD') {
-            runningShares += absQty;
+            const nextQty = (sharesByAccount.get(accKey) || 0) + absQty;
+            sharesByAccount.set(accKey, nextQty);
         } else if (behavior === 'REMOVE') {
-            runningShares = Math.max(0, runningShares - absQty);
-            if (runningShares < 1e-9) runningShares = 0;
+            const nextQty = Math.max(0, (sharesByAccount.get(accKey) || 0) - absQty);
+            sharesByAccount.set(accKey, nextQty < 1e-9 ? 0 : nextQty);
         } else if (behavior === 'SPLIT') {
             if (currentDayKey) {
                 flushDayIfPending(currentDayKey);
                 currentDayKey = null;
             }
             if (absQty > 0) {
-                runningShares *= absQty;
-                // Adjust historical per-share payouts to current post-split share equivalents
-                for (const prev of eventsInOrder) {
-                    prev.ratePerShare /= absQty;
+                if (activity.accountId) {
+                    const splitAccKey = `${dayKey}:${activity.accountId}:${absQty}`;
+                    if (!appliedAccountSplits.has(splitAccKey)) {
+                        appliedAccountSplits.add(splitAccKey);
+                        const prevAccQty = sharesByAccount.get(activity.accountId) || 0;
+                        if (prevAccQty > 0) {
+                            sharesByAccount.set(activity.accountId, prevAccQty * absQty);
+                        }
+                    }
+                } else {
+                    const hasUnassigned = (sharesByAccount.get('__unassigned__') || 0) > 0;
+                    if (hasUnassigned) {
+                        const splitUnassignedKey = `${dayKey}:__unassigned__:${absQty}`;
+                        if (!appliedAccountSplits.has(splitUnassignedKey)) {
+                            appliedAccountSplits.add(splitUnassignedKey);
+                            sharesByAccount.set('__unassigned__', (sharesByAccount.get('__unassigned__') || 0) * absQty);
+                        }
+                    } else {
+                        const splitGlobalKey = `${dayKey}:__global__:${absQty}`;
+                        if (!appliedAccountSplits.has(splitGlobalKey)) {
+                            appliedAccountSplits.add(splitGlobalKey);
+                            for (const [k, qty] of sharesByAccount.entries()) {
+                                sharesByAccount.set(k, qty * absQty);
+                            }
+                        }
+                    }
+                }
+
+                // # Reason: SplitService writes one STOCK_SPLIT row per account; adjust historical
+                // per-share dividend rates only once per corporate split day+ratio.
+                const corporateSplitKey = `${dayKey}:${absQty}`;
+                if (!appliedCorporateSplits.has(corporateSplitKey)) {
+                    appliedCorporateSplits.add(corporateSplitKey);
+                    for (const prev of eventsInOrder) {
+                        prev.ratePerShare /= absQty;
+                    }
                 }
             }
         } else if (activity.type === 'DIVIDEND') {
             const netCash = Math.max(0, absQty * activity.price - (activity.fee || 0));
             if (netCash <= 0) continue;
 
+            const totalRunningShares = getTotalRunningShares();
             const isExplicitShareQty = Math.abs(absQty - 1) > QUANTITY_EPSILON;
             currentDayKey = dayKey;
             const existing = perDay.get(dayKey);
             if (existing) {
                 existing.totalNetCash += netCash;
-                existing.sharesAtDay = Math.max(existing.sharesAtDay, runningShares);
+                existing.sharesAtDay = Math.max(existing.sharesAtDay, totalRunningShares);
                 existing.weightedRateCash += netCash;
                 existing.weightedRateQty += absQty;
                 existing.hasExplicitShareQty = existing.hasExplicitShareQty || isExplicitShareQty;
@@ -271,7 +330,7 @@ export function buildPerShareDividendEventsFromActivities(
                 perDay.set(dayKey, {
                     date: dateObj,
                     totalNetCash: netCash,
-                    sharesAtDay: runningShares,
+                    sharesAtDay: totalRunningShares,
                     weightedRateCash: netCash,
                     weightedRateQty: absQty,
                     hasExplicitShareQty: isExplicitShareQty
@@ -285,7 +344,7 @@ export function buildPerShareDividendEventsFromActivities(
     }
 
     return eventsInOrder.map(ev => ({
-        date: perDay.get(ev.key)!.date,
+        date: ev.date,
         perShareAmount: ev.ratePerShare
     }));
 }

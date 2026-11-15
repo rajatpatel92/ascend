@@ -37,6 +37,8 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
 
     // Fetch rates when target currency changes
     useEffect(() => {
+        let cancelled = false;
+
         const fetchRates = async () => {
             setLoading(true);
             const newRates: Record<string, number> = { [currency]: 1 };
@@ -45,30 +47,42 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
             // Fetch in parallel using the cached utility
             await Promise.all(currenciesToFetch.map(async (from) => {
                 const rate = await getExchangeRate(from, currency);
-                if (rate !== null) {
+                if (rate !== null && Number.isFinite(rate) && rate > 0) {
                     newRates[from] = rate;
                 }
             }));
 
-            setRates(newRates);
-            setLoading(false);
+            if (!cancelled) {
+                setRates(newRates);
+                setLoading(false);
+            }
         };
 
         fetchRates();
+        return () => {
+            cancelled = true;
+        };
     }, [currency]);
 
     const convert = (amount: number, fromCurrency: string): number => {
-        if (fromCurrency === currency) return amount;
-        const rate = rates[fromCurrency];
-        return rate ? amount * rate : amount; // Fallback to 1:1 if rate missing
+        if (!Number.isFinite(amount)) return 0;
+        const normalizedFrom = (fromCurrency || '').trim().toUpperCase();
+        const normalizedTo = currency.trim().toUpperCase();
+        if (!normalizedFrom || normalizedFrom === normalizedTo) {
+            return Object.is(amount, -0) ? 0 : amount;
+        }
+        const rate = rates[normalizedFrom];
+        const result = rate && rate > 0 ? amount * rate : amount; // Fallback to 1:1 if rate missing
+        return Object.is(result, -0) ? 0 : result;
     };
 
     const format = (amount: number, options?: Intl.NumberFormatOptions): string => {
+        const safeAmount = !Number.isFinite(amount) || Math.abs(amount) < 1e-9 ? 0 : amount;
         return new Intl.NumberFormat('en-US', {
             style: 'currency',
             currency: currency,
             ...options
-        }).format(amount);
+        }).format(safeAmount);
     };
 
     return (

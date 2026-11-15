@@ -54,16 +54,17 @@ export async function GET(request: Request) {
                     try {
                         // 1. Force Refresh Price
                         await MarketDataService.getPrice(symbol, true);
-                        // 2. Force Refresh History
+                        // 2. Force Refresh Unadjusted & Split-Adjusted History
                         await MarketDataService.getDailyHistory(symbol, undefined, true);
+                        await MarketDataService.getHistoricalPrices(symbol, true);
 
                         stats.success++;
                         success = true;
                         log(`[Context] ${symbol} updated successfully.`);
                         // Small delay
                         await new Promise(r => setTimeout(r, 1000));
-                    } catch (e: any) {
-                        const msg = e.message || '';
+                    } catch (e: unknown) {
+                        const msg = e instanceof Error ? e.message : String(e || '');
                         if (msg.includes('Rate limit') || msg.includes('429')) {
                             log(`[Warn] Rate limit for ${symbol}. Pausing...`);
                             let waitTime = 60;
@@ -84,8 +85,9 @@ export async function GET(request: Request) {
 
             log(`[Done] Refresh Complete. Success: ${stats.success}, Failed: ${stats.failed}`);
             return stats;
-        } catch (error: any) {
-            log(`[Critical] Failure: ${error.message}`);
+        } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error || 'Unknown error');
+            log(`[Critical] Failure: ${msg}`);
             throw error;
         }
     };

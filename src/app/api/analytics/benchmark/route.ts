@@ -15,32 +15,6 @@ export async function POST(req: Request) {
         const { timeRange, benchmarkSymbol, filters, currency } = body;
         const targetCurrency = typeof currency === 'string' && currency.trim() ? currency : 'CAD';
 
-        // Determine Start Date using UTC midnight so ISO date partitioning stays exact
-        const now = new Date();
-        let startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-        if (timeRange === 'ALL') {
-            const firstActivity = await prisma.activity.findFirst({
-                orderBy: { date: 'asc' },
-                select: { date: true }
-            });
-            if (firstActivity) {
-                startDate = new Date(firstActivity.date);
-            } else {
-                startDate.setUTCFullYear(startDate.getUTCFullYear() - 1); // Default if no data
-            }
-        } else {
-            switch (timeRange) {
-                case '1M': startDate.setUTCMonth(startDate.getUTCMonth() - 1); break;
-                case '6M': startDate.setUTCMonth(startDate.getUTCMonth() - 6); break;
-                case 'YTD': startDate.setUTCMonth(0, 1); break;
-                case '1Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 1); break;
-                case '2Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 2); break;
-                case '3Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 3); break;
-                case '5Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 5); break;
-                default: startDate.setUTCFullYear(startDate.getUTCFullYear() - 1);
-            }
-        }
-
         // Build Filter Query
         const whereClause: Record<string, unknown> = {
             investment: { not: undefined } // Ensure linked investment
@@ -58,6 +32,34 @@ export async function POST(req: Request) {
                 whereClause.investment = {
                     type: { in: filters.investmentTypes }
                 };
+            }
+        }
+
+        // Determine Start Date using UTC midnight so ISO date partitioning stays exact
+        const now = new Date();
+        let startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        if (timeRange === 'ALL') {
+            const firstActivity = await prisma.activity.findFirst({
+                where: whereClause,
+                orderBy: { date: 'asc' },
+                select: { date: true }
+            });
+            if (firstActivity) {
+                const d = new Date(firstActivity.date);
+                startDate = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+            } else {
+                startDate.setUTCFullYear(startDate.getUTCFullYear() - 1); // Default if no data
+            }
+        } else {
+            switch (timeRange) {
+                case '1M': startDate.setUTCMonth(startDate.getUTCMonth() - 1); break;
+                case '6M': startDate.setUTCMonth(startDate.getUTCMonth() - 6); break;
+                case 'YTD': startDate.setUTCMonth(0, 1); break;
+                case '1Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 1); break;
+                case '2Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 2); break;
+                case '3Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 3); break;
+                case '5Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 5); break;
+                default: startDate.setUTCFullYear(startDate.getUTCFullYear() - 1);
             }
         }
 

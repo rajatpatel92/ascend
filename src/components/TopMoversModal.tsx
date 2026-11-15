@@ -100,24 +100,22 @@ export default function TopMoversModal({
             })
             .map(c => {
                 const changeObj = getPeriodChange(c, period);
-                const hasStaleUsdRate = c.conversionRate === 1 && c.currency && c.currency !== 'USD' && typeof c.rateToUSD === 'number' && c.rateToUSD !== 1;
-                const hasConversionRate = c.conversionRate !== undefined;
-                const effectiveRate = hasStaleUsdRate ? c.rateToUSD : (c.conversionRate ?? 1);
+                const hasConversionRate = typeof c.conversionRate === 'number' && Number.isFinite(c.conversionRate);
 
-                const priceTarget = hasConversionRate ? c.price * effectiveRate : convert(c.price, c.currency);
-                const avgPriceTarget = hasConversionRate ? c.avgPrice * effectiveRate : convert(c.avgPrice, c.currency);
+                const priceTarget = hasConversionRate ? c.price * c.conversionRate : convert(c.price, c.currency);
+                const avgPriceTarget = hasConversionRate ? c.avgPrice * c.conversionRate : convert(c.avgPrice, c.currency);
                 const impactAbsTarget =
-                    period === '1D' && changeObj.absoluteTarget !== undefined && !hasStaleUsdRate
+                    period === '1D' && typeof changeObj.absoluteTarget === 'number'
                         ? changeObj.absoluteTarget
                         : hasConversionRate
-                            ? changeObj.absolute * effectiveRate
+                            ? changeObj.absolute * c.conversionRate
                             : convert(changeObj.absolute, c.currency);
 
                 const impactPercent = portfolioTotalValue > 0 ? (impactAbsTarget / baseVal) * 100 : 0;
 
                 const denom = 1 + (changeObj.percent / 100);
-                const prevPriceTarget = denom !== 0 ? priceTarget / denom : priceTarget;
-                const priceChangePerShareTarget = priceTarget - prevPriceTarget;
+                const prevPriceTarget = denom > 0 ? priceTarget / denom : priceTarget;
+                const priceChangePerShareTarget = denom > 0 ? priceTarget - prevPriceTarget : 0;
 
                 return {
                     ...c,

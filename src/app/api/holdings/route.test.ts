@@ -218,4 +218,26 @@ test('GET /api/holdings', async (t) => {
         const splitData = await splitRes.json();
         assert.strictEqual(splitData.quantity, 6);
     });
+
+    await t.test('does not compound multi-account STOCK_SPLIT rows into ratio^N shares', async () => {
+        prismaDelegate.currentMock = {
+            activity: {
+                findMany: async () => [
+                    { type: 'BUY', accountId: 'acc-1', date: new Date('2024-01-01T00:00:00Z'), quantity: 5 },
+                    { type: 'BUY', accountId: 'acc-2', date: new Date('2024-01-01T00:00:00Z'), quantity: 3 },
+                    { type: 'STOCK_SPLIT', accountId: 'acc-1', date: new Date('2024-06-10T00:00:00Z'), quantity: 10 },
+                    { type: 'STOCK_SPLIT', accountId: 'acc-2', date: new Date('2024-06-10T00:00:00Z'), quantity: 10 }
+                ]
+            },
+            activityType: {
+                findMany: async () => []
+            }
+        };
+
+        const res = await GET(new Request('http://localhost/api/holdings?symbol=NVDA'));
+        assert.strictEqual(res.status, 200);
+        const data = await res.json();
+        // (5 + 3) * 10 = 80 shares (not 8 * 100 = 800)
+        assert.strictEqual(data.quantity, 80);
+    });
 });

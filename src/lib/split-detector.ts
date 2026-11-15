@@ -66,7 +66,15 @@ export class SplitService {
 
             for (const split of splits) {
                 const splitDate = new Date(split.date);
-                const ratio = split.numerator / split.denominator;
+                const numerator = Number(split?.numerator);
+                const denominator = Number(split?.denominator);
+                if (Number.isNaN(splitDate.getTime()) || !Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+                    continue;
+                }
+                const ratio = numerator / denominator;
+                if (!Number.isFinite(ratio) || ratio <= 0) {
+                    continue;
+                }
                 const now = new Date();
 
                 // 1. Ignore Future Splits
@@ -82,30 +90,40 @@ export class SplitService {
                     continue;
                 }
 
-                // Check if already exists in DB (approximate match on date)
-                const existing = inv.activities.find(a =>
-                    a.type === 'STOCK_SPLIT' &&
+                // Existing split rows matching this split date (supports both STOCK_SPLIT and legacy SPLIT types)
+                const existingSameDateSplits = inv.activities.filter(a =>
+                    (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') &&
                     Math.abs(new Date(a.date).getTime() - splitDate.getTime()) < 24 * 60 * 60 * 1000
                 );
 
-                if (existing) continue;
-
-                console.log(`[SplitService] Found Missing Split for ${symbol}: ${splitDate.toISOString().split('T')[0]} (Ratio ${ratio})`);
+                // If a global/unassigned split exists alongside no unassigned-only splits or all accounts already have a split, skip
+                const hasGlobalSplit = existingSameDateSplits.some(a => !a.accountId);
+                const existingSplitAccountIds = new Set(
+                    existingSameDateSplits.map(a => a.accountId).filter((id): id is string => Boolean(id))
+                );
 
                 // Identify affected accounts (those with activity BEFORE split)
                 const relevantAccounts = new Set<string>();
                 let hasUnassigned = false; // "Unassigned" account
 
                 inv.activities.forEach(a => {
+                    if (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') return;
                     if (new Date(a.date) < splitDate) {
-                        if (a.accountId) relevantAccounts.add(a.accountId);
-                        else hasUnassigned = true;
+                        if (a.accountId) {
+                            if (!existingSplitAccountIds.has(a.accountId) && !hasGlobalSplit) {
+                                relevantAccounts.add(a.accountId);
+                            }
+                        } else if (!hasGlobalSplit) {
+                            hasUnassigned = true;
+                        }
                     }
                 });
 
                 if (relevantAccounts.size === 0 && !hasUnassigned) {
                     continue;
                 }
+
+                console.log(`[SplitService] Found Missing Split for ${symbol}: ${splitDate.toISOString().split('T')[0]} (Ratio ${ratio})`);
 
                 // Prepare activities for batch insertion
                 const activitiesToCreate = SplitService.prepareSplitActivities(

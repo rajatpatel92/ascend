@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
-import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
 
 export async function POST(request: Request) {
@@ -15,7 +14,9 @@ export async function POST(request: Request) {
         const body = await request.json();
         const { symbol, type, date, quantity, price, fee, platformId, accountId, currency } = body;
 
-        if (!symbol || !type || !date || !quantity || !price || !platformId || !currency) {
+        const parsedQty = Number(quantity);
+        const parsedPrice = Number(price);
+        if (!symbol || !type || !date || !platformId || !currency || !Number.isFinite(parsedQty) || parsedQty <= 0 || price === undefined || price === null || price === '' || !Number.isFinite(parsedPrice) || parsedPrice < 0) {
             return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
         }
 

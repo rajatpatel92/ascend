@@ -32,18 +32,28 @@ export async function getHoldingsAtDate(symbol: string, date: Date): Promise<Rec
 
     for (const activity of activities) {
         const accId = activity.accountId || 'unknown';
-        if (!holdings[accId]) holdings[accId] = 0;
+        const absQty = Math.abs(Number(activity.quantity) || 0);
 
         if (activity.type === 'BUY' || activity.type === 'TRANSFER_IN') {
-            holdings[accId] += activity.quantity;
+            holdings[accId] = (holdings[accId] || 0) + absQty;
         } else if (activity.type === 'SELL' || activity.type === 'TRANSFER_OUT') {
-            holdings[accId] -= Math.abs(activity.quantity);
-        } else if (activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') {
-            holdings[accId] *= activity.quantity;
+            holdings[accId] = (holdings[accId] || 0) - absQty;
+            if (holdings[accId] < 1e-9) holdings[accId] = 0;
+        } else if ((activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') && absQty > 0) {
+            if (activity.accountId) {
+                if (holdings[activity.accountId]) {
+                    holdings[activity.accountId] *= absQty;
+                }
+            } else if (holdings['unknown']) {
+                holdings['unknown'] *= absQty;
+            } else {
+                for (const key of Object.keys(holdings)) {
+                    holdings[key] *= absQty;
+                }
+            }
         }
 
-        // Negative Holdings Protection
-        if (holdings[accId] < 1e-9) holdings[accId] = 0;
+        if (holdings[accId] !== undefined && holdings[accId] < 1e-9) holdings[accId] = 0;
     }
 
     // Filter out zero, negative, or floating-point dust holdings
@@ -55,15 +65,27 @@ export async function getHoldingsAtDate(symbol: string, date: Date): Promise<Rec
     return result;
 }
 
+export interface HoldingActivityRecord {
+    date: Date | string;
+    type: string;
+    quantity: number | string;
+    accountId?: string | null;
+}
+
 /**
  * Calculates holdings from a provided list of activities up to a specific date.
  * Useful for avoiding N+1 queries when activities are already loaded.
  *
  * @param activities List of activities (should be pre-sorted by date asc for correct results)
  * @param date The date to check holdings for (inclusive)
+ * @param behaviorMap Optional activity behavior map for custom activity types
  * @returns A map of accountId -> quantity
  */
-export function calculateHoldingsFromActivities(activities: any[], date: Date): Record<string, number> {
+export function calculateHoldingsFromActivities(
+    activities: HoldingActivityRecord[],
+    date: Date,
+    behaviorMap?: Map<string, string>
+): Record<string, number> {
     const holdings: Record<string, number> = {};
 
     for (const activity of activities) {
@@ -71,17 +93,29 @@ export function calculateHoldingsFromActivities(activities: any[], date: Date): 
         if (activityDate > date) continue;
 
         const accId = activity.accountId || 'unknown';
-        if (!holdings[accId]) holdings[accId] = 0;
+        const absQty = Math.abs(Number(activity.quantity) || 0);
+        const behavior = behaviorMap?.get(activity.type);
 
-        if (activity.type === 'BUY' || activity.type === 'TRANSFER_IN') {
-            holdings[accId] += activity.quantity;
-        } else if (activity.type === 'SELL' || activity.type === 'TRANSFER_OUT') {
-            holdings[accId] -= Math.abs(activity.quantity);
-        } else if (activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') {
-            holdings[accId] *= activity.quantity;
+        if (behavior === 'ADD' || activity.type === 'BUY' || activity.type === 'TRANSFER_IN') {
+            holdings[accId] = (holdings[accId] || 0) + absQty;
+        } else if (behavior === 'REMOVE' || activity.type === 'SELL' || activity.type === 'TRANSFER_OUT') {
+            holdings[accId] = (holdings[accId] || 0) - absQty;
+            if (holdings[accId] < 1e-9) holdings[accId] = 0;
+        } else if ((behavior === 'SPLIT' || activity.type === 'SPLIT' || activity.type === 'STOCK_SPLIT') && absQty > 0) {
+            if (activity.accountId) {
+                if (holdings[activity.accountId]) {
+                    holdings[activity.accountId] *= absQty;
+                }
+            } else if (holdings['unknown']) {
+                holdings['unknown'] *= absQty;
+            } else {
+                for (const key of Object.keys(holdings)) {
+                    holdings[key] *= absQty;
+                }
+            }
         }
 
-        if (holdings[accId] < 1e-9) holdings[accId] = 0;
+        if (holdings[accId] !== undefined && holdings[accId] < 1e-9) holdings[accId] = 0;
     }
 
     const result: Record<string, number> = {};
@@ -100,7 +134,7 @@ export function calculateHoldingsFromActivities(activities: any[], date: Date): 
  * @param amount 
  * @returns The matching activity if found, null otherwise
  */
-export async function findDividendMatch(symbol: string, date: Date, _amount: number, accountId?: string): Promise<any | null> {
+export async function findDividendMatch(symbol: string, date: Date, _amount: number, accountId?: string): Promise<unknown | null> {
     const start = new Date(date);
     start.setDate(start.getDate() - 10);
 

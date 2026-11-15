@@ -6,6 +6,10 @@ export interface HistoryPointInput {
     marketValue?: number;
     dividend?: number;
     unreinvestedDividend?: number;
+    priorValue?: number;
+    priorInvested?: number;
+    priorNav?: number;
+    priorUnreinvestedDividend?: number;
 }
 
 export interface ChartDataPoint {
@@ -56,6 +60,7 @@ export function computePerformanceChartMetrics(params: {
 
     const totalInvested = data.reduce((sum, point) => sum + point.invested, 0);
     const avgInv = data.length > 0 ? totalInvested / data.length : 0;
+    const hasPriorNav = data[0]?.priorNav !== undefined && Number.isFinite(data[0].priorNav) && (data[0].priorNav || 0) > 0;
 
     const points: ChartDataPoint[] = data.map(point => {
         const value = point.value;
@@ -63,7 +68,7 @@ export function computePerformanceChartMetrics(params: {
         let returnPercent = 0;
 
         if (point.nav !== undefined) {
-            const startNav = data[0]?.nav || 100;
+            const startNav = hasPriorNav ? (data[0].priorNav as number) : (data[0]?.nav || 100);
             if (startNav > 0) {
                 returnPercent = ((point.nav / startNav) - 1) * 100;
             }
@@ -95,6 +100,7 @@ export function computePerformanceChartMetrics(params: {
     if (points.length > 0) {
         const firstPoint = points[0];
         const lastPoint = points[points.length - 1];
+        const firstRaw = data[0];
 
         if (
             range === '1D' &&
@@ -109,12 +115,12 @@ export function computePerformanceChartMetrics(params: {
             retChange = lastPoint.value;
             valChange = (lastPoint.marketValue || 0) - (lastPoint.invested || 0) + (lastPoint.unreinvestedDividend || 0);
         } else {
-            retChange = lastPoint.value - firstPoint.value;
-            const startVal = firstPoint.marketValue || 0;
+            retChange = hasPriorNav ? lastPoint.value : (lastPoint.value - firstPoint.value);
+            const startVal = firstRaw.priorValue ?? (firstPoint.marketValue || 0);
             const endVal = lastPoint.marketValue || 0;
-            const startInv = firstPoint.invested || 0;
+            const startInv = firstRaw.priorInvested ?? (firstPoint.invested || 0);
             const endInv = lastPoint.invested || 0;
-            const startDiv = firstPoint.unreinvestedDividend || 0;
+            const startDiv = firstRaw.priorUnreinvestedDividend ?? (firstPoint.unreinvestedDividend || 0);
             const endDiv = lastPoint.unreinvestedDividend || 0;
             valChange = (endVal - startVal) - (endInv - startInv) + (endDiv - startDiv);
         }
@@ -122,7 +128,8 @@ export function computePerformanceChartMetrics(params: {
         if (range === 'ALL' || range === 'MAX') {
             contrib = lastPoint.invested;
         } else {
-            contrib = lastPoint.invested - firstPoint.invested;
+            const baseInv = firstRaw.priorInvested ?? firstPoint.invested;
+            contrib = lastPoint.invested - baseInv;
         }
 
         const diffDays = Math.ceil(Math.abs(lastPoint.dateNumber - firstPoint.dateNumber) / (1000 * 60 * 60 * 24));

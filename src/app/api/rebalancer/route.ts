@@ -89,6 +89,7 @@ export async function GET(request: NextRequest) {
             platformName: string;
             quantity: number;
         }>>();
+        const appliedPerAccountSplits = new Set<string>();
 
         for (const a of activities) {
             const sym = a.investment.symbol;
@@ -100,6 +101,38 @@ export async function GET(request: NextRequest) {
             if (!symAccounts) {
                 symAccounts = new Map();
                 perAccountMap.set(sym, symAccounts);
+            }
+
+            const absQty = Math.abs(a.quantity);
+            if (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') {
+                if (Number.isFinite(absQty) && absQty > 0) {
+                    const dayKey = a.date ? new Date(a.date).toISOString().split('T')[0] : 'undated';
+                    const entries = Array.from(symAccounts.entries());
+                    if (a.accountId) {
+                        for (const [key, entry] of entries) {
+                            if (entry.accountId === a.accountId && entry.quantity > 0) {
+                                const dedupKey = `${dayKey}:${sym}:${key}:${absQty}`;
+                                if (!appliedPerAccountSplits.has(dedupKey)) {
+                                    appliedPerAccountSplits.add(dedupKey);
+                                    entry.quantity *= absQty;
+                                }
+                            }
+                        }
+                    } else {
+                        const hasUnassigned = entries.some(([, entry]) => !entry.accountId && entry.quantity > 0);
+                        for (const [key, entry] of entries) {
+                            if (hasUnassigned && entry.accountId) continue;
+                            if (entry.quantity > 0) {
+                                const dedupKey = `${dayKey}:${sym}:${key}:${absQty}`;
+                                if (!appliedPerAccountSplits.has(dedupKey)) {
+                                    appliedPerAccountSplits.add(dedupKey);
+                                    entry.quantity *= absQty;
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
             }
 
             const accountName = a.account?.name || 'Unassigned';
@@ -119,12 +152,11 @@ export async function GET(request: NextRequest) {
                 symAccounts.set(accKey, accEntry);
             }
 
-            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
-                accEntry.quantity += a.quantity;
-            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
-                accEntry.quantity = Math.max(0, accEntry.quantity - Math.abs(a.quantity));
-            } else if (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') {
-                accEntry.quantity = Math.max(0, accEntry.quantity * a.quantity);
+            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN' || a.type === 'ADD') {
+                accEntry.quantity += absQty;
+            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT' || a.type === 'REMOVE') {
+                accEntry.quantity = Math.max(0, accEntry.quantity - absQty);
+                if (accEntry.quantity < 1e-9) accEntry.quantity = 0;
             }
         }
 
@@ -138,8 +170,8 @@ export async function GET(request: NextRequest) {
             invRecords.forEach(inv => symbolTypeMap.set(inv.symbol, inv.type));
         }
 
-        // 3. Fetch Prices & Evaluate Portfolio
-        let totalValueUSD = 0;
+        // 3. Fetch Prices & Evaluate Portfolio directly in targetCurrency without same-currency round-trip drift
+        const normalizedTargetCurrency = targetCurrency.toUpperCase();
         const holdingDetails = [];
 
         const allSymbolsSet = new Set<string>();
@@ -150,47 +182,58 @@ export async function GET(request: NextRequest) {
         const prices = await Promise.all(allSymbols.map(async sym => {
             try {
                 const marketData = await MarketDataService.getPrice(sym);
-                return { symbol: sym, price: marketData?.price || 0, currency: marketData?.currency || 'USD' };
+                return { symbol: sym, price: marketData?.price || 0, currency: (marketData?.currency || 'USD').toUpperCase() };
             } catch {
                 return { symbol: sym, price: 0, currency: 'USD' };
             }
         }));
 
-        const uniqueCurrencies = Array.from(new Set(prices.map(p => p.currency).filter(c => c !== 'USD')));
-        const exchangeRates = await Promise.all(uniqueCurrencies.map(async (currency) => {
-            const r = await MarketDataService.getExchangeRate(currency, 'USD');
-            return { currency, rate: r || 1 };
-        }));
-        const rateMap = new Map(exchangeRates.map(er => [er.currency, er.rate]));
+        const uniqueCurrencies = Array.from(new Set(prices.map(p => p.currency).filter(c => c !== normalizedTargetCurrency)));
+        const needsUsdTarget = uniqueCurrencies.some(c => c !== 'USD') && normalizedTargetCurrency !== 'USD';
+        const usdToTargetRate = needsUsdTarget
+            ? ((await MarketDataService.getExchangeRate('USD', normalizedTargetCurrency)) || 1)
+            : 1;
 
+        const rateToTargetMap = new Map<string, number>();
+        await Promise.all(uniqueCurrencies.map(async (assetCurr) => {
+            if (assetCurr === 'USD') {
+                const r = await MarketDataService.getExchangeRate('USD', normalizedTargetCurrency);
+                rateToTargetMap.set(assetCurr, r || 1);
+            } else if (normalizedTargetCurrency === 'USD') {
+                const r = await MarketDataService.getExchangeRate(assetCurr, 'USD');
+                rateToTargetMap.set(assetCurr, r || 1);
+            } else {
+                const toUsd = await MarketDataService.getExchangeRate(assetCurr, 'USD');
+                if (toUsd && usdToTargetRate) {
+                    rateToTargetMap.set(assetCurr, toUsd * usdToTargetRate);
+                } else {
+                    const direct = await MarketDataService.getExchangeRate(assetCurr, normalizedTargetCurrency);
+                    rateToTargetMap.set(assetCurr, direct || 1);
+                }
+            }
+        }));
+
+        let totalValue = 0;
         for (const pd of prices) {
             const qty = holdings[pd.symbol] || 0;
-            const rateToUSD = pd.currency === 'USD' ? 1 : (rateMap.get(pd.currency) || 1);
-
-            const valueUSD = qty * pd.price * rateToUSD;
-            totalValueUSD += valueUSD;
+            const rateToTarget = pd.currency === normalizedTargetCurrency ? 1 : (rateToTargetMap.get(pd.currency) || 1);
+            const priceInTargetCurrency = pd.price * rateToTarget;
+            const currentValue = qty * priceInTargetCurrency;
+            totalValue += currentValue;
 
             holdingDetails.push({
                 symbol: pd.symbol,
                 quantity: qty,
                 price: pd.price,
                 assetCurrency: pd.currency,
-                valueUSD,
-                rateToUSD
+                priceInTargetCurrency,
+                currentValue
             });
         }
 
-        let finalRate = 1;
-        if (targetCurrency !== 'USD') {
-            const r = await MarketDataService.getExchangeRate('USD', targetCurrency);
-            if (r) finalRate = r;
-        }
-
-        const totalValue = totalValueUSD * finalRate;
-
         // 4. Calculate Drift & Account Breakdown
         const rebalanceData = holdingDetails.map(h => {
-            const currentValue = h.valueUSD * finalRate;
+            const currentValue = h.currentValue;
             const currentPercent = totalValue > 0 ? (currentValue / totalValue) * 100 : 0;
             const target = targetMap.get(h.symbol);
             const targetPercent = target ? target.targetPercentage : 0;
@@ -209,8 +252,7 @@ export async function GET(request: NextRequest) {
             let actionText = 'HOLD';
             let actionShares = 0;
 
-            const nativeRateContext = h.rateToUSD * finalRate;
-            const priceInTargetCurrency = h.price * nativeRateContext;
+            const priceInTargetCurrency = h.priceInTargetCurrency;
 
             if (Math.abs(driftValue) > 0.01 && priceInTargetCurrency > 0) {
                 actionShares = Math.abs(driftValue) / priceInTargetCurrency;
@@ -249,6 +291,7 @@ export async function GET(request: NextRequest) {
                 actionShares,
                 assetPrice: h.price,
                 assetCurrency: h.assetCurrency,
+                priceInTargetCurrency,
                 accounts
             };
         });

@@ -12,9 +12,9 @@ export async function POST(req: Request) {
     }
 
     try {
-        const { filters, range, currency, mode } = await req.json();
+        const { filters, currency, mode } = await req.json();
         // Build base query
-        const where: any = {};
+        const where: Record<string, unknown> = {};
 
         // Apply Filters if present
         if (filters?.accountIds?.length > 0) {
@@ -58,7 +58,7 @@ export async function POST(req: Request) {
         console.log(`[Evolution API] Total Activities: ${activities.length}`);
         console.log(`[Evolution API] Filtered Activities: ${filteredActivities.length}`);
 
-        const response: any = {};
+        const response: Record<string, unknown> = {};
 
         // Mode Handling
         // 'flows': Contributions and Dividends (Fast)
@@ -82,7 +82,7 @@ export async function POST(req: Request) {
                 startDate.setFullYear(startDate.getFullYear() - 1);
             }
 
-            const { portfolio, debug } = await PortfolioAnalytics.calculateComparisonHistory(
+            const { portfolio } = await PortfolioAnalytics.calculateComparisonHistory(
                 filteredActivities,
                 '^GSPC', // Dummy
                 startDate, // Calc from inception (or first activity) for accuracy
@@ -96,14 +96,12 @@ export async function POST(req: Request) {
                 return {
                     date: p.date,
                     value: p.marketValue,
-                    invested: cumulativeInvested
+                    invested: cumulativeInvested,
+                    dividend: p.dividend || 0,
+                    unreinvestedDividend: p.unreinvestedDividends ?? 0
                 };
             });
             response.evolution = evolutionWithInvested;
-            if (mode === 'flows') {
-                const keysM = response.dividends.month.map((d: any) => d.date);
-                console.log(`[DiffDebug] Dividend Month Keys: ${keysM.slice(-3)}`);
-            }
         }
 
         return NextResponse.json(response);

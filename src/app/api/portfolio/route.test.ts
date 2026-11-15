@@ -594,4 +594,84 @@ test('GET /api/portfolio', async (t) => {
         const zmmkConstituent = data.constituents.find((c: { symbol: string }) => c.symbol === 'ZMMK.TO');
         assert.ok(Math.abs(zmmkConstituent.dividendYield - (1.8 / 50)) < 1e-6);
     });
+
+    await t.test('applies multi-account STOCK_SPLIT rows once per account without ratio^N compounding or phantom Unknown platforms', async () => {
+        mockGlobals.__mockPrisma.activityType.findMany = async () => [
+            { name: 'BUY', behavior: 'ADD' },
+            { name: 'STOCK_SPLIT', behavior: 'SPLIT' }
+        ];
+        mockGlobals.__mockPrisma.activity.findMany = async () => [
+            {
+                id: 'buy-1',
+                type: 'BUY',
+                date: new Date('2024-01-10T00:00:00Z'),
+                quantity: 5,
+                price: 500,
+                fee: 0,
+                currency: 'USD',
+                accountId: 'acc-1',
+                investment: { symbol: 'NVDA', name: 'NVIDIA', type: 'EQUITY' },
+                platform: { name: 'WealthSimple' },
+                account: { id: 'acc-1', name: 'Rajat', type: 'TFSA' }
+            },
+            {
+                id: 'buy-2',
+                type: 'BUY',
+                date: new Date('2024-02-10T00:00:00Z'),
+                quantity: 3,
+                price: 500,
+                fee: 0,
+                currency: 'USD',
+                accountId: 'acc-2',
+                investment: { symbol: 'NVDA', name: 'NVIDIA', type: 'EQUITY' },
+                platform: { name: 'Questrade' },
+                account: { id: 'acc-2', name: 'Rajat', type: 'RRSP' }
+            },
+            // SplitService inserts one STOCK_SPLIT per account with platformId: null
+            {
+                id: 'split-1',
+                type: 'STOCK_SPLIT',
+                date: new Date('2024-06-10T00:00:00Z'),
+                quantity: 10,
+                price: 0,
+                fee: 0,
+                currency: 'USD',
+                accountId: 'acc-1',
+                investment: { symbol: 'NVDA', name: 'NVIDIA', type: 'EQUITY' },
+                platform: null,
+                account: { id: 'acc-1', name: 'Rajat', type: 'TFSA' }
+            },
+            {
+                id: 'split-2',
+                type: 'STOCK_SPLIT',
+                date: new Date('2024-06-10T00:00:00Z'),
+                quantity: 10,
+                price: 0,
+                fee: 0,
+                currency: 'USD',
+                accountId: 'acc-2',
+                investment: { symbol: 'NVDA', name: 'NVIDIA', type: 'EQUITY' },
+                platform: null,
+                account: { id: 'acc-2', name: 'Rajat', type: 'RRSP' }
+            }
+        ];
+        mockGlobals.__mockMarketDataService.getPrice = async () => ({
+            price: 100,
+            currency: 'USD',
+            regularMarketChange: 0,
+            regularMarketChangePercent: 0
+        });
+
+        const request = new Request('http://localhost/api/portfolio?currency=USD');
+        const response = await GET(request as Parameters<typeof GET>[0]);
+        assert.strictEqual(response.status, 200);
+
+        const data = await response.json();
+        const nvda = data.constituents.find((c: { symbol: string }) => c.symbol === 'NVDA');
+        assert.strictEqual(nvda.quantity, 80); // (5 + 3) * 10 = 80, NOT 800
+        assert.strictEqual(nvda.value, 8000);
+        assert.strictEqual(data.totalValue, 8000);
+        assert.ok(!data.allocationByPlatform.some((p: { name: string }) => p.name === 'Unknown'));
+        assert.strictEqual(data.allocationByAccount.length, 2);
+    });
 });

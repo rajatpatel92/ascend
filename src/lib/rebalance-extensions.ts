@@ -1,5 +1,6 @@
 import {
     computeRebalancePlan,
+    inferPriceInDisplayCurrency,
     type AccountHoldingBreakdown,
     type PlannedRebalanceRow,
     type RebalanceItem,
@@ -352,20 +353,34 @@ export function computeCategoryRebalancePlan(
             const constituents: ConstituentAllocation[] = members.map((m) => {
                 const weight = memberTotalValue > VALUE_EPSILON ? m.currentValue / memberTotalValue : equalShare;
                 const suggestedValue = row.effectiveAction === 'HOLD' ? 0 : row.tradeValue * weight;
-                const unitPrice = m.actionShares > 0.000001 && Math.abs(m.driftValue) > VALUE_EPSILON
-                    ? Math.abs(m.driftValue) / m.actionShares
-                    : m.assetPrice;
+                const unitPrice = inferPriceInDisplayCurrency(m);
                 const rawShares = unitPrice > 0 ? suggestedValue / unitPrice : 0;
-                const suggestedShares = options.wholeShares
-                    ? (options.mode === 'BUY_ONLY' ? Math.floor(rawShares) : Math.round(rawShares))
-                    : rawShares;
+                const heldShares = m.accounts && m.accounts.length > 0
+                    ? m.accounts.reduce((s, a) => s + a.quantity, 0)
+                    : (unitPrice > 0 ? m.currentValue / unitPrice : 0);
+
+                let suggestedShares = rawShares;
+                if (options.wholeShares) {
+                    suggestedShares = options.mode === 'BUY_ONLY'
+                        ? Math.floor(rawShares)
+                        : Math.round(rawShares);
+                    if (row.effectiveAction === 'SELL') {
+                        suggestedShares = Math.min(Math.floor(heldShares + 1e-6), suggestedShares);
+                    }
+                } else if (row.effectiveAction === 'SELL') {
+                    suggestedShares = Math.min(heldShares, rawShares);
+                }
+
+                const finalValue = options.wholeShares && unitPrice > 0
+                    ? (row.effectiveAction === 'SELL' ? Math.min(suggestedShares * unitPrice, m.currentValue) : suggestedShares * unitPrice)
+                    : (row.effectiveAction === 'SELL' ? Math.min(suggestedValue, m.currentValue) : suggestedValue);
 
                 return {
                     symbol: m.symbol,
                     currentValue: m.currentValue,
                     currentPercentInCategory: weight * 100,
                     suggestedShares,
-                    suggestedValue: options.wholeShares && unitPrice > 0 ? suggestedShares * unitPrice : suggestedValue,
+                    suggestedValue: finalValue,
                     assetPrice: m.assetPrice,
                     assetCurrency: m.assetCurrency
                 };
@@ -458,13 +473,15 @@ export function buildEqualWeightTargets(
     if (unique.length === 0) return [];
 
     const existingMap = new Map(existingTargets.map((t) => [t.symbol.trim().toUpperCase(), t]));
-    const baseWeight = Math.round((100 / unique.length) * 10) / 10;
+    const scale = 100 / unique.length < 0.1 ? 100 : 10;
+    const step = 1 / scale;
+    const totalTicks = 100 * scale;
+    const baseTicks = Math.floor(totalTicks / unique.length);
+    const remainderTicks = totalTicks - baseTicks * unique.length;
 
     const list: TargetConfig[] = unique.map((symbol, index) => ({
         symbol,
-        targetPercentage: index === 0
-            ? Math.round((100 - baseWeight * (unique.length - 1)) * 10) / 10
-            : baseWeight,
+        targetPercentage: Math.round((baseTicks + (index < remainderTicks ? 1 : 0)) * step * scale) / scale,
         yearlyDriftAdjustment: existingMap.get(symbol)?.yearlyDriftAdjustment ?? null
     }));
 
@@ -521,7 +538,7 @@ export function simulateGlideStep(
 ): { simulatedTargets: TargetConfig[]; postStepTotal: number } {
     const simulatedTargets = targets.map((t) => {
         const adj = t.yearlyDriftAdjustment ?? 0;
-        const nextPct = Math.max(0, Math.round((t.targetPercentage + adj * years) * 10) / 10);
+        const nextPct = Math.min(100, Math.max(0, Math.round((t.targetPercentage + adj * years) * 10) / 10));
         return {
             ...t,
             targetPercentage: nextPct

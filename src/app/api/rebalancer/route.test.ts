@@ -376,4 +376,61 @@ test('GET /api/rebalancer route handler integration and unit test', async (t) =>
         assert.strictEqual(passedActivities.length, 1);
         assert.strictEqual(passedActivities[0].investment.symbol, 'VFV.TO');
     });
+
+    await t.test('Skips USD round-trip FX drift when asset currency equals target currency and exposes priceInTargetCurrency', async () => {
+        let exchangeRateCalls = 0;
+
+        prismaMock.targetAllocation.findMany = async () => [
+            { symbol: 'XEQT.TO', targetPercentage: 100, yearlyDriftAdjustment: null }
+        ];
+        prismaMock.activity.findMany = async () => [
+            {
+                type: 'ADD',
+                quantity: 10,
+                date: new Date('2025-01-01'),
+                accountId: 'acc-cad',
+                investment: { symbol: 'XEQT.TO', type: 'ETF' },
+                account: { id: 'acc-cad', name: 'CAD TFSA', type: 'TFSA', isActive: true },
+                platform: { name: 'Wealthsimple' }
+            },
+            {
+                type: 'STOCK_SPLIT',
+                quantity: 2,
+                date: new Date('2025-02-01'),
+                accountId: 'acc-cad',
+                investment: { symbol: 'XEQT.TO', type: 'ETF' },
+                account: { id: 'acc-cad', name: 'CAD TFSA', type: 'TFSA', isActive: true },
+                platform: { name: 'Wealthsimple' }
+            },
+            {
+                type: 'REMOVE',
+                quantity: 5,
+                date: new Date('2025-03-01'),
+                accountId: 'acc-cad',
+                investment: { symbol: 'XEQT.TO', type: 'ETF' },
+                account: { id: 'acc-cad', name: 'CAD TFSA', type: 'TFSA', isActive: true },
+                platform: { name: 'Wealthsimple' }
+            }
+        ];
+
+        // 10 * 2 - 5 = 15 shares
+        portfolioAnalyticsMock.computeHoldingsState = () => ({ 'XEQT.TO': 15 });
+        marketDataServiceMock.getPrice = async () => ({ symbol: 'XEQT.TO', price: 30, currency: 'CAD' });
+        marketDataServiceMock.getExchangeRate = async () => {
+            exchangeRateCalls++;
+            return 0.72; // Deliberately asymmetric to prove no round-trip occurs
+        };
+
+        const { NextRequest } = await import('next/server' as any);
+        const req = new NextRequest('http://localhost/api/rebalancer?currency=CAD');
+        const res = await GET(req as any);
+        const body = await res.json();
+
+        assert.strictEqual(exchangeRateCalls, 0);
+        assert.strictEqual(body.totalValue, 450);
+        assert.strictEqual(body.data[0].priceInTargetCurrency, 30);
+        assert.strictEqual(body.data[0].currentValue, 450);
+        assert.strictEqual(body.data[0].accounts[0].quantity, 15);
+        assert.strictEqual(body.data[0].accounts[0].value, 450);
+    });
 });

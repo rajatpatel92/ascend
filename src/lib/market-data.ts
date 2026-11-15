@@ -713,7 +713,6 @@ export class MarketDataService {
             // 3. Update Cache (merge with existing if possible, but here we just update history)
             // DO NOT update 'lastUpdated' here. 'lastUpdated' should represent PRICE freshness.
             // If we update it here, 'getPrice' will think the price is fresh even if it's old.
-            const now = new Date();
             await prisma.marketDataCache.upsert({
                 where: { symbol },
                 update: {
@@ -749,26 +748,40 @@ export class MarketDataService {
         }
     }
 
+    private static get dailyUnadjustedCache() {
+        if (!(global as any)._marketDailyUnadjustedCache) {
+            (global as any)._marketDailyUnadjustedCache = new Map<string, { data: Record<string, number>, fromTime: number, timestamp: number }>();
+        }
+        return (global as any)._marketDailyUnadjustedCache as Map<string, { data: Record<string, number>, fromTime: number, timestamp: number }>;
+    }
+
+    private static DAILY_UNADJUSTED_TTL = 12 * 60 * 60 * 1000; // 12 Hours
+
     /**
-     * Get full daily history for a symbol from a start date.
-     * Essential for Portfolio Unitization.
+     * Get full unadjusted daily history for a symbol from a start date.
+     * Essential for Portfolio Unitization so holdings split multipliers align with historical closing prices.
      */
     static async getDailyHistory(symbol: string, fromDate?: Date, forceRefresh = false): Promise<Record<string, number>> {
-        try {
-            // 1. Check Cache
-            const cached = await prisma.marketDataCache.findUnique({
-                where: { symbol }
-            });
+        const defaultStart = new Date();
+        defaultStart.setFullYear(defaultStart.getFullYear() - 10);
+        const startDate = fromDate || defaultStart;
+        const requestedFromTime = startDate.getTime();
+        const cachedEntry = this.dailyUnadjustedCache.get(symbol);
 
-            // Async Architecture: Return cached history if available and NOT forcing refresh.
-            // Check if history object has data (keys > 0)
-            if (!forceRefresh && cached?.history && typeof cached.history === 'object' && Object.keys(cached.history).length > 0) {
-                return cached.history as Record<string, number>;
+        try {
+            // 1. Check In-Memory Unadjusted Cache (isolated from split-adjusted StockChart DB cache)
+            if (
+                !forceRefresh &&
+                cachedEntry &&
+                (Date.now() - cachedEntry.timestamp < this.DAILY_UNADJUSTED_TTL) &&
+                cachedEntry.fromTime <= requestedFromTime + 24 * 60 * 60 * 1000 &&
+                Object.keys(cachedEntry.data).length > 0
+            ) {
+                return cachedEntry.data;
             }
 
             // 2. Fetch from API
             const endDate = new Date();
-            const startDate = fromDate || new Date(new Date().setFullYear(endDate.getFullYear() - 10)); // Default 10Y
 
             const queryOptions = {
                 period1: startDate,
@@ -780,22 +793,14 @@ export class MarketDataService {
             const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
             const quotes = result?.quotes || [];
             const splits = result?.events?.splits || {};
-            // Splits is an Object: { "173874623": { date:..., numerator:3, denominator:1, splitRatio:"3:1" } }
-            // Map splits to Date String for easy lookup
-            // Yahoo usually puts event on the Ex-Date.
-            // Split of 3:1 means on Ex-Date, opening price is 1/3.
-            // So Previous Close must be * 3.
 
             const splitMap: Record<string, number> = {};
             if (splits && typeof splits === 'object') {
-                const keys = Object.keys(splits);
                 Object.values(splits).forEach((s: any) => {
-                    // Parse Ratio assuming "Num:Den" or usage of numerator/denominator
                     let ratio = 1;
                     if (s.numerator && s.denominator) {
                         ratio = s.numerator / s.denominator;
                     }
-                    // Date can be Date object, string, or unix timestamp (seconds)
                     let dObj: Date;
                     if (s.date instanceof Date) {
                         dObj = s.date;
@@ -805,40 +810,29 @@ export class MarketDataService {
                         dObj = new Date(s.date * 1000);
                     }
                     const d = dObj.toISOString().split('T')[0];
-                    splitMap[d] = ratio;
+                    if (Number.isFinite(ratio) && ratio > 0) {
+                        splitMap[d] = ratio;
+                    }
                 });
             }
 
             const prices: Record<string, number> = {};
             const availableDates: Date[] = [];
 
-            // Process Backwards to accumulate split factor
+            // Process Backwards to accumulate split factor (undo Yahoo split adjustment for share-count replay)
             let splitFactor = 1;
-
-            // Sort Descending (Newest First)
             const sortedQuotes = [...quotes].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
             for (const quote of sortedQuotes) {
                 const d = new Date(quote.date);
                 const dateStr = d.toISOString().split('T')[0];
 
-                // If ID matches a split date? Or date matches?
-                // Yahoo events usually align with quote dates.
-                // If Split happened ON this date (Ex-Date), then OLDER prices need adjustment.
-                // So we update factor AFTER processing this date?
-                // No, if today is Ex-Date, Today is already Low.
-                // Yesterday needs to be High.
-                // so we update factor AFTER reading this quote, for the NEXT (older) quote.
-
                 let price = quote.close || quote.adjClose;
 
                 if (price && price > 0) {
-                    // Apply cumulative factor
                     price = price * splitFactor;
-
                     prices[dateStr] = price;
-                    availableDates.push(d); // Note: Order will be desc in availableDates, sorting might be needed for findPrice?
-                    // findPrice iterates all, so order doesn't matter for correctness, but perf.
+                    availableDates.push(d);
                 }
 
                 if (splitMap[dateStr]) {
@@ -846,78 +840,34 @@ export class MarketDataService {
                 }
             }
 
-            // Re-sort availableDates ascending for findPrice/consistency?
             availableDates.sort((a, b) => a.getTime() - b.getTime());
 
-            // 3. Populate Summary Keys (1W, 1M, 1Y, YTD) to prevent cache thrashing by getHistoricalPrices()
-            // Helper to find closest price
-            const findPrice = (target: Date) => {
-                let closest: { date: Date, price: number } | null = null;
-                let minDiff = Infinity;
-                for (const d of availableDates) {
-                    const diff = Math.abs(d.getTime() - target.getTime());
-                    if (diff < minDiff) {
-                        minDiff = diff;
-                        closest = { date: d, price: prices[d.toISOString().split('T')[0]] };
-                    }
-                }
-                // Allow matches within 4 days (weekends)
-                return (closest && minDiff < 4 * 24 * 60 * 60 * 1000) ? closest.price : 0;
-            };
-
-            const today = new Date();
-
-            // 1W
-            const oneWeekAgo = new Date(today);
-            oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-            prices['1W'] = findPrice(oneWeekAgo);
-
-            // 1M
-            const oneMonthAgo = new Date(today);
-            oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-            prices['1M'] = findPrice(oneMonthAgo);
-
-            // 1Y
-            const oneYearAgo = new Date(today);
-            oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-            prices['1Y'] = findPrice(oneYearAgo);
-
-            // YTD
-            const ytd = new Date(today.getFullYear(), 0, 1);
-            prices['YTD'] = findPrice(ytd);
-
-            // 4. Update Cache
-            // DO NOT update 'lastUpdated' here. See getHistoricalPrices.
-            const now = new Date();
-            await prisma.marketDataCache.upsert({
-                where: { symbol },
-                update: {
-                    history: prices,
-                    // lastUpdated: now
-                },
-                create: {
-                    symbol,
-                    price: 0,
-                    change: 0,
-                    changePercent: 0,
-                    currency: 'USD',
-                    history: prices,
-                    lastUpdated: new Date(0) // Start stale
-                }
-            });
+            // Cache strictly in the unadjusted replay cache; leave prisma.marketDataCache.history split-adjusted for StockChart.
+            if (Object.keys(prices).length > 0) {
+                this.dailyUnadjustedCache.set(symbol, {
+                    data: prices,
+                    fromTime: requestedFromTime,
+                    timestamp: Date.now()
+                });
+            }
 
             return prices;
         } catch (error) {
             console.error(`Error fetching daily history for ${symbol}:`, error);
 
-            // Async Architecture: Re-throw if forcing refresh
             if (forceRefresh) throw error;
 
-            // Fallback to cache without checking expiry
+            if (cachedEntry && Object.keys(cachedEntry.data).length > 0) {
+                return cachedEntry.data;
+            }
+
+            // Fallback to DB history only if no unadjusted history exists in memory
             try {
                 const cached = await prisma.marketDataCache.findUnique({ where: { symbol } });
-                if (cached?.history) return cached.history as Record<string, number>;
-            } catch (ignore) { }
+                if (cached?.history && typeof cached.history === 'object') {
+                    return cached.history as Record<string, number>;
+                }
+            } catch { }
             return {};
         }
     }
@@ -951,7 +901,8 @@ export class MarketDataService {
                     dividendRate: undefined as number | undefined,
                     dividendYield: undefined as number | undefined,
                     exDividendDate: undefined as Date | undefined,
-                    estNextDividendAmount: undefined as number | undefined
+                    estNextDividendAmount: undefined as number | undefined,
+                    marketTime: undefined as Date | undefined
                 };
 
                 try {
@@ -1001,7 +952,8 @@ export class MarketDataService {
                             dividendRate,
                             dividendYield,
                             exDividendDate: calendar.exDividendDate ? new Date(calendar.exDividendDate) : undefined,
-                            estNextDividendAmount: undefined
+                            estNextDividendAmount: undefined,
+                            marketTime: p.regularMarketTime ? new Date(p.regularMarketTime) : now
                         };
                     }
 
@@ -1075,6 +1027,7 @@ export class MarketDataService {
                             exDividendDate: priceData.exDividendDate,
                             estNextDividendAmount: priceData.estNextDividendAmount,
                             history: history,
+                            marketTime: priceData.marketTime,
                             lastUpdated: now
                         },
                         create: {
@@ -1092,6 +1045,7 @@ export class MarketDataService {
                             exDividendDate: priceData.exDividendDate,
                             estNextDividendAmount: priceData.estNextDividendAmount,
                             history: history,
+                            marketTime: priceData.marketTime,
                             lastUpdated: now
                         }
                     })
@@ -1127,12 +1081,15 @@ export class MarketDataService {
             const updates = quotes
                 .filter(q => q && q.symbol)
                 .map(q => {
-                    const priceData = {
+                    const priceData: Record<string, any> = {
                         price: q.regularMarketPrice || 0,
                         change: q.regularMarketChange || 0,
                         changePercent: q.regularMarketChangePercent || 0,
                         lastUpdated: now
                     };
+                    if (q.regularMarketTime) {
+                        priceData.marketTime = new Date(q.regularMarketTime);
+                    }
                     return prisma.marketDataCache.updateMany({
                         where: { symbol: q.symbol },
                         data: priceData

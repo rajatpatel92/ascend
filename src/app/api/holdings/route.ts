@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
+
+import { buildBehaviorMap, ACTIVE_QUANTITY_EPSILON } from '@/lib/activity-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,33 +37,53 @@ export async function GET(request: Request) {
 
         // Fetch activity types to determine behavior
         const activityTypes = await prisma.activityType.findMany();
-        const behaviorMap = new Map<string, string>();
-        activityTypes.forEach(t => behaviorMap.set(t.name, t.behavior));
+        const behaviorMap = buildBehaviorMap(activityTypes);
 
-        // Default behaviors
-        if (!behaviorMap.has('BUY')) behaviorMap.set('BUY', 'ADD');
-        if (!behaviorMap.has('SELL')) behaviorMap.set('SELL', 'REMOVE');
-        if (!behaviorMap.has('STOCK_SPLIT')) behaviorMap.set('STOCK_SPLIT', 'SPLIT');
-        if (!behaviorMap.has('TRANSFER_IN')) behaviorMap.set('TRANSFER_IN', 'ADD');
-        if (!behaviorMap.has('TRANSFER_OUT')) behaviorMap.set('TRANSFER_OUT', 'REMOVE');
-
-        let quantity = 0;
+        const qtyByAccount = new Map<string, number>();
+        const appliedSplits = new Set<string>();
 
         for (const activity of activities) {
             const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
             const absQty = Math.abs(activity.quantity);
+            const accKey = activity.accountId || '__unassigned__';
 
             if (behavior === 'ADD') {
-                quantity += absQty;
+                qtyByAccount.set(accKey, (qtyByAccount.get(accKey) || 0) + absQty);
             } else if (behavior === 'REMOVE') {
-                quantity -= absQty;
-                if (quantity < 1e-9) quantity = 0;
+                const nextQty = Math.max(0, (qtyByAccount.get(accKey) || 0) - absQty);
+                qtyByAccount.set(accKey, nextQty < 1e-9 ? 0 : nextQty);
             } else if (behavior === 'SPLIT' && absQty > 0) {
-                quantity *= absQty;
+                const dayKey = activity.date ? new Date(activity.date).toISOString().split('T')[0] : 'no-date';
+                if (activity.accountId) {
+                    const splitKey = `${dayKey}:${activity.accountId}:${absQty}`;
+                    if (!appliedSplits.has(splitKey)) {
+                        appliedSplits.add(splitKey);
+                        const prev = qtyByAccount.get(activity.accountId) || 0;
+                        if (prev > 0) qtyByAccount.set(activity.accountId, prev * absQty);
+                    }
+                } else if ((qtyByAccount.get('__unassigned__') || 0) > 0) {
+                    const splitKey = `${dayKey}:__unassigned__:${absQty}`;
+                    if (!appliedSplits.has(splitKey)) {
+                        appliedSplits.add(splitKey);
+                        qtyByAccount.set('__unassigned__', (qtyByAccount.get('__unassigned__') || 0) * absQty);
+                    }
+                } else {
+                    const splitKey = `${dayKey}:__global__:${absQty}`;
+                    if (!appliedSplits.has(splitKey)) {
+                        appliedSplits.add(splitKey);
+                        for (const [k, q] of qtyByAccount.entries()) {
+                            qtyByAccount.set(k, q * absQty);
+                        }
+                    }
+                }
             }
         }
 
-        if (quantity <= 0.00001) {
+        let quantity = 0;
+        for (const q of qtyByAccount.values()) {
+            if (q > ACTIVE_QUANTITY_EPSILON) quantity += q;
+        }
+        if (quantity <= ACTIVE_QUANTITY_EPSILON) {
             quantity = 0;
         }
 

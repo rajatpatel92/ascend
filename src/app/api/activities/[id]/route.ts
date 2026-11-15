@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
 
 export async function PUT(
@@ -17,8 +16,9 @@ export async function PUT(
         const body = await request.json();
         const { date, type, quantity, price, fee, currency, platformId, accountId } = body;
 
-        // Validate required fields
-        if (!date || !type || !quantity || !price || !currency || !platformId) {
+        const parsedQty = Number(quantity);
+        const parsedPrice = Number(price);
+        if (!date || !type || !currency || !platformId || !Number.isFinite(parsedQty) || parsedQty <= 0 || price === undefined || price === null || price === '' || !Number.isFinite(parsedPrice) || parsedPrice < 0) {
             return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
         }
 

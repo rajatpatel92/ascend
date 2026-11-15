@@ -56,8 +56,8 @@ export default function FireAnalysisPage() {
     // Theme awareness for chart grid/axis strokes
     const [isDark, setIsDark] = useState(false);
 
-    // Raw USD portfolio value from /api/portfolio
-    const [rawPortfolioValueUSD, setRawPortfolioValueUSD] = useState<number>(0);
+    // Portfolio value fetched in active target currency from /api/portfolio
+    const [currentPortfolioValue, setCurrentPortfolioValue] = useState<number>(0);
     const [loadingPortfolio, setLoadingPortfolio] = useState<boolean>(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -93,11 +93,13 @@ export default function FireAnalysisPage() {
         return () => observer.disconnect();
     }, []);
 
-    // Fetch current portfolio value (API returns USD by default)
+    // Fetch current portfolio value directly in the selected currency
     useEffect(() => {
         const controller = new AbortController();
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setLoadingPortfolio(true);
 
-        fetch('/api/portfolio', { signal: controller.signal })
+        fetch(`/api/portfolio?currency=${encodeURIComponent(currency)}`, { signal: controller.signal })
             .then((res) => {
                 if (!res.ok) {
                     throw new Error(`HTTP ${res.status}`);
@@ -106,7 +108,7 @@ export default function FireAnalysisPage() {
             })
             .then((data) => {
                 if (typeof data?.totalValue === 'number' && Number.isFinite(data.totalValue)) {
-                    setRawPortfolioValueUSD(data.totalValue);
+                    setCurrentPortfolioValue(data.totalValue);
                 }
                 setFetchError(null);
                 setLoadingPortfolio(false);
@@ -119,22 +121,22 @@ export default function FireAnalysisPage() {
             });
 
         return () => controller.abort();
-    }, []);
+    }, [currency]);
 
     // Convert currency-denominated inputs when active currency changes
     useEffect(() => {
-        if (!currencyLoading && rates?.[currency] === 1 && prevCurrencyRef.current !== currency) {
-            const oldCurrency = prevCurrencyRef.current;
+        const oldCurrency = prevCurrencyRef.current;
+        if (
+            !currencyLoading &&
+            oldCurrency !== currency &&
+            rates?.[currency] === 1 &&
+            (rates?.[oldCurrency] ?? 0) > 0
+        ) {
             setMonthlyContribution((prev) => Math.round(convert(prev, oldCurrency)));
             setCurrentMonthlyExpense((prev) => Math.round(convert(prev, oldCurrency)));
             prevCurrencyRef.current = currency;
         }
     }, [currency, currencyLoading, rates, convert]);
-
-    const currentPortfolioValue = useMemo(
-        () => convert(rawPortfolioValueUSD, 'USD'),
-        [rawPortfolioValueUSD, convert]
-    );
 
     // Run deterministic FIRE accumulation & depletion projection
     const simulation = useMemo(() => {
@@ -175,11 +177,11 @@ export default function FireAnalysisPage() {
         const safeSwr = Math.max(0.1, Number.isFinite(withdrawalRate) ? withdrawalRate : 4.0);
         const safeHorizonYears = Math.max(1, Math.min(80, Number.isFinite(withdrawalDuration) ? withdrawalDuration : 30));
 
-        const monthlyReturnRate = safeReturn / 100 / 12;
-        const monthlyInflationRate = safeInflation / 100 / 12;
+        // # Reason: Effective monthly compounding ensures 12 monthly steps equal the stated annual rate.
+        const monthlyReturnRate = Math.pow(1 + safeReturn / 100, 1 / 12) - 1;
+        const monthlyInflationRate = Math.pow(1 + safeInflation / 100, 1 / 12) - 1;
 
         let currentPrincipal = Math.max(0, currentPortfolioValue);
-        let currentInterest = 0;
         let currentTotal = Math.max(0, currentPortfolioValue);
 
         const yearlyData: YearProjection[] = [];
@@ -189,15 +191,16 @@ export default function FireAnalysisPage() {
             const simDate = new Date(startYear, startMonth + i, 1);
             currentPrincipal += safeContribution;
             const interestEarned = (currentTotal + safeContribution) * monthlyReturnRate;
-            currentInterest += interestEarned;
             currentTotal = Math.max(0, currentTotal + safeContribution + interestEarned);
 
             if (simDate.getMonth() === 11) {
+                const clampedPrincipal = Math.min(currentPrincipal, currentTotal);
+                const clampedGains = Math.max(0, currentTotal - clampedPrincipal);
                 yearlyData.push({
                     year: simDate.getFullYear(),
                     phase: 'Accumulation',
-                    principal: Math.round(currentPrincipal),
-                    gains: Math.round(currentInterest),
+                    principal: Math.round(clampedPrincipal),
+                    gains: Math.round(clampedGains),
                     total: Math.round(currentTotal),
                     withdrawal: 0
                 });
@@ -205,8 +208,8 @@ export default function FireAnalysisPage() {
         }
 
         const projectedFireValue = currentTotal;
-        const projectedPrincipal = currentPrincipal;
-        const projectedGains = currentInterest;
+        const projectedPrincipal = Math.min(currentPrincipal, currentTotal);
+        const projectedGains = Math.max(0, currentTotal - projectedPrincipal);
 
         // Compute initial monthly withdrawal under active strategy (start-of-month / annuity due)
         let initialMonthlyWithdrawal = 0;
@@ -247,12 +250,12 @@ export default function FireAnalysisPage() {
                 const principalRatio = Math.min(1, Math.max(0, depletionPrincipal / depletionTotal));
                 depletionPrincipal = Math.max(0, depletionPrincipal - actualWithdrawal * principalRatio);
                 depletionTotal = Math.max(0, depletionTotal - actualWithdrawal);
-                depletionInterest = Math.max(0, depletionTotal - depletionPrincipal);
                 yearWithdrawalAccum += actualWithdrawal;
 
                 const interestEarned = depletionTotal * monthlyReturnRate;
-                depletionInterest += interestEarned;
                 depletionTotal = Math.max(0, depletionTotal + interestEarned);
+                depletionPrincipal = Math.min(depletionPrincipal, depletionTotal);
+                depletionInterest = Math.max(0, depletionTotal - depletionPrincipal);
 
                 if (wasFullyFunded) {
                     sustainedMonths = m;
@@ -302,6 +305,7 @@ export default function FireAnalysisPage() {
         const maxLifestyleMonths = 1200; // 100 years cap
 
         for (let m = 1; m <= maxLifestyleMonths; m++) {
+            if (neededMonthly > 0 && lifestyleBalance < neededMonthly - 0.01) break;
             if (lifestyleBalance <= 0) break;
             lifestyleBalance = Math.max(0, lifestyleBalance - neededMonthly);
             lifestyleBalance += lifestyleBalance * monthlyReturnRate;
@@ -311,12 +315,14 @@ export default function FireAnalysisPage() {
 
         const effectiveSwr =
             calculationMode === 'FIXED_HORIZON' ? computedWithdrawalRate : safeSwr;
+        const todayFireNumber =
+            effectiveSwr > 0 ? (safeExpense * 12) / (effectiveSwr / 100) : 0;
         const requiredFireNumber =
             effectiveSwr > 0 ? (futureMonthlyExpense * 12) / (effectiveSwr / 100) : 0;
 
         const currentProgressPct =
-            requiredFireNumber > 0
-                ? Math.min(100, Math.max(0, (currentPortfolioValue / requiredFireNumber) * 100))
+            todayFireNumber > 0
+                ? Math.min(100, Math.max(0, (currentPortfolioValue / todayFireNumber) * 100))
                 : 100;
         const projectedProgressPct =
             requiredFireNumber > 0
@@ -332,7 +338,10 @@ export default function FireAnalysisPage() {
         const realReturnPct = ((1 + safeReturn / 100) / (1 + safeInflation / 100) - 1) * 100;
         const strategyYears = Math.floor((depletedAtMonth ?? sustainedMonths) / 12);
         const lifestyleYears = Math.floor(lifestyleMonths / 12);
-        const isPerpetual = depletedAtMonth === null && depletionTotal >= projectedFireValue * 0.99;
+        const inflationFactor60y = Math.pow(1 + safeInflation / 100, 60);
+        const isPerpetual =
+            depletedAtMonth === null &&
+            (depletionTotal / inflationFactor60y) >= projectedFireValue * 0.99;
 
         return {
             fireYear,

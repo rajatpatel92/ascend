@@ -70,7 +70,7 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
 
     const allData = useMemo(() => {
         return Object.entries(data || {})
-            .filter(([key]) => !['1W', '1M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', '10Y', 'ALL'].includes(key))
+            .filter(([key, val]) => /^\d{4}-\d{2}-\d{2}$/.test(key) && typeof val === 'number' && Number.isFinite(val))
             .map(([date, price]) => ({
                 date,
                 value: convert(price, assetCurrency),
@@ -83,7 +83,7 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
     }, [data, assetCurrency, convert, avgPriceHistory]);
 
     const chartData = useMemo(() => {
-        if (allData.length === 0) return [];
+        if (allData.length === 0 && intradayData.length === 0) return [];
 
         const now = new Date();
         let startDate = new Date();
@@ -101,7 +101,25 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
         switch (range) {
             case '1D':
                 if (intradayData.length > 0) {
-                    return intradayData.map(d => ({
+                    const sorted = [...intradayData].sort(
+                        (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+                    );
+                    const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+                    let sessionStartIdx = 0;
+                    for (let i = 1; i < sorted.length; i++) {
+                        const prevTs = new Date(sorted[i - 1].date).getTime();
+                        const currTs = new Date(sorted[i].date).getTime();
+                        if (currTs - prevTs > FOUR_HOURS_MS) {
+                            sessionStartIdx = i;
+                        }
+                    }
+                    const latestTs = new Date(sorted[sorted.length - 1].date).getTime();
+                    const rollingCutoff = latestTs - (24 * 60 * 60 * 1000);
+                    const sessionPoints = sorted
+                        .slice(sessionStartIdx)
+                        .filter(d => new Date(d.date).getTime() >= rollingCutoff);
+
+                    return sessionPoints.map(d => ({
                         date: d.date,
                         value: convert(d.value, assetCurrency),
                         originalValue: d.value,
@@ -386,7 +404,6 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
                                     strokeWidth={2}
                                     dot={false}
                                     name="avgPrice"
-                                    connectNulls
                                 />
                             )}
                         </AreaChart>

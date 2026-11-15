@@ -50,15 +50,13 @@ export default function TopMovers({ constituents, portfolioTotalValue, portfolio
                     return null;
                 }
 
-                const hasStaleUsdRate = c.conversionRate === 1 && c.currency && c.currency !== 'USD' && typeof c.rateToUSD === 'number' && c.rateToUSD !== 1;
-                const hasConversionRate = c.conversionRate !== undefined;
-                const effectiveRate = hasStaleUsdRate ? c.rateToUSD : (c.conversionRate ?? 1);
-                const priceTarget = hasConversionRate ? c.price * effectiveRate : convert(c.price, c.currency);
+                const hasConversionRate = typeof c.conversionRate === 'number' && Number.isFinite(c.conversionRate);
+                const priceTarget = hasConversionRate ? c.price * c.conversionRate : convert(c.price, c.currency);
                 const impactAbsTarget =
-                    period === '1D' && changeObj.absoluteTarget !== undefined && !hasStaleUsdRate
+                    period === '1D' && typeof changeObj.absoluteTarget === 'number'
                         ? changeObj.absoluteTarget
                         : hasConversionRate
-                            ? changeObj.absolute * effectiveRate
+                            ? changeObj.absolute * c.conversionRate
                             : convert(changeObj.absolute, c.currency);
 
                 const impactPercent = portfolioTotalValue > 0 ? (impactAbsTarget / baseVal) * 100 : 0;

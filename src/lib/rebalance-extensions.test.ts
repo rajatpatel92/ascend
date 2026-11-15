@@ -162,3 +162,54 @@ test('validateGlidePathSchedule and simulateGlideStep check net-zero drift and p
     assert.equal(sim.simulatedTargets[1].targetPercentage, 21.0);
     assert.equal(sim.postStepTotal, 99.5);
 });
+
+test('buildEqualWeightTargets handles large symbol counts without concentrating weight in index 0', () => {
+    const symbols = Array.from({ length: 250 }, (_, i) => `SYM${i}`);
+    const eq = buildEqualWeightTargets(symbols, []);
+    assert.equal(eq.length, 250);
+    const maxWeight = Math.max(...eq.map((t) => t.targetPercentage));
+    assert.ok(maxWeight <= 0.5, `Expected equal weights around 0.4%, got max ${maxWeight}`);
+    const sum = Math.round(eq.reduce((s, t) => s + t.targetPercentage, 0) * 10) / 10;
+    assert.equal(sum, 100);
+});
+
+test('simulateGlideStep clamps simulated targets within [0%, 100%]', () => {
+    const targets: TargetConfig[] = [
+        { symbol: 'BOND', targetPercentage: 95, yearlyDriftAdjustment: 10 },
+        { symbol: 'EQ', targetPercentage: 5, yearlyDriftAdjustment: -10 }
+    ];
+    const sim = simulateGlideStep(targets, 1);
+    assert.equal(sim.simulatedTargets[0].targetPercentage, 100);
+    assert.equal(sim.simulatedTargets[1].targetPercentage, 0);
+});
+
+test('computeCategoryRebalancePlan uses priceInTargetCurrency and caps SELL shares at held shares', () => {
+    const items: RebalanceItem[] = [
+        {
+            symbol: 'AAPL',
+            investmentType: 'Stock',
+            currentPercent: 100,
+            targetPercent: 0,
+            glidePathPercent: null,
+            driftPercent: 100,
+            currentValue: 1400, // 10 shares @ 140 CAD (100 USD)
+            targetValue: 0,
+            driftValue: 0,
+            action: 'HOLD',
+            actionShares: 0,
+            assetPrice: 100,
+            priceInTargetCurrency: 140,
+            assetCurrency: 'USD',
+            accounts: [
+                { accountId: null, accountName: 'TFSA', accountType: 'TFSA', platformName: 'WS', quantity: 10, value: 1400 }
+            ]
+        }
+    ];
+    const result = computeCategoryRebalancePlan(
+        items,
+        [{ investmentType: 'Stock', targetPercentage: 0 }],
+        { mode: 'FULL', newCash: 0, tolerancePercent: 0, wholeShares: false }
+    );
+    assert.equal(result.rows[0].constituents[0].suggestedShares, 10);
+    assert.equal(result.rows[0].constituents[0].suggestedValue, 1400);
+});

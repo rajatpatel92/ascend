@@ -949,5 +949,216 @@ test('PortfolioAnalytics.calculateFlows & out-of-pocket principal', async (t) =>
             MarketDataService.getExchangeRate = originalGetExchangeRate;
         }
     });
+
+    await t.test('handles multi-account STOCK_SPLIT once per account and divides lastKnownPrices only once', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'SPLT') {
+                    // Pre-split close on Jan 1 = 400; split day Jan 2 price omitted so lastKnownPrices carries forward
+                    // then Jan 3 resumes at post-split 100
+                    return {
+                        '2026-01-01': 400,
+                        '2026-01-03': 100
+                    };
+                }
+                if (sym === '^GSPC') {
+                    return { '2026-01-01': 5000, '2026-01-02': 5000, '2026-01-03': 5000 };
+                }
+                return {};
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 5,
+                    price: 400,
+                    fee: 0,
+                    date: new Date('2025-12-20T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'SPLT', currency: 'USD' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 5,
+                    price: 400,
+                    fee: 0,
+                    date: new Date('2025-12-20T00:00:00.000Z'),
+                    accountId: 'acc-2',
+                    investment: { symbol: 'SPLT', currency: 'USD' }
+                },
+                {
+                    type: 'STOCK_SPLIT',
+                    quantity: 4,
+                    price: 0,
+                    fee: 0,
+                    date: new Date('2026-01-02T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'SPLT', currency: 'USD' }
+                },
+                {
+                    type: 'STOCK_SPLIT',
+                    quantity: 4,
+                    price: 0,
+                    fee: 0,
+                    date: new Date('2026-01-02T00:00:00.000Z'),
+                    accountId: 'acc-2',
+                    investment: { symbol: 'SPLT', currency: 'USD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const state = PortfolioAnalytics.computeHoldingsState(activities as any);
+            assert.strictEqual(state['SPLT'], 40);
+
+            const res = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'USD'
+            );
+
+            const day1 = res.portfolio.find(p => p.date === '2026-01-01');
+            const day2 = res.portfolio.find(p => p.date === '2026-01-02');
+            const day3 = res.portfolio.find(p => p.date === '2026-01-03');
+            assert.ok(day1 && day2 && day3);
+
+            // Day 1: 10 shares * 400 = 4000; Day 2: 40 shares * (400/4 = 100) = 4000 (not 400/16 = 25 -> 1000!)
+            assert.ok(Math.abs(day1.marketValue - 4000) < 0.01);
+            assert.ok(Math.abs(day2.marketValue - 4000) < 0.01);
+            assert.ok(Math.abs(day3.marketValue - 4000) < 0.01);
+            assert.ok(Math.abs(day3.nav - 100) < 0.01);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
+
+    await t.test('does not crash NAV when discoveryFlow occurs on the same day as a small dividend', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'MAIN') {
+                    return { '2026-01-01': 100, '2026-01-02': 100 };
+                }
+                if (sym === 'NEWB') {
+                    return { '2026-01-02': 50 };
+                }
+                if (sym === '^GSPC') {
+                    return { '2026-01-01': 5000, '2026-01-02': 5000 };
+                }
+                return {};
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2025-12-20T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'MAIN', currency: 'USD' }
+                },
+                {
+                    type: 'DIVIDEND',
+                    quantity: 10,
+                    price: 1, // $10 dividend on same day as NEWB discovery
+                    fee: 0,
+                    date: new Date('2026-01-02T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'MAIN', currency: 'USD' }
+                },
+                {
+                    type: 'TRANSFER_IN',
+                    quantity: 100,
+                    price: 50,
+                    fee: 0,
+                    date: new Date('2026-01-01T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'NEWB', currency: 'USD' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            // Note: NEWB was absent from 2026-01-01 daily history, got its first price on 2026-01-02
+            const res = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'USD'
+            );
+            const day2 = res.portfolio.find(p => p.date === '2026-01-02');
+            assert.ok(day2);
+            assert.ok(day2.nav >= 100, `NAV should not crash when discoveryFlow occurs with dividend, got ${day2.nav}`);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
+
+    await t.test('subtracts dividend fees, triangulates EUR->CAD via USD, resolves intermediate FX dates, and FX-normalizes benchmark returns', async () => {
+        const originalGetDailyHistory = MarketDataService.getDailyHistory;
+        try {
+            MarketDataService.getDailyHistory = async (sym: string) => {
+                if (sym === 'EURO') {
+                    return { '2026-01-01': 100, '2026-01-05': 100 };
+                }
+                if (sym === 'EURUSD=X') {
+                    return { '2026-01-01': 1.10, '2026-01-05': 1.10 };
+                }
+                if (sym === 'USDCAD=X') {
+                    return { '2026-01-01': 1.30, '2026-01-03': 1.40, '2026-01-05': 1.40 };
+                }
+                if (sym === '^GSPC') {
+                    // Unchanged index in USD (5000 -> 5000), but USD/CAD appreciated from 1.30 to 1.40 (+7.692%)
+                    return { '2026-01-01': 5000, '2026-01-05': 5000 };
+                }
+                return {};
+            };
+
+            const activities = [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    price: 100,
+                    fee: 0,
+                    date: new Date('2026-01-01T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'EURO', currency: 'EUR' }
+                },
+                {
+                    type: 'DIVIDEND',
+                    quantity: 10,
+                    price: 5, // 50 EUR gross - 10 EUR withholding fee = 40 EUR net on 2026-01-05
+                    fee: 10,
+                    date: new Date('2026-01-05T00:00:00.000Z'),
+                    accountId: 'acc-1',
+                    investment: { symbol: 'EURO', currency: 'EUR' }
+                }
+            ] as unknown as Parameters<typeof PortfolioAnalytics.calculateComparisonHistory>[0];
+
+            const flowRes = await PortfolioAnalytics.calculateFlows(activities as any, 'CAD');
+            // BUY on Jan 1: 1000 EUR * (1.10 * 1.30 = 1.43) = 1430 CAD
+            const totalInflow = flowRes.contributions.day.reduce((s, d) => s + d.inflow, 0);
+            assert.ok(Math.abs(totalInflow - 1430) < 0.01);
+            // DIVIDEND on Jan 5: (50 - 10) EUR * (1.10 * 1.40 = 1.54) = 61.60 CAD
+            assert.ok(Math.abs((flowRes.dividends?.day[0]?.amount || 0) - 61.60) < 0.01);
+
+            const compRes = await PortfolioAnalytics.calculateComparisonHistory(
+                activities,
+                '^GSPC',
+                new Date('2026-01-01T00:00:00.000Z'),
+                'CAD'
+            );
+            const benchJan1 = compRes.benchmark.find(b => b.date === '2026-01-01');
+            const benchJan5 = compRes.benchmark.find(b => b.date === '2026-01-05');
+            assert.ok(benchJan1 && benchJan5);
+            // .value remains raw index level (5000), while .normalized & benchmarkReturn reflect USD->CAD (+7.6923%)
+            assert.strictEqual(benchJan1.value, 5000);
+            assert.strictEqual(benchJan5.value, 5000);
+            const expectedFxReturn = ((1.40 - 1.30) / 1.30) * 100;
+            assert.ok(Math.abs(compRes.summary.benchmarkReturn - expectedFxReturn) < 0.05);
+        } finally {
+            MarketDataService.getDailyHistory = originalGetDailyHistory;
+        }
+    });
 });
+
 

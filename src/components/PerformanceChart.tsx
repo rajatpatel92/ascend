@@ -153,8 +153,8 @@ export default function PerformanceChart({
         if (chartData.length === 0) return 0.5;
         const dataMax = Math.max(...chartData.map(i => i.value));
         const dataMin = Math.min(...chartData.map(i => i.value));
-        if (dataMax <= 0) return 0;
         if (dataMin >= 0) return 1;
+        if (dataMax <= 0) return 0;
         return dataMax / (dataMax - dataMin);
     };
 

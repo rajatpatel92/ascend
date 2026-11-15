@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from '@/lib/prisma';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
@@ -22,36 +23,40 @@ export async function GET(request: Request) {
     const targetCurrency = searchParams.get('currency') || 'CAD';
     const customStart = searchParams.get('startDate');
     const customEnd = searchParams.get('endDate');
-    const investmentTypes = searchParams.get('investmentTypes')?.split(',') || [];
-    const accountTypes = searchParams.get('accountTypes')?.split(',') || [];
+    const investmentTypes = searchParams.get('investmentTypes')?.split(',').map(s => s.trim()).filter(Boolean) || [];
+    const accountTypes = searchParams.get('accountTypes')?.split(',').map(s => s.trim()).filter(Boolean) || [];
 
     try {
-        // 1. Determine date range
-        let startDate = new Date();
+        // 1. Determine date range in UTC
+        const startDate = new Date();
+        startDate.setUTCHours(0, 0, 0, 0);
 
         if (range === 'CUSTOM' && customStart && customEnd) {
-            startDate = new Date(customStart);
+            const parsedStart = new Date(customStart);
+            if (!Number.isNaN(parsedStart.getTime())) {
+                startDate.setTime(parsedStart.getTime());
+                startDate.setUTCHours(0, 0, 0, 0);
+            }
         } else {
             switch (range) {
-                case '1D': startDate.setDate(startDate.getDate() - 1); break;
-                case '1W': startDate.setDate(startDate.getDate() - 7); break;
-                case '1M': startDate.setMonth(startDate.getMonth() - 1); break;
-                case '3M': startDate.setMonth(startDate.getMonth() - 3); break;
-                case '6M': startDate.setMonth(startDate.getMonth() - 6); break;
-                case '1Y': startDate.setFullYear(startDate.getFullYear() - 1); break;
-                case '2Y': startDate.setFullYear(startDate.getFullYear() - 2); break;
-                case '3Y': startDate.setFullYear(startDate.getFullYear() - 3); break;
-                case '5Y': startDate.setFullYear(startDate.getFullYear() - 5); break;
-                case '10Y': startDate.setFullYear(startDate.getFullYear() - 10); break;
-                case 'YTD': startDate.setMonth(0, 1); break;
-                case 'ALL': startDate.setFullYear(startDate.getFullYear() - 20); break;
-                default: startDate.setMonth(startDate.getMonth() - 1);
+                case '1D': startDate.setUTCDate(startDate.getUTCDate() - 1); break;
+                case '1W': startDate.setUTCDate(startDate.getUTCDate() - 7); break;
+                case '1M': startDate.setUTCMonth(startDate.getUTCMonth() - 1); break;
+                case '3M': startDate.setUTCMonth(startDate.getUTCMonth() - 3); break;
+                case '6M': startDate.setUTCMonth(startDate.getUTCMonth() - 6); break;
+                case '1Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 1); break;
+                case '2Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 2); break;
+                case '3Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 3); break;
+                case '5Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 5); break;
+                case '10Y': startDate.setUTCFullYear(startDate.getUTCFullYear() - 10); break;
+                case 'YTD': startDate.setUTCMonth(0, 1); break;
+                case 'ALL': startDate.setUTCFullYear(startDate.getUTCFullYear() - 20); break;
+                default: startDate.setUTCMonth(startDate.getUTCMonth() - 1);
             }
         }
 
         // Store the requested start date for filtering
-        const filterStartDate = new Date(startDate);
-        const filterStartDateStr = filterStartDate.toISOString().split('T')[0];
+        const filterStartDateStr = startDate.toISOString().split('T')[0];
 
         // 2. Fetch ALL activities (include Account for filtering)
         const allActivities = await prisma.activity.findMany({
@@ -76,15 +81,6 @@ export async function GET(request: Request) {
             return NextResponse.json([]);
         }
 
-        // Set calculation start date to the beginning of history (or first activity)
-        if (activities.length > 0) {
-            const firstDate = new Date(activities[0].date);
-            startDate = firstDate;
-        }
-
-        // 3. Run Analytics
-        const benchmarkSymbol = '^GSPC';
-
         // Map activities to match Analytics interface
         const mappedActivities = activities.map(a => ({
             ...a,
@@ -94,19 +90,18 @@ export async function GET(request: Request) {
             }
         }));
 
-        const result = await PortfolioAnalytics.calculateComparisonHistory(
-            mappedActivities,
-            benchmarkSymbol,
-            startDate,
-            targetCurrency
-        );
-
-        // 3.5. [NEW] Handle 1D Intraday Override
+        // 2.5. Fast-path 1D Intraday BEFORE full multi-year comparison replay
         if (range === '1D') {
             try {
-                // [CACHE] Check In-Memory Cache for 1D
-                const filterKey = `${investmentTypes.sort().join('-')}_${accountTypes.sort().join('-')}`;
-                const CACHE_KEY = `1D_HISTORY_${targetCurrency}_${filterKey}`;
+                const filterKey = `${[...investmentTypes].sort().join('-')}_${[...accountTypes].sort().join('-')}`;
+                const latestActTs = activities.reduce((max, a) => {
+                    const t = Math.max(
+                        new Date(a.date).getTime() || 0,
+                        new Date((a as { updatedAt?: Date | string }).updatedAt || 0).getTime() || 0
+                    );
+                    return t > max ? t : max;
+                }, 0);
+                const CACHE_KEY = `1D_HISTORY_${targetCurrency}_${filterKey}_${activities.length}_${latestActTs}`;
                 const cached = (global as any)._portfolio1DCache;
                 const CACHE_TTL = 5 * 60 * 1000; // 5 Minutes
 
@@ -114,24 +109,19 @@ export async function GET(request: Request) {
                     return NextResponse.json(cached.data);
                 }
 
-                // Calculate Intraday
-                const intradayParams = mappedActivities;
-                const intradayPortfolio = await PortfolioAnalytics.calculateIntradayHistory(intradayParams, targetCurrency);
+                const intradayPortfolio = await PortfolioAnalytics.calculateIntradayHistory(mappedActivities, targetCurrency);
 
                 if (intradayPortfolio.length > 0) {
-                    // Normalize for Chart
                     const openValue = intradayPortfolio[0].marketValue;
-
                     const normalized = intradayPortfolio.map(p => ({
-                        date: p.date, // This is ISO timestamp including time
+                        date: p.date,
                         value: p.marketValue,
-                        nav: 100 * (p.marketValue / openValue), // Intraday NAV
-                        invested: openValue, // Flat line for 1D comparison
+                        nav: openValue > 0 ? 100 * (p.marketValue / openValue) : 100,
+                        invested: openValue,
                         dividend: 0,
                         unreinvestedDividend: 0
                     }));
 
-                    // [CACHE] Set Cache
                     (global as any)._portfolio1DCache = {
                         key: CACHE_KEY,
                         data: normalized,
@@ -144,6 +134,16 @@ export async function GET(request: Request) {
                 console.error('Intraday Calc Failed, falling back to daily', e);
             }
         }
+
+        // 3. Run Analytics from earliest activity so principal, NAV, and dividend cash pools carry forward cleanly
+        const benchmarkSymbol = '^GSPC';
+        const calcStartDate = new Date(activities[0].date);
+        const result = await PortfolioAnalytics.calculateComparisonHistory(
+            mappedActivities,
+            benchmarkSymbol,
+            calcStartDate,
+            targetCurrency
+        );
 
         // 4. Map to Response
         let cumulativeFlow = 0;
@@ -163,14 +163,36 @@ export async function GET(request: Request) {
         });
 
         // Filter out future dates if customEnd was used
-        let finalPoints = historyPoints;
+        let boundedPoints = historyPoints;
         if (range === 'CUSTOM' && customEnd) {
-            const endD = new Date(customEnd).toISOString().split('T')[0];
-            finalPoints = finalPoints.filter(p => p.date <= endD);
+            const parsedEnd = new Date(customEnd);
+            if (!Number.isNaN(parsedEnd.getTime())) {
+                const endD = parsedEnd.toISOString().split('T')[0];
+                boundedPoints = boundedPoints.filter(p => p.date <= endD);
+            }
         }
 
-        // Filter by requested Start Date
-        finalPoints = finalPoints.filter(p => p.date >= filterStartDateStr);
+        // Filter by requested Start Date and attach pre-window baseline for accurate sub-range deltas
+        const firstIdx = boundedPoints.findIndex(p => p.date >= filterStartDateStr);
+        const finalPoints = firstIdx >= 0 ? boundedPoints.slice(firstIdx) : [];
+
+        if (finalPoints.length > 0) {
+            const prev = firstIdx > 0
+                ? boundedPoints[firstIdx - 1]
+                : { value: 0, invested: 0, nav: 100, unreinvestedDividend: 0 };
+            finalPoints[0] = {
+                ...finalPoints[0],
+                priorValue: prev.value,
+                priorInvested: prev.invested,
+                priorNav: prev.nav,
+                priorUnreinvestedDividend: prev.unreinvestedDividend
+            } as typeof finalPoints[number] & {
+                priorValue: number;
+                priorInvested: number;
+                priorNav: number;
+                priorUnreinvestedDividend: number;
+            };
+        }
 
         return NextResponse.json(finalPoints);
 

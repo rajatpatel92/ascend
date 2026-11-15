@@ -938,3 +938,47 @@ test('MarketDataService.getIntradayHistory', async (t) => {
         assert.deepStrictEqual(history, {});
     });
 });
+
+test('MarketDataService.getDailyHistory', async (t) => {
+    t.beforeEach(() => {
+        apiThrottler.reset();
+    });
+
+    await t.test('returns unadjusted quotes from chart without overwriting DB split-adjusted history cache', async (subT) => {
+        let dbFindCalled = 0;
+        let dbUpsertCalled = 0;
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => {
+            dbFindCalled++;
+            return null;
+        });
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => {
+            dbUpsertCalled++;
+            return {};
+        });
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            quotes: [
+                { date: '2024-06-01T00:00:00.000Z', close: 1200, adjclose: 120 },
+                { date: '2024-06-10T00:00:00.000Z', close: 120, adjclose: 120 }
+            ]
+        }));
+
+        const fromDate = new Date('2024-06-01T00:00:00.000Z');
+        const history = await MarketDataService.getDailyHistory('NVDA_UNADJ_TEST', fromDate);
+
+        assert.strictEqual(history['2024-06-01'], 1200);
+        assert.strictEqual(history['2024-06-10'], 120);
+        assert.strictEqual(dbUpsertCalled, 0);
+        assert.strictEqual(dbFindCalled, 0);
+
+        // Subsequent call within window should hit in-memory unadjusted cache without calling chart again
+        let chartCalledAgain = 0;
+        subT.mock.method(yahooFinance, 'chart', async () => {
+            chartCalledAgain++;
+            return { quotes: [] };
+        });
+        const cachedHistory = await MarketDataService.getDailyHistory('NVDA_UNADJ_TEST', new Date('2024-06-02T00:00:00.000Z'));
+        assert.strictEqual(cachedHistory['2024-06-01'], 1200);
+        assert.strictEqual(chartCalledAgain, 0);
+    });
+});
+

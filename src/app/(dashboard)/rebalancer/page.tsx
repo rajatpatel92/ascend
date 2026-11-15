@@ -45,12 +45,27 @@ function getTaxTierClassName(status: TaxStatus): string {
     return styles.taxTierTaxable;
 }
 
-function enrichTargetTimestamps(targetList: TargetConfig[], items: RebalanceItem[]): TargetConfig[] {
+function enrichTargetTimestamps(
+    targetList: TargetConfig[],
+    items: RebalanceItem[],
+    profileUpdatedAt?: string
+): TargetConfig[] {
     const itemMap = new Map(items.map((item) => [item.symbol.toUpperCase(), item]));
+    const profileTime = profileUpdatedAt ? new Date(profileUpdatedAt).getTime() : 0;
+
     return targetList.map((t) => {
         const match = itemMap.get(t.symbol.trim().toUpperCase());
+        const matchAdjTime = match?.lastAdjustmentDate ? new Date(match.lastAdjustmentDate).getTime() : 0;
+        const targetAdjTime = t.lastAdjustmentDate ? new Date(t.lastAdjustmentDate).getTime() : 0;
+        const dbAdjustedAfterProfile = Boolean(
+            match &&
+            matchAdjTime > 0 &&
+            (matchAdjTime > targetAdjTime || (profileTime > 0 && matchAdjTime > profileTime))
+        );
+
         return {
             ...t,
+            targetPercentage: dbAdjustedAfterProfile && match ? match.targetPercent : t.targetPercentage,
             lastAdjustmentDate: match?.lastAdjustmentDate ?? t.lastAdjustmentDate ?? null,
             createdAt: match?.createdAt ?? t.createdAt ?? null
         };
@@ -61,6 +76,7 @@ export default function RebalancerPage() {
     const { format, currency } = useCurrency();
 
     const [rebalanceData, setRebalanceData] = useState<RebalanceItem[] | null>(null);
+    const [dataCurrency, setDataCurrency] = useState<string>('');
     const [knownSymbols, setKnownSymbols] = useState<string[]>([]);
     const [configuredInvestmentTypes, setConfiguredInvestmentTypes] = useState<string[]>([]);
 
@@ -116,7 +132,7 @@ export default function RebalancerPage() {
         (profile: RebalanceProfile, items: RebalanceItem[]) => {
             setActiveProfileId(profile.id);
             setDimension(profile.dimension === 'CATEGORY' ? 'CATEGORY' : 'TICKER');
-            setTargets(enrichTargetTimestamps(profile.tickerTargets || [], items));
+            setTargets(enrichTargetTimestamps(profile.tickerTargets || [], items, profile.updatedAt));
             setCategoryTargets(profile.categoryTargets || []);
             setBindFiltersToProfile(
                 Boolean(
@@ -159,6 +175,7 @@ export default function RebalancerPage() {
             const dataJson = await dataRes.json();
             const items: RebalanceItem[] = Array.isArray(dataJson.data) ? dataJson.data : [];
             setRebalanceData(items);
+            setDataCurrency(dataJson.currency || currency);
 
             setKnownSymbols((prev) => {
                 const merged = new Set(prev);
@@ -702,7 +719,7 @@ export default function RebalancerPage() {
                     onSaveTargets={saveTargets}
                 />
 
-                {isLoading && !rebalanceData ? (
+                {isLoading && (!rebalanceData || dataCurrency !== currency) ? (
                     <>
                         <div className={styles.kpiStrip}>
                             <div className={styles.skeletonCard} />
@@ -744,7 +761,7 @@ export default function RebalancerPage() {
                             <article className={styles.kpiCard}>
                                 <div>
                                     <div className={styles.kpiHeader}>
-                                        <span className={styles.kpiLabel}>Portfolio Drift</span>
+                                        <span className={styles.kpiLabel}>Est. Turnover</span>
                                         <span
                                             className={`${styles.statusPill} ${
                                                 summary.outOfBandCount === 0
@@ -762,10 +779,10 @@ export default function RebalancerPage() {
                                 <div className={styles.kpiFooter}>
                                     <div className={styles.kpiFootRow}>
                                         <span className={styles.positiveText}>
-                                            {rows.filter((r) => r.driftPercent < -tolerancePercent).length} Underweight
+                                            {rows.filter((r) => r.driftPercent < -(tolerancePercent + 1e-9)).length} Underweight
                                         </span>
                                         <span className={styles.negativeText}>
-                                            {rows.filter((r) => r.driftPercent > tolerancePercent).length} Overweight
+                                            {rows.filter((r) => r.driftPercent > tolerancePercent + 1e-9).length} Overweight
                                         </span>
                                     </div>
                                     <span className={styles.kpiSubtext}>

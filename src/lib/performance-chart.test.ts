@@ -107,4 +107,38 @@ test('computePerformanceChartMetrics', async (t) => {
         assert.strictEqual(res.valueChange, -412.5);
         assert.strictEqual(res.returnChange, -0.26);
     });
+
+    await t.test('uses prior* baseline on sub-ranges so first-day inflows and <1Y portfolio inception metrics are exact', () => {
+        const res = computePerformanceChartMetrics({
+            range: '1Y',
+            data: [
+                {
+                    // Portfolio began mid-1Y window: prior* is 0 / nav 100
+                    date: '2026-06-01',
+                    value: 1000,
+                    invested: 1000,
+                    nav: 100,
+                    dividend: 0,
+                    unreinvestedDividend: 0,
+                    priorValue: 0,
+                    priorInvested: 0,
+                    priorNav: 100,
+                    priorUnreinvestedDividend: 0
+                },
+                {
+                    date: '2026-11-14',
+                    value: 1200,
+                    invested: 1000,
+                    nav: 120,
+                    dividend: 0,
+                    unreinvestedDividend: 0
+                }
+            ]
+        });
+
+        assert.ok(Math.abs(res.totalContribution - 1000) < 0.01);
+        assert.ok(Math.abs(res.valueChange - 200) < 0.01);
+        assert.ok(Math.abs(res.returnChange - 20) < 0.01);
+    });
 });
+

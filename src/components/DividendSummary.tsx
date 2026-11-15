@@ -34,11 +34,11 @@ export default function DividendSummary({
         return (constituents || [])
             .filter(c => c.quantity > 0.00001)
             .map(c => {
-                const hasStaleUsdRate = c.conversionRate === 1 && c.currency && c.currency !== 'USD' && typeof c.rateToUSD === 'number' && c.rateToUSD !== 1;
-                const effectiveRate = hasStaleUsdRate ? c.rateToUSD : c.conversionRate;
-                const valueTarget = !hasStaleUsdRate && c.valueTarget !== undefined
+                const valueTarget = typeof c.valueTarget === 'number'
                     ? c.valueTarget
-                    : (effectiveRate !== undefined ? c.value * effectiveRate : convert(c.value, c.currency));
+                    : (typeof c.conversionRate === 'number' && Number.isFinite(c.conversionRate)
+                        ? c.value * c.conversionRate
+                        : convert(c.value, c.currency));
                 return { ...c, valueTarget };
             })
             .sort((a, b) => b.valueTarget - a.valueTarget)

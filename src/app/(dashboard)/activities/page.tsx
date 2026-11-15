@@ -179,32 +179,40 @@ export default function ActivitiesPage() {
     const getFilteredActivities = () => {
         let filtered = activities;
 
-        // Date Range Filter
+        // Date Range Filter (compare normalized YYYY-MM-DD strings so UTC midnight dates match local calendar dates)
         if (range !== 'ALL') {
-            const now = new Date();
-            let startDate = new Date();
+            const toYmd = (d: Date) => {
+                const pad = (n: number) => n.toString().padStart(2, '0');
+                return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+            };
+            const activityYmd = (raw: string) => {
+                const trimmed = raw.trim();
+                if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return trimmed.slice(0, 10);
+                const parsed = new Date(trimmed);
+                return Number.isNaN(parsed.getTime()) ? '' : toYmd(parsed);
+            };
 
             if (range === 'CUSTOM' && customStart && customEnd) {
-                startDate = new Date(customStart);
-                const endDate = new Date(customEnd);
-                endDate.setHours(23, 59, 59, 999);
                 filtered = filtered.filter(a => {
-                    const date = new Date(a.date);
-                    return date >= startDate && date <= endDate;
+                    const ymd = activityYmd(a.date);
+                    return ymd >= customStart && ymd <= customEnd;
                 });
             } else {
+                const now = new Date();
+                const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
                 switch (range) {
-                    case '1W': startDate.setDate(now.getDate() - 7); break;
-                    case '1M': startDate.setMonth(now.getMonth() - 1); break;
-                    case '3M': startDate.setMonth(now.getMonth() - 3); break;
-                    case '6M': startDate.setMonth(now.getMonth() - 6); break;
+                    case '1W': startDate.setDate(startDate.getDate() - 7); break;
+                    case '1M': startDate.setMonth(startDate.getMonth() - 1); break;
+                    case '3M': startDate.setMonth(startDate.getMonth() - 3); break;
+                    case '6M': startDate.setMonth(startDate.getMonth() - 6); break;
                     case 'YTD': startDate.setMonth(0, 1); break;
-                    case '1Y': startDate.setFullYear(now.getFullYear() - 1); break;
-                    case '2Y': startDate.setFullYear(now.getFullYear() - 2); break;
-                    case '3Y': startDate.setFullYear(now.getFullYear() - 3); break;
+                    case '1Y': startDate.setFullYear(startDate.getFullYear() - 1); break;
+                    case '2Y': startDate.setFullYear(startDate.getFullYear() - 2); break;
+                    case '3Y': startDate.setFullYear(startDate.getFullYear() - 3); break;
                 }
-                if (range !== 'ALL' && range !== 'CUSTOM') {
-                    filtered = filtered.filter(a => new Date(a.date) >= startDate);
+                if (range !== 'CUSTOM') {
+                    const startYmd = toYmd(startDate);
+                    filtered = filtered.filter(a => activityYmd(a.date) >= startYmd);
                 }
             }
         }
@@ -1380,14 +1388,16 @@ export default function ActivitiesPage() {
                                 ) : (
                                     <AnimatePresence mode="popLayout">
                                         {paginatedActivities.map((activity) => {
-                                            const fromCurrency = activity.investment.currencyCode || 'USD';
+                                            const fromCurrency = activity.currency || activity.investment.currencyCode || 'USD';
+                                            const isSplit = activity.type === 'STOCK_SPLIT' || activity.type === 'SPLIT';
                                             const convertedPrice = convert(activity.price, fromCurrency);
 
                                             let total = activity.quantity * activity.price;
-                                            if (activity.type === 'BUY') {
-                                                total += (activity.fee || 0);
-                                            } else if (activity.type === 'SELL') {
-                                                total -= (activity.fee || 0);
+                                            const fee = activity.fee || 0;
+                                            if (['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT', 'DIVIDEND', 'INTEREST'].includes(activity.type)) {
+                                                total -= fee;
+                                            } else if (['BUY', 'ADD', 'DEPOSIT', 'TRANSFER_IN', 'FEE'].includes(activity.type)) {
+                                                total += fee;
                                             }
 
                                             const convertedTotal = convert(total, fromCurrency);
@@ -1421,9 +1431,9 @@ export default function ActivitiesPage() {
                                                             {activity.type}
                                                         </span>
                                                     </td>
-                                                    <td style={{ textAlign: 'right' }}>{formatQuantity(activity.quantity)}</td>
-                                                    <td style={{ textAlign: 'right' }}>{format(convertedPrice)}</td>
-                                                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{format(convertedTotal)}</td>
+                                                    <td style={{ textAlign: 'right' }}>{isSplit ? `${formatQuantity(activity.quantity)}:1` : formatQuantity(activity.quantity)}</td>
+                                                    <td style={{ textAlign: 'right' }}>{isSplit ? '—' : format(convertedPrice)}</td>
+                                                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{isSplit ? '—' : format(convertedTotal)}</td>
                                                     <td>
                                                         <div style={{ fontWeight: 600 }}>
                                                             {activity.account ?

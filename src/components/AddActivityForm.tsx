@@ -130,7 +130,7 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
             setSymbolName(initialData.investment.name);
             setSymbolType(initialData.investment.type);
             setInvestmentType(initialData.investment.type);
-            setCurrency(initialData.investment.currencyCode || 'CAD');
+            setCurrency(initialData.currency || initialData.investment.currencyCode || 'CAD');
 
             setType(initialData.type);
             setDate(toLocalDateString(initialData.date));
@@ -553,7 +553,16 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
                 <div className={styles.field}>
                     <label>Total Amount</label>
                     <div className={styles.totalDisplay}>
-                        {currency} {((parseFloat(quantity || '0') * parseFloat(price || '0')) + parseFloat(fee || '0')).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {type === 'STOCK_SPLIT' || type === 'SPLIT'
+                            ? `${quantity || '0'}:1 Split`
+                            : (() => {
+                                const gross = parseFloat(quantity || '0') * parseFloat(price || '0');
+                                const feeVal = parseFloat(fee || '0');
+                                const net = ['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT', 'DIVIDEND', 'INTEREST'].includes(type)
+                                    ? gross - feeVal
+                                    : gross + feeVal;
+                                return `${currency} ${net.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                            })()}
                     </div>
                 </div>
             </div>

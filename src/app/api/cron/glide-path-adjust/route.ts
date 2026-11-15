@@ -35,7 +35,7 @@ async function runGlidePathAdjustment(options: { dryRun: boolean; forceOneYearSt
 
         const isDue = referenceDate <= oneYearAgo;
         const shouldApply = options.forceOneYearStep || isDue;
-        const newTarget = Math.max(0, Math.round((target.targetPercentage + drift) * 10) / 10);
+        const newTarget = Math.min(100, Math.max(0, Math.round((target.targetPercentage + drift) * 10) / 10));
 
         if (shouldApply && !options.dryRun) {
             updateOperations.push(

@@ -78,7 +78,8 @@ function computeMaxDrawdown(values: number[]): number {
     let peak = -Infinity;
     let maxDd = 0;
     for (const val of values) {
-        if (!Number.isFinite(val) || val <= 0) continue;
+        if (!Number.isFinite(val) || val < 0) continue;
+        if (val === 0 && peak <= 0) continue;
         if (val > peak) peak = val;
         if (peak > 0) {
             const dd = ((val - peak) / peak) * 100;

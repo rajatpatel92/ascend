@@ -1,9 +1,14 @@
 import { NextResponse } from 'next/server';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { requireAuth } from '@/lib/api-auth';
+import { ACTIVE_QUANTITY_EPSILON, buildBehaviorMap } from '@/lib/activity-helpers';
+import {
+    analyzeDividendHistory,
+    buildPerShareDividendEventsFromActivities,
+    type PortfolioActivityLike
+} from '@/lib/dividend-estimator';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,116 +52,136 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
 
         const historicalPrices = await MarketDataService.getHistoricalPrices(symbol);
 
-        // 3. Calculate Stats
-        let totalQuantity = 0;
-        let totalCost = 0;
+        // 3. Calculate Stats (Per-account cost basis + split scoping matching /api/portfolio)
         let totalFees = 0;
-        const accountAllocation: Record<string, { quantity: number, value: number, name: string, type: string }> = {};
+        const accountState: Record<string, {
+            id: string;
+            accountId: string | null;
+            quantity: number;
+            costBasis: number;
+            value: number;
+            name: string;
+            type: string;
+            platformName: string;
+        }> = {};
+        const appliedSplits = new Set<string>();
 
-        // Fetch activity types for behavior
         const activityTypes = await prisma.activityType.findMany();
-        const behaviorMap = new Map<string, string>();
-        activityTypes.forEach(t => behaviorMap.set(t.name, t.behavior));
-
-        // Default behaviors
-        if (!behaviorMap.has('BUY')) behaviorMap.set('BUY', 'ADD');
-        if (!behaviorMap.has('SELL')) behaviorMap.set('SELL', 'REMOVE');
-        if (!behaviorMap.has('DIVIDEND')) behaviorMap.set('DIVIDEND', 'NEUTRAL');
-        if (!behaviorMap.has('STOCK_SPLIT')) behaviorMap.set('STOCK_SPLIT', 'SPLIT');
-        if (!behaviorMap.has('TRANSFER_IN')) behaviorMap.set('TRANSFER_IN', 'ADD');
-        if (!behaviorMap.has('TRANSFER_OUT')) behaviorMap.set('TRANSFER_OUT', 'REMOVE');
+        const behaviorMap = buildBehaviorMap(activityTypes);
 
         let firstBuyDate: Date | null = null;
-
         let totalDividends = 0;
-
-        const ACTIVE_QUANTITY_EPSILON = 0.00001;
+        const rawActivities: PortfolioActivityLike[] = [];
 
         for (const activity of investment.activities) {
+            rawActivities.push({
+                type: activity.type,
+                date: activity.date,
+                quantity: activity.quantity,
+                price: activity.price,
+                fee: activity.fee,
+                accountId: activity.accountId
+            });
+
             const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
             const absQty = Math.abs(activity.quantity);
             const amount = absQty * activity.price;
-            totalFees += activity.fee || 0;
+            const fee = activity.fee || 0;
+            totalFees += fee;
 
-            if (behavior === 'ADD') {
-                totalQuantity += absQty;
-                totalCost += amount;
-                if (!firstBuyDate || new Date(activity.date) < firstBuyDate) {
-                    firstBuyDate = new Date(activity.date);
-                }
-
-                // Account Allocation
-                if (activity.account) {
-                    const accId = activity.account.id;
-                    if (!accountAllocation[accId]) {
-                        accountAllocation[accId] = {
-                            quantity: 0,
-                            value: 0,
-                            name: activity.account.name,
-                            type: activity.account.type
-                        };
-                    }
-                    accountAllocation[accId].quantity += absQty;
-                }
-
-            } else if (behavior === 'REMOVE') {
-                const prevQty = totalQuantity;
-                const avgCost = prevQty > 0 ? totalCost / prevQty : 0;
-                totalQuantity -= absQty;
-                if (totalQuantity < 1e-9) totalQuantity = 0;
-
-                if (totalQuantity === 0) {
-                    totalCost = 0;
-                } else {
-                    totalCost -= absQty * avgCost;
-                    if (totalCost < 1e-9) totalCost = 0;
-                }
-
-                if (activity.account) {
-                    const accId = activity.account.id;
-                    if (accountAllocation[accId]) {
-                        accountAllocation[accId].quantity -= absQty;
-                        if (accountAllocation[accId].quantity < 1e-9) {
-                            accountAllocation[accId].quantity = 0;
+            if (behavior === 'SPLIT') {
+                const multiplier = absQty;
+                if (multiplier > 0) {
+                    const dayKey = new Date(activity.date).toISOString().split('T')[0];
+                    if (activity.accountId) {
+                        for (const [key, acc] of Object.entries(accountState)) {
+                            if (acc.accountId === activity.accountId && acc.quantity > 0) {
+                                const dedupKey = `${dayKey}:${key}:${multiplier}`;
+                                if (!appliedSplits.has(dedupKey)) {
+                                    appliedSplits.add(dedupKey);
+                                    acc.quantity *= multiplier;
+                                }
+                            }
+                        }
+                    } else {
+                        const hasUnassigned = Object.values(accountState).some(acc => !acc.accountId && acc.quantity > 0);
+                        for (const [key, acc] of Object.entries(accountState)) {
+                            if (hasUnassigned && acc.accountId) continue;
+                            if (acc.quantity > 0) {
+                                const dedupKey = `${dayKey}:${key}:${multiplier}`;
+                                if (!appliedSplits.has(dedupKey)) {
+                                    appliedSplits.add(dedupKey);
+                                    acc.quantity *= multiplier;
+                                }
+                            }
                         }
                     }
                 }
-            } else if (behavior === 'SPLIT') {
-                const multiplier = absQty; // Quantity holds the ratio
-                if (multiplier > 0) {
-                    totalQuantity *= multiplier;
-                    // Do NOT change totalCost (Cost Basis). Total Investment remains same, just more shares.
+                continue;
+            }
 
-                    // Update Account Allocations
-                    Object.values(accountAllocation).forEach(acc => {
-                        acc.quantity *= multiplier;
-                    });
+            const platformName = activity.platform?.name || 'Unknown';
+            const accKey = activity.account
+                ? `${activity.account.id}:${platformName}`
+                : `__unassigned__:${platformName}`;
+
+            if (!accountState[accKey] && (behavior === 'ADD' || behavior === 'REMOVE')) {
+                accountState[accKey] = {
+                    id: accKey,
+                    accountId: activity.accountId || null,
+                    quantity: 0,
+                    costBasis: 0,
+                    value: 0,
+                    name: activity.account?.name || 'Unassigned',
+                    type: activity.account?.type || 'Unassigned',
+                    platformName
+                };
+            }
+
+            if (behavior === 'ADD') {
+                const acc = accountState[accKey];
+                acc.quantity += absQty;
+                acc.costBasis += amount + fee;
+                if (!firstBuyDate || new Date(activity.date) < firstBuyDate) {
+                    firstBuyDate = new Date(activity.date);
                 }
+            } else if (behavior === 'REMOVE') {
+                const acc = accountState[accKey];
+                const proportion = acc.quantity > 0 ? Math.min(1, absQty / acc.quantity) : 0;
+                const costToRemove = acc.costBasis * proportion;
+                acc.quantity = Math.max(0, acc.quantity - absQty);
+                if (acc.quantity < 1e-9) acc.quantity = 0;
+                acc.costBasis = acc.quantity === 0 ? 0 : Math.max(0, acc.costBasis - costToRemove);
             } else if (activity.type === 'DIVIDEND') {
-                totalDividends += Math.max(0, amount - (activity.fee || 0));
+                totalDividends += Math.max(0, amount - fee);
             }
         }
+
+        let totalQuantity = 0;
+        let totalCost = 0;
+        const price = marketData?.price || 0;
+
+        Object.values(accountState).forEach(acc => {
+            if (acc.quantity <= ACTIVE_QUANTITY_EPSILON) {
+                acc.quantity = 0;
+                acc.costBasis = 0;
+                acc.value = 0;
+            } else {
+                acc.value = acc.quantity * price;
+                totalQuantity += acc.quantity;
+                totalCost += acc.costBasis;
+            }
+        });
 
         if (totalQuantity <= ACTIVE_QUANTITY_EPSILON) {
             totalQuantity = 0;
             totalCost = 0;
         }
-        Object.values(accountAllocation).forEach(acc => {
-            if (acc.quantity <= ACTIVE_QUANTITY_EPSILON) {
-                acc.quantity = 0;
-            }
-        });
 
-        const price = marketData?.price || 0;
         const value = totalQuantity > 0 ? totalQuantity * price : 0;
         const avgPrice = totalQuantity > 0 ? totalCost / totalQuantity : 0;
         const absoluteReturn = value - totalCost;
         const percentReturn = totalCost > 0 ? (absoluteReturn / totalCost) * 100 : 0;
-
-        // Calculate Account Allocation Value
-        Object.values(accountAllocation).forEach(acc => {
-            acc.value = acc.quantity * price;
-        });
 
         // Investment Age
         let investmentAge = 'N/A';
@@ -170,70 +195,129 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
             }
         }
 
-        // Calculate Average Price History
+        // Calculate Average Price History (matching post-split chart scale & including fees)
         const avgPriceHistory: Record<string, number> = {};
         const sortedActivities = [...investment.activities].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-        // Get all dates from historical prices
         const historicalDates = Object.keys(historicalPrices)
-            .filter(key => !['1W', '1M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', '10Y', 'ALL'].includes(key))
+            .filter(key => /^\d{4}-\d{2}-\d{2}$/.test(key))
             .sort();
 
         if (historicalDates.length > 0) {
-            let currentTotalQty = 0;
-            let currentTotalCost = 0;
+            const histAccounts = new Map<string, { accountId: string | null; qty: number; cost: number }>();
+            const histAppliedAccountSplits = new Set<string>();
+            const histAppliedCorporateSplits = new Set<string>();
             let activityIndex = 0;
             let currentCumSplit = 1;
 
             for (const dateStr of historicalDates) {
-                const date = new Date(dateStr);
-
-                // Process activities up to this date
                 while (activityIndex < sortedActivities.length) {
                     const activity = sortedActivities[activityIndex];
-                    const activityDate = new Date(activity.date);
+                    const activityDateStr = new Date(activity.date).toISOString().split('T')[0];
 
-                    if (activityDate > date) break;
+                    if (activityDateStr > dateStr) break;
 
                     const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
                     const absQty = Math.abs(activity.quantity);
                     const amount = absQty * activity.price;
+                    const fee = activity.fee || 0;
+                    const accKey = activity.accountId || '__unassigned__';
 
                     if (behavior === 'ADD') {
-                        currentTotalQty += absQty;
-                        currentTotalCost += amount;
+                        const acc = histAccounts.get(accKey) || { accountId: activity.accountId || null, qty: 0, cost: 0 };
+                        acc.qty += absQty;
+                        acc.cost += amount + fee;
+                        histAccounts.set(accKey, acc);
                     } else if (behavior === 'REMOVE') {
-                        // Reduce cost proportionally
-                        if (currentTotalQty > 0) {
-                            const avgCost = currentTotalCost / currentTotalQty;
-                            currentTotalCost -= absQty * avgCost;
-                            currentTotalQty -= absQty;
+                        const acc = histAccounts.get(accKey);
+                        if (acc && acc.qty > 0) {
+                            const proportion = Math.min(1, absQty / acc.qty);
+                            acc.cost = Math.max(0, acc.cost - acc.cost * proportion);
+                            acc.qty = Math.max(0, acc.qty - absQty);
+                            if (acc.qty < 1e-9) {
+                                acc.qty = 0;
+                                acc.cost = 0;
+                            }
                         }
-                    } else if (behavior === 'SPLIT') {
-                        const multiplier = absQty;
-                        if (multiplier > 0) {
-                            currentTotalQty *= multiplier;
-                            currentCumSplit *= multiplier;
+                    } else if (behavior === 'SPLIT' && absQty > 0) {
+                        if (activity.accountId) {
+                            const acc = histAccounts.get(activity.accountId);
+                            const splitAccKey = `${activityDateStr}:${activity.accountId}:${absQty}`;
+                            if (acc && acc.qty > 0 && !histAppliedAccountSplits.has(splitAccKey)) {
+                                histAppliedAccountSplits.add(splitAccKey);
+                                acc.qty *= absQty;
+                            }
+                        } else {
+                            const unassigned = histAccounts.get('__unassigned__');
+                            if (unassigned && unassigned.qty > 0) {
+                                const splitKey = `${activityDateStr}:__unassigned__:${absQty}`;
+                                if (!histAppliedAccountSplits.has(splitKey)) {
+                                    histAppliedAccountSplits.add(splitKey);
+                                    unassigned.qty *= absQty;
+                                }
+                            } else {
+                                const splitKey = `${activityDateStr}:__global__:${absQty}`;
+                                if (!histAppliedAccountSplits.has(splitKey)) {
+                                    histAppliedAccountSplits.add(splitKey);
+                                    for (const acc of histAccounts.values()) {
+                                        acc.qty *= absQty;
+                                    }
+                                }
+                            }
+                        }
+
+                        const corpKey = `${activityDateStr}:${absQty}`;
+                        if (!histAppliedCorporateSplits.has(corpKey)) {
+                            histAppliedCorporateSplits.add(corpKey);
+                            currentCumSplit *= absQty;
                         }
                     }
 
                     activityIndex++;
                 }
 
-                if (currentTotalQty > 0) {
-                    avgPriceHistory[dateStr] = (currentTotalCost / currentTotalQty) * currentCumSplit;
-                } else {
-                    avgPriceHistory[dateStr] = 0;
+                let dayQty = 0;
+                let dayCost = 0;
+                for (const acc of histAccounts.values()) {
+                    if (acc.qty > ACTIVE_QUANTITY_EPSILON) {
+                        dayQty += acc.qty;
+                        dayCost += acc.cost;
+                    }
                 }
+
+                avgPriceHistory[dateStr] = dayQty > ACTIVE_QUANTITY_EPSILON
+                    ? (dayCost / dayQty) * currentCumSplit
+                    : 0;
             }
 
-            // Retroactively adjust all calculated average prices to present share equivalents
             if (currentCumSplit !== 1) {
                 for (const dateStr in avgPriceHistory) {
                     avgPriceHistory[dateStr] /= currentCumSplit;
                 }
             }
         }
+
+        // Local activity dividend fallback when Yahoo Finance omits ETF dividend metrics
+        const startOfToday = new Date();
+        startOfToday.setUTCHours(0, 0, 0, 0);
+        const hasMarketDividendRate = Boolean(marketData?.dividendRate && marketData.dividendRate > 0);
+        const activityDivEvents = !hasMarketDividendRate && rawActivities.length > 0
+            ? buildPerShareDividendEventsFromActivities(rawActivities, behaviorMap)
+            : [];
+        const localDivEstimate = activityDivEvents.length > 0
+            ? analyzeDividendHistory(activityDivEvents, {
+                now: startOfToday,
+                filterLastYearFromNow: true,
+                rollForward: true,
+                annualizeShortHistory: true
+            })
+            : undefined;
+        const effectiveDividendRate = hasMarketDividendRate
+            ? marketData!.dividendRate!
+            : (localDivEstimate?.annualizedRate || localDivEstimate?.trailingAnnualRate);
+        const effectiveDividendYield = (marketData?.dividendYield && marketData.dividendYield > 0)
+            ? marketData.dividendYield
+            : (effectiveDividendRate && price > 0 ? effectiveDividendRate / price : undefined);
 
         return NextResponse.json({
             symbol,
@@ -257,11 +341,11 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                 country: marketData?.country,
                 sectorAllocations: (marketData as any)?.sectorAllocations,
                 countryAllocations: (marketData as any)?.countryAllocations,
-                dividendRate: marketData?.dividendRate,
-                dividendYield: marketData?.dividendYield
+                dividendRate: effectiveDividendRate,
+                dividendYield: effectiveDividendYield
             },
             allocation: {
-                accounts: Object.values(accountAllocation).filter(a => a.quantity > ACTIVE_QUANTITY_EPSILON)
+                accounts: Object.values(accountState).filter(a => a.quantity > ACTIVE_QUANTITY_EPSILON)
             },
             activities: investment.activities,
             historical: historicalPrices,

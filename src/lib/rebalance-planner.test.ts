@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     computeRebalancePlan,
     formatShareCount,
+    inferPriceInDisplayCurrency,
     normalizeTargetsTo100,
     seedTargetsFromHoldings,
     buildGlidePathSeries,
@@ -79,7 +80,7 @@ test('computeRebalancePlan - FULL mode respects drift tolerance band and calcula
     assert.equal(vfv.tradeShares, 10);
     assert.equal(vfv.postTradePercent, 50);
 
-    // High tolerance turns trades into HOLD
+    // High tolerance turns trades into HOLD and reports 0% actual turnover
     const wideBand = computeRebalancePlan(SAMPLE_ITEMS, {
         mode: 'FULL',
         newCash: 0,
@@ -89,6 +90,7 @@ test('computeRebalancePlan - FULL mode respects drift tolerance band and calcula
     assert.equal(wideBand.summary.buyCount, 0);
     assert.equal(wideBand.summary.sellCount, 0);
     assert.equal(wideBand.summary.holdCount, 3);
+    assert.equal(wideBand.summary.portfolioTurnoverPercent, 0);
 });
 
 test('computeRebalancePlan - BUY_ONLY mode allocates new cash exclusively to underweight holdings', () => {
@@ -107,6 +109,8 @@ test('computeRebalancePlan - BUY_ONLY mode allocates new cash exclusively to und
     assert.equal(plan.summary.totalSellValue, 0);
     assert.ok(Math.abs(plan.summary.totalBuyValue - 1000) < 0.01);
     assert.ok(Math.abs(plan.summary.postTradeTotalValue - 11000) < 0.01);
+    // One-way trade-based turnover: 1000 / (2 * 11000) * 100 = 4.545...%
+    assert.ok(Math.abs(plan.summary.portfolioTurnoverPercent - (1000 / 22000) * 100) < 0.001);
 
     const vfv = plan.rows.find((r) => r.symbol === 'VFV.TO')!;
     const xeqt = plan.rows.find((r) => r.symbol === 'XEQT.TO')!;
@@ -131,6 +135,87 @@ test('computeRebalancePlan - BUY_ONLY wholeShares floors shares to stay within c
     assert.equal(plan.summary.totalBuyValue, 80);
     assert.equal(plan.summary.unallocatedCash, 20);
     assert.equal(plan.summary.postTradeTotalValue, 10100);
+});
+
+test('computeRebalancePlan - wholeShares SELL never oversells held shares', () => {
+    const exitItem: RebalanceItem[] = [
+        {
+            symbol: 'TINY',
+            currentPercent: 100,
+            targetPercent: 0,
+            glidePathPercent: null,
+            driftPercent: 100,
+            currentValue: 100,
+            targetValue: 0,
+            driftValue: 100,
+            action: 'SELL',
+            actionShares: 1,
+            assetPrice: 100,
+            priceInTargetCurrency: 100,
+            assetCurrency: 'USD',
+            accounts: [
+                { accountId: null, accountName: 'Broker', accountType: 'TAXABLE', platformName: 'Questrade', quantity: 0.99, value: 99 }
+            ]
+        }
+    ];
+    const plan = computeRebalancePlan(exitItem, {
+        mode: 'FULL',
+        newCash: 0,
+        tolerancePercent: 0,
+        wholeShares: true
+    });
+    assert.equal(plan.rows[0].tradeShares, 0);
+    assert.equal(plan.rows[0].effectiveAction, 'HOLD');
+    assert.ok(plan.rows[0].postTradeValue >= 0);
+
+    const multiShareItem: RebalanceItem[] = [
+        {
+            symbol: 'EXIT.TO',
+            currentPercent: 100,
+            targetPercent: 0,
+            glidePathPercent: null,
+            driftPercent: 100,
+            currentValue: 205,
+            targetValue: 0,
+            driftValue: 205,
+            action: 'SELL',
+            actionShares: 2.05,
+            assetPrice: 100,
+            priceInTargetCurrency: 100,
+            assetCurrency: 'CAD',
+            accounts: [
+                { accountId: null, accountName: 'TFSA', accountType: 'TFSA', platformName: 'WS', quantity: 2.05, value: 205 }
+            ]
+        }
+    ];
+    const multiPlan = computeRebalancePlan(multiShareItem, {
+        mode: 'FULL',
+        newCash: 0,
+        tolerancePercent: 0,
+        wholeShares: true
+    });
+    // Rounded shares would be 2 (<= 2.05 held), never 3 even if drift slightly rounded up
+    assert.equal(multiPlan.rows[0].tradeShares, 2);
+    assert.ok(multiPlan.rows[0].tradeValue <= multiShareItem[0].currentValue);
+});
+
+test('inferPriceInDisplayCurrency prefers priceInTargetCurrency even when driftValue is 0', () => {
+    const item: RebalanceItem = {
+        symbol: 'AAPL',
+        currentPercent: 50,
+        targetPercent: 50,
+        glidePathPercent: null,
+        driftPercent: 0,
+        currentValue: 1400,
+        targetValue: 1400,
+        driftValue: 0,
+        action: 'HOLD',
+        actionShares: 0,
+        assetPrice: 100, // USD
+        priceInTargetCurrency: 140, // CAD
+        assetCurrency: 'USD'
+    };
+    assert.equal(inferPriceInDisplayCurrency(item), 140);
 });
 
 test('formatShareCount handles fractional and whole modes cleanly', () => {
@@ -165,15 +250,19 @@ test('seedTargetsFromHoldings preserves existing glide paths and sums to 100%', 
     assert.equal(Math.round(sum * 10) / 10, 100);
 });
 
-test('buildGlidePathSeries projects target percentages over horizon clamping at 0%', () => {
+test('buildGlidePathSeries projects target percentages over horizon clamping within [0%, 100%]', () => {
     const targets: TargetConfig[] = [
-        { symbol: 'EQ', targetPercentage: 80, yearlyDriftAdjustment: -2 },
-        { symbol: 'BOND', targetPercentage: 20, yearlyDriftAdjustment: 2 }
+        { symbol: 'EQ', targetPercentage: 80, yearlyDriftAdjustment: -10 },
+        { symbol: 'BOND', targetPercentage: 20, yearlyDriftAdjustment: 10 }
     ];
-    const series = buildGlidePathSeries(targets, [0, 5]);
+    const series = buildGlidePathSeries(targets, [0, 5, 10]);
     assert.equal(series[0].EQ, 80);
     assert.equal(series[0].BOND, 20);
-    assert.equal(series[1].EQ, 70);
-    assert.equal(series[1].BOND, 30);
+    assert.equal(series[1].EQ, 30);
+    assert.equal(series[1].BOND, 70);
     assert.equal(series[1].totalPercent, 100);
+    // Year 10 clamps EQ at 0 and BOND at 100 (never 120)
+    assert.equal(series[2].EQ, 0);
+    assert.equal(series[2].BOND, 100);
+    assert.equal(series[2].totalPercent, 100);
 });

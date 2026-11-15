@@ -76,6 +76,59 @@ test('dividend-estimator', async (t) => {
         assert.ok(Math.abs(events[1].perShareAmount - 0.15) < 1e-6);
     });
 
+    await t.test('does not compound multi-account STOCK_SPLIT rows (ratio^N bug regression)', () => {
+        const behaviorMap = new Map<string, string>([
+            ['BUY', 'ADD'],
+            ['DIVIDEND', 'NEUTRAL'],
+            ['STOCK_SPLIT', 'SPLIT']
+        ]);
+
+        const events = buildPerShareDividendEventsFromActivities(
+            [
+                { type: 'BUY', accountId: 'acc-1', date: '2026-01-05T00:00:00.000Z', quantity: 10, price: 100 },
+                { type: 'BUY', accountId: 'acc-2', date: '2026-01-05T00:00:00.000Z', quantity: 10, price: 100 },
+                // Pre-split dividend lump sum on 20 total shares ($20 -> $1.00/share pre-split)
+                { type: 'DIVIDEND', accountId: 'acc-1', date: '2026-02-01T00:00:00.000Z', quantity: 1, price: 10, fee: 0 },
+                { type: 'DIVIDEND', accountId: 'acc-2', date: '2026-02-01T00:00:00.000Z', quantity: 1, price: 10, fee: 0 },
+                // SplitService writes one 2:1 split row per account
+                { type: 'STOCK_SPLIT', accountId: 'acc-1', date: '2026-02-15T00:00:00.000Z', quantity: 2, price: 0 },
+                { type: 'STOCK_SPLIT', accountId: 'acc-2', date: '2026-02-15T00:00:00.000Z', quantity: 2, price: 0 },
+                // Post-split total shares should be 40 (not 80), lump-sum $20 -> $0.50/share
+                { type: 'DIVIDEND', accountId: 'acc-1', date: '2026-03-01T00:00:00.000Z', quantity: 1, price: 10, fee: 0 },
+                { type: 'DIVIDEND', accountId: 'acc-2', date: '2026-03-01T00:00:00.000Z', quantity: 1, price: 10, fee: 0 }
+            ],
+            behaviorMap
+        );
+
+        assert.strictEqual(events.length, 2);
+        assert.ok(Math.abs(events[0].perShareAmount - 0.50) < 1e-6, `Expected 0.50, got ${events[0].perShareAmount}`);
+        assert.ok(Math.abs(events[1].perShareAmount - 0.50) < 1e-6, `Expected 0.50, got ${events[1].perShareAmount}`);
+    });
+
+    await t.test('trims 12M boundary overlap for annual and semi-annual dividend series', () => {
+        const now = new Date('2026-11-14T00:00:00.000Z');
+        const annualRes = analyzeDividendHistory(
+            [
+                { date: '2025-11-15T00:00:00.000Z', perShareAmount: 2.0 },
+                { date: '2026-11-14T00:00:00.000Z', perShareAmount: 2.0 }
+            ],
+            { now, filterLastYearFromNow: true }
+        );
+        assert.ok(annualRes);
+        assert.ok(Math.abs((annualRes.trailingAnnualRate || 0) - 2.0) < 1e-6);
+
+        const semiRes = analyzeDividendHistory(
+            [
+                { date: '2025-11-16T00:00:00.000Z', perShareAmount: 1.5 },
+                { date: '2026-05-15T00:00:00.000Z', perShareAmount: 1.5 },
+                { date: '2026-11-14T00:00:00.000Z', perShareAmount: 1.5 }
+            ],
+            { now, filterLastYearFromNow: true }
+        );
+        assert.ok(semiRes);
+        assert.ok(Math.abs((semiRes.trailingAnnualRate || 0) - 3.0) < 1e-6);
+    });
+
     await t.test('returns undefined when input events are empty or invalid', () => {
         assert.strictEqual(analyzeDividendHistory([]), undefined);
         assert.strictEqual(

@@ -142,3 +142,38 @@ test('POST /api/cron/glide-path-adjust forceOneYearStep commits transaction for 
     assert.equal(txOps.length, 1);
     assert.equal(body.updated[0].newTarget, 68.5);
 });
+
+test('POST /api/cron/glide-path-adjust clamps newTarget within [0, 100]', async () => {
+    mockSession = { user: { id: 'a1', role: 'ADMIN' } };
+    txOps = [];
+    const recentDate = new Date();
+    mockTargets = [
+        {
+            id: 't-high',
+            symbol: 'ZAG.TO',
+            targetPercentage: 98,
+            yearlyDriftAdjustment: 5,
+            lastAdjustmentDate: recentDate,
+            createdAt: recentDate
+        },
+        {
+            id: 't-low',
+            symbol: 'VFV.TO',
+            targetPercentage: 2,
+            yearlyDriftAdjustment: -5,
+            lastAdjustmentDate: recentDate,
+            createdAt: recentDate
+        }
+    ];
+
+    const res = await POST(new Request('http://localhost/api/cron/glide-path-adjust', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: true, forceOneYearStep: true })
+    }));
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.updated[0].newTarget, 100);
+    assert.equal(body.updated[1].newTarget, 0);
+});

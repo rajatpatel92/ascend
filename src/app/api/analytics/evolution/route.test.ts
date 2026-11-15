@@ -148,4 +148,28 @@ test('POST /api/analytics/evolution account filtering alignment', async (t) => {
             ['act-assigned']
         );
     });
+
+    await t.test('returns dividend and unreinvestedDividend fields on evolution points', async () => {
+        g.__mockEvolutionAnalytics.calculateComparisonHistory = async () => ({
+            portfolio: [{ date: '2025-01-03', marketValue: 1300, nav: 104, netFlow: 1250, units: 12.5, dividend: 25, unreinvestedDividends: 15 }],
+            benchmark: [],
+            summary: { portfolioReturn: 4, benchmarkReturn: 0 },
+            performers: { top: [], bottom: [] },
+            debug: []
+        });
+
+        const req = new Request('http://localhost/api/analytics/evolution', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ filters: { accountTypes: [], assetClasses: [] }, currency: 'CAD', mode: 'evolution' })
+        });
+
+        const res = await POST(req);
+        assert.strictEqual(res.status, 200);
+        const body = await res.json();
+        assert.strictEqual(body.evolution.length, 1);
+        assert.strictEqual(body.evolution[0].dividend, 25);
+        assert.strictEqual(body.evolution[0].unreinvestedDividend, 15);
+    });
 });
+

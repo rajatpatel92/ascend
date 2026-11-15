@@ -189,43 +189,63 @@ function decomposeDimension(
     residualLabel: string,
     getFallbackLabel: () => string
 ): DimensionContribution[] {
-    if (typeof value !== 'number' || value < 0.01) return [];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0.01) return [];
     const results: DimensionContribution[] = [];
 
     if (allocations && Array.isArray(allocations) && allocations.length > 0) {
-        let allocatedWeightSum = 0;
+        const rawEntries: { category: string; weight: number }[] = [];
+        let rawSum = 0;
+
         for (const obj of allocations) {
             if (!obj || typeof obj !== 'object') continue;
             for (const [key, fraction] of Object.entries(obj)) {
                 const numFraction = typeof fraction === 'number' ? fraction : Number(fraction);
-                if (!isNaN(numFraction) && numFraction > 0) {
-                    const allocatedVal = Math.round(value * numFraction * 100) / 100;
-                    allocatedWeightSum += numFraction;
-                    if (allocatedVal >= 0.01) {
-                        results.push({
-                            category: normalize(key),
-                            allocatedValue: allocatedVal,
-                            weightInHolding: numFraction,
-                            isLookThrough: true
-                        });
-                    }
+                if (Number.isFinite(numFraction) && numFraction > 0) {
+                    rawEntries.push({ category: normalize(key), weight: numFraction });
+                    rawSum += numFraction;
                 }
             }
         }
 
-        if (allocatedWeightSum < 0.99 && allocatedWeightSum >= 0) {
-            const remainingFraction = Math.max(0, 1.0 - allocatedWeightSum);
-            const remainingValue = Math.round(value * remainingFraction * 100) / 100;
-            if (remainingValue >= 0.01) {
-                results.push({
-                    category: residualLabel,
-                    allocatedValue: remainingValue,
-                    weightInHolding: remainingFraction,
-                    isLookThrough: true
-                });
+        if (rawEntries.length > 0 && rawSum > 0) {
+            // # Reason: Normalize 0..100 percentage inputs (sum > 1.5) to fractions, and renormalize
+            // minor rounding drift in [0.99, 1.01] or >1.0 sums so total allocated value stays exact.
+            const scaleToFraction = rawSum > 1.5 ? 100 : 1;
+            const fractionalSum = rawSum / scaleToFraction;
+            const normDivisor = fractionalSum >= 0.99 ? fractionalSum : 1;
+
+            let allocatedWeightSum = 0;
+            for (const entry of rawEntries) {
+                const numFraction = (entry.weight / scaleToFraction) / normDivisor;
+                const allocatedVal = Math.round(value * numFraction * 100) / 100;
+                allocatedWeightSum += numFraction;
+                if (allocatedVal >= 0.01) {
+                    results.push({
+                        category: entry.category,
+                        allocatedValue: allocatedVal,
+                        weightInHolding: numFraction,
+                        isLookThrough: true
+                    });
+                }
+            }
+
+            if (fractionalSum < 0.99 && allocatedWeightSum < 1.0) {
+                const remainingFraction = Math.max(0, 1.0 - allocatedWeightSum);
+                const remainingValue = Math.round(value * remainingFraction * 100) / 100;
+                if (remainingValue >= 0.01) {
+                    results.push({
+                        category: residualLabel,
+                        allocatedValue: remainingValue,
+                        weightInHolding: remainingFraction,
+                        isLookThrough: true
+                    });
+                }
+            }
+
+            if (results.length > 0) {
+                return results;
             }
         }
-        return results;
     }
 
     if (directLabel && directLabel.trim()) {

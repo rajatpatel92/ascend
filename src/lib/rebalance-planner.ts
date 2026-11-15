@@ -23,6 +23,7 @@ export interface RebalanceItem {
     actionShares: number;
     assetPrice: number;
     assetCurrency: string;
+    priceInTargetCurrency?: number;
     accounts?: AccountHoldingBreakdown[];
 }
 
@@ -81,11 +82,25 @@ const VALUE_EPSILON = 0.01;
 
 /**
  * Computes share price expressed in the user's selected display/target currency.
- * Falls back cleanly when actionShares or driftValue are zero.
+ * Prefers explicit priceInTargetCurrency, then driftValue/actionShares, then held accounts ratio.
  */
-function inferPriceInDisplayCurrency(item: RebalanceItem): number {
+export function inferPriceInDisplayCurrency(item: RebalanceItem): number {
+    if (
+        typeof item.priceInTargetCurrency === 'number' &&
+        Number.isFinite(item.priceInTargetCurrency) &&
+        item.priceInTargetCurrency > 0
+    ) {
+        return item.priceInTargetCurrency;
+    }
     if (item.actionShares > 0.000001 && Math.abs(item.driftValue) > VALUE_EPSILON) {
         return Math.abs(item.driftValue) / item.actionShares;
+    }
+    if (item.accounts && item.accounts.length > 0) {
+        const totalQty = item.accounts.reduce((s, a) => s + a.quantity, 0);
+        const totalVal = item.accounts.reduce((s, a) => s + a.value, 0);
+        if (totalQty > 0.000001 && totalVal > VALUE_EPSILON) {
+            return totalVal / totalQty;
+        }
     }
     return item.assetPrice > 0 ? item.assetPrice : 0;
 }
@@ -194,7 +209,7 @@ export function computeRebalancePlan(
         }
     }
 
-    // Apply share rounding & price constraints
+    // Apply share rounding & price/position constraints
     let totalBuyValue = 0;
     let totalSellValue = 0;
 
@@ -202,6 +217,9 @@ export function computeRebalancePlan(
         const rawDelta = rawDeltaBySymbol.get(item.symbol) || 0;
         const unitPrice = priceMap.get(item.symbol) || 0;
         const isOutOfBand = Math.abs(item.driftPercent) > safeTolerance + 1e-9;
+        const accountHeldShares = item.accounts && item.accounts.length > 0
+            ? item.accounts.reduce((s, a) => s + a.quantity, 0)
+            : (unitPrice > 0 ? item.currentValue / unitPrice : 0);
 
         let effectiveAction: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
         let tradeValue = 0;
@@ -209,19 +227,34 @@ export function computeRebalancePlan(
 
         if (Math.abs(rawDelta) > VALUE_EPSILON && unitPrice > 0) {
             const rawShares = Math.abs(rawDelta) / unitPrice;
+            const isBuy = rawDelta > 0;
             if (options.wholeShares) {
-                const wholeCount = options.mode === 'BUY_ONLY'
+                let wholeCount = options.mode === 'BUY_ONLY'
                     ? Math.floor(rawShares)
                     : Math.round(rawShares);
+                if (!isBuy) {
+                    wholeCount = Math.min(Math.floor(accountHeldShares + 1e-6), wholeCount);
+                }
                 if (wholeCount >= 1) {
                     tradeShares = wholeCount;
-                    tradeValue = wholeCount * unitPrice;
-                    effectiveAction = rawDelta > 0 ? 'BUY' : 'SELL';
+                    tradeValue = isBuy
+                        ? wholeCount * unitPrice
+                        : Math.min(wholeCount * unitPrice, item.currentValue);
+                    effectiveAction = isBuy ? 'BUY' : 'SELL';
                 }
             } else if (rawShares >= 0.0001) {
-                tradeShares = rawShares;
-                tradeValue = Math.abs(rawDelta);
-                effectiveAction = rawDelta > 0 ? 'BUY' : 'SELL';
+                if (isBuy) {
+                    tradeShares = rawShares;
+                    tradeValue = Math.abs(rawDelta);
+                    effectiveAction = 'BUY';
+                } else {
+                    const cappedShares = Math.min(rawShares, accountHeldShares);
+                    if (cappedShares >= 0.0001) {
+                        tradeShares = cappedShares;
+                        tradeValue = Math.min(Math.abs(rawDelta), item.currentValue);
+                        effectiveAction = 'SELL';
+                    }
+                }
             }
         }
 
@@ -257,7 +290,6 @@ export function computeRebalancePlan(
     let holdCount = 0;
     let outOfBandCount = 0;
     let maxAbsDrift = 0;
-    let absDriftSum = 0;
 
     const rows: PlannedRebalanceRow[] = intermediate.map((entry) => {
         const { item, isOutOfBand, effectiveAction, tradeValue, tradeShares, postTradeValue } = entry;
@@ -268,7 +300,6 @@ export function computeRebalancePlan(
         if (isOutOfBand) outOfBandCount += 1;
         const absDrift = Math.abs(item.driftPercent);
         if (absDrift > maxAbsDrift) maxAbsDrift = absDrift;
-        absDriftSum += absDrift;
 
         const postTradePercent = postTradeTotalValue > 0
             ? (postTradeValue / postTradeTotalValue) * 100
@@ -288,7 +319,10 @@ export function computeRebalancePlan(
         };
     });
 
-    const portfolioTurnoverPercent = absDriftSum / 2;
+    // Trade-based one-way portfolio turnover percentage
+    const portfolioTurnoverPercent = postTradeTotalValue > VALUE_EPSILON
+        ? ((totalBuyValue + totalSellValue) / (2 * postTradeTotalValue)) * 100
+        : 0;
 
     return {
         rows,
@@ -403,7 +437,7 @@ export function buildGlidePathSeries(
         let sum = 0;
         for (const t of activeTargets) {
             const adj = t.yearlyDriftAdjustment ?? 0;
-            const projected = Math.max(0, Math.round((t.targetPercentage + adj * yr) * 10) / 10);
+            const projected = Math.min(100, Math.max(0, Math.round((t.targetPercentage + adj * yr) * 10) / 10));
             point[t.symbol] = projected;
             sum += projected;
         }

@@ -164,14 +164,37 @@ export default function Dashboard() {
         }, 0);
 
     const capitalGainTotal = unrealizedGain + realizedGain;
-    const posCap = Math.max(0, capitalGainTotal);
-    const posDiv = Math.max(0, lifetimeDividends);
-    const splitDenominator = posCap + posDiv;
-    const capitalSharePct = splitDenominator > 0 ? (posCap / splitDenominator) * 100 : 0;
-    const dividendSharePct = splitDenominator > 0 ? (posDiv / splitDenominator) * 100 : 0;
+    const totalGrowthVal = summary.totalGrowth || 0;
+    let capitalSharePct = 0;
+    let dividendSharePct = 0;
+    if (capitalGainTotal < 0) {
+      capitalSharePct = 0;
+      dividendSharePct = totalGrowthVal > 0 && lifetimeDividends > 0 ? 100 : 0;
+    } else {
+      const posCap = Math.max(0, capitalGainTotal);
+      const posDiv = Math.max(0, lifetimeDividends);
+      const splitDenominator = posCap + posDiv;
+      capitalSharePct = splitDenominator > 0 ? (posCap / splitDenominator) * 100 : 0;
+      dividendSharePct = splitDenominator > 0 ? (posDiv / splitDenominator) * 100 : 0;
+    }
 
     const activeHoldingsCount = activeConstituents.length;
-    const activeAccountsCount = (summary.allocationByAccount || []).filter(a => a.value >= 0.01).length;
+    const activeAccountKeys = new Set<string>();
+    let hasAccountsBreakdown = false;
+    activeConstituents.forEach((c: any) => {
+      if (c.accountsBreakdown && typeof c.accountsBreakdown === 'object') {
+        hasAccountsBreakdown = true;
+        Object.entries(c.accountsBreakdown).forEach(([key, acc]: [string, any]) => {
+          if ((acc?.quantity ?? 0) > 0.00001 || (acc?.value ?? 0) >= 0.01) {
+            const distinctKey = `${acc?.name || key}:${acc?.accountType || 'Unassigned'}:${acc?.platformName || ''}`;
+            activeAccountKeys.add(distinctKey);
+          }
+        });
+      }
+    });
+    const activeAccountsCount = hasAccountsBreakdown
+      ? activeAccountKeys.size
+      : (summary.allocationByAccount || []).filter(a => a.value >= 0.01).length;
 
     const projectedDividends = summary.projectedDividends || 0;
     const dividendsYTD = summary.dividendsYTD || 0;
@@ -392,7 +415,7 @@ export default function Dashboard() {
               <div className={styles.kpiFootDivider} />
               <div className={styles.kpiSubRow}>
                 <span>
-                  ROI on Cost: <strong>{metrics.unrealizedGainPercent >= 0 ? '+' : ''}{metrics.unrealizedGainPercent.toFixed(2)}%</strong>
+                  Unrealized ROI: <strong>{metrics.unrealizedGainPercent >= 0 ? '+' : ''}{metrics.unrealizedGainPercent.toFixed(2)}%</strong>
                 </span>
                 <span>
                   Realized: <strong>{metrics.realizedGain >= 0 ? '+' : ''}{format(metrics.realizedGain)}</strong>

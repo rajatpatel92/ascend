@@ -436,5 +436,35 @@ describe('look-through utility', () => {
             assert.strictEqual(tech.contributors[2].allocatedValue, 5000);
             assert.strictEqual(tech.contributors[2].isLookThrough, true);
         });
+
+        test('normalizes 0-100 percentage inputs and >1.0 or 0.995 rounding sums without losing value', () => {
+            const constituents: LookThroughConstituent[] = [
+                {
+                    symbol: 'PCT_ETF',
+                    type: 'ETF',
+                    value: 10000,
+                    sectorAllocations: [
+                        { technology: 60 },
+                        { healthcare: 40 }
+                    ]
+                },
+                {
+                    symbol: 'ROUND_ETF',
+                    type: 'ETF',
+                    value: 10000,
+                    sectorAllocations: [
+                        { financials: 0.50 },
+                        { energy: 0.495 }
+                    ]
+                }
+            ];
+
+            const result = calculateLookThrough(constituents);
+            assert.strictEqual(result.totalValue, 20000);
+            const sectorSum = result.sectorDetails.reduce((s, d) => s + d.value, 0);
+            assert.ok(Math.abs(sectorSum - 20000) < 0.05, `Expected sector sum 20000, got ${sectorSum}`);
+            const tech = result.sectorDetails.find(s => s.name === 'Technology');
+            assert.strictEqual(tech?.value, 6000);
+        });
     });
 });

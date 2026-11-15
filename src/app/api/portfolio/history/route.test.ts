@@ -103,4 +103,81 @@ test('GET /api/portfolio/history', async (t) => {
     assert.ok(getMatch[1].includes('await auth()'), 'GET should call auth()');
     assert.ok(getMatch[1].includes('401'), 'GET should return 401 if unauthorized');
   });
+
+  await t.test('1D fast-path avoids calculateComparisonHistory and handles openValue = 0 safely', async () => {
+    (globalThis as any).__mockAuth = async () => ({ user: { id: 'user-1' } });
+    (globalThis as any).__mockPrismaActivityFindMany = async () => ([
+      {
+        id: 'act-1',
+        type: 'BUY',
+        quantity: 10,
+        price: 100,
+        date: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        investment: { symbol: 'AAPL', type: 'EQUITY', currencyCode: 'USD' },
+        account: { type: 'TFSA' }
+      }
+    ]);
+
+    let compCalled = 0;
+    (globalThis as any).__mockCalculateComparisonHistory = async () => {
+      compCalled++;
+      return { portfolio: [] };
+    };
+    (globalThis as any).__mockCalculateIntradayHistory = async () => ([
+      { date: '2026-01-02T14:30:00.000Z', marketValue: 0 },
+      { date: '2026-01-02T15:00:00.000Z', marketValue: 1050 }
+    ]);
+    (globalThis as any)._portfolio1DCache = null;
+
+    const response = await GET(new Request('http://localhost/api/portfolio/history?range=1D&currency=USD'));
+    assert.strictEqual(response.status, 200);
+    const body = await response.json();
+    assert.strictEqual(compCalled, 0);
+    assert.strictEqual(body.length, 2);
+    assert.strictEqual(body[0].nav, 100);
+    assert.strictEqual(body[1].nav, 100);
+  });
+
+  await t.test('sub-range attaches prior* pre-window baseline from day before window start', async () => {
+    (globalThis as any).__mockAuth = async () => ({ user: { id: 'user-1' } });
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const twoDaysAgo = new Date(today);
+    twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
+    const todayIso = today.toISOString().split('T')[0];
+    const yesterdayIso = yesterday.toISOString().split('T')[0];
+    const twoDaysAgoIso = twoDaysAgo.toISOString().split('T')[0];
+
+    (globalThis as any).__mockPrismaActivityFindMany = async () => ([
+      {
+        id: 'act-1',
+        type: 'BUY',
+        quantity: 10,
+        price: 100,
+        date: twoDaysAgo,
+        investment: { symbol: 'AAPL', type: 'EQUITY', currencyCode: 'USD' },
+        account: { type: 'TFSA' }
+      }
+    ]);
+    (globalThis as any).__mockCalculateComparisonHistory = async () => ({
+      portfolio: [
+        { date: twoDaysAgoIso, marketValue: 1000, nav: 100, netFlow: 1000, dividend: 0, unreinvestedDividends: 0 },
+        { date: yesterdayIso, marketValue: 1500, nav: 105, netFlow: 450, dividend: 0, unreinvestedDividends: 0 },
+        { date: todayIso, marketValue: 1600, nav: 112, netFlow: 0, dividend: 0, unreinvestedDividends: 0 }
+      ]
+    });
+
+    const response = await GET(new Request(`http://localhost/api/portfolio/history?range=CUSTOM&startDate=${yesterdayIso}&endDate=${todayIso}&currency=USD`));
+    assert.strictEqual(response.status, 200);
+    const body = await response.json();
+    assert.strictEqual(body.length, 2);
+    assert.strictEqual(body[0].date, yesterdayIso);
+    assert.strictEqual(body[0].priorValue, 1000);
+    assert.strictEqual(body[0].priorInvested, 1000);
+    assert.strictEqual(body[0].priorNav, 100);
+    assert.strictEqual(body[0].priorUnreinvestedDividend, 0);
+  });
 });
+

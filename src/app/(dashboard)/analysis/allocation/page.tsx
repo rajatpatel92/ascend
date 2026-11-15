@@ -114,18 +114,10 @@ const FILTER_BADGE_LABELS: ReadonlyArray<{ key: keyof InteractiveFilters; label:
 ];
 
 export default function AnalysisPage() {
-    const [summary, setSummary] = useState<PortfolioSummary | null>(() => {
-        if (typeof window === 'undefined') return null;
-        try {
-            const cached = localStorage.getItem('portfolio_summary');
-            return cached ? JSON.parse(cached) : null;
-        } catch {
-            return null;
-        }
-    });
+    const { currency, format } = useCurrency();
+    const [summaryState, setSummaryState] = useState<{ currency: string; data: PortfolioSummary } | null>(null);
     const [activeDimension, setActiveDimension] = useState<ActiveDimension>('sector');
     const tabRefs = useRef<Partial<Record<ActiveDimension, HTMLButtonElement | null>>>({});
-    const { currency, format } = useCurrency();
 
     // Global Filters (Layer 1)
     const [globalFilters, setGlobalFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('allocation_filters', null);
@@ -134,18 +126,47 @@ export default function AnalysisPage() {
     const [interactiveFilters, setInteractiveFilters] = useState<InteractiveFilters>(EMPTY_INTERACTIVE_FILTERS);
 
     useEffect(() => {
-        fetch(`/api/portfolio?currency=${currency}`)
-            .then(res => res.json())
-            .then(data => {
-                setSummary(data);
+        const controller = new AbortController();
+        const cacheKey = `portfolio_summary_${currency}`;
+
+        const fetchData = async () => {
+            try {
                 try {
-                    localStorage.setItem('portfolio_summary', JSON.stringify(data));
+                    const cached = localStorage.getItem(cacheKey);
+                    if (cached) {
+                        const parsed = JSON.parse(cached);
+                        if (parsed && typeof parsed === 'object' && !('error' in parsed) && Array.isArray(parsed.constituents)) {
+                            setSummaryState({ currency, data: parsed });
+                        }
+                    }
+                } catch {
+                    // Ignore malformed cache or storage access failure
+                }
+
+                const res = await fetch(`/api/portfolio?currency=${currency}`, { signal: controller.signal });
+                const data = await res.json();
+                if (controller.signal.aborted) return;
+                if (!res.ok || !data || typeof data !== 'object' || 'error' in data || !Array.isArray(data.constituents)) {
+                    return;
+                }
+
+                setSummaryState({ currency, data });
+                try {
+                    localStorage.setItem(cacheKey, JSON.stringify(data));
                 } catch {
                     // Ignore storage quota errors
                 }
-            })
-            .catch(err => console.error('Failed to fetch portfolio', err));
+            } catch (err) {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to fetch portfolio', err);
+            }
+        };
+
+        fetchData();
+        return () => controller.abort();
     }, [currency]);
+
+    const summary = summaryState?.currency === currency ? summaryState.data : null;
 
     const handleDimensionSelect = (filterKey: keyof InteractiveFilters, value: string | null, e?: React.MouseEvent) => {
         if (value === null) {
@@ -241,15 +262,17 @@ export default function AnalysisPage() {
                     return {
                         ...metric,
                         absolute: metric.absolute * quantityRatio,
-                        absoluteTarget: metric.absoluteTarget ? metric.absoluteTarget * quantityRatio : undefined
+                        absoluteTarget: metric.absoluteTarget !== undefined ? metric.absoluteTarget * quantityRatio : undefined
                     };
                 };
 
                 const conversionRate = item.conversionRate || 1;
+                const newAvgPrice = newQuantity > QUANTITY_EPSILON ? newCostBasis / newQuantity : 0;
 
                 return {
                     ...item,
                     quantity: newQuantity,
+                    avgPrice: newAvgPrice,
                     value: newValue,
                     valueTarget: newValue * conversionRate,
                     bookValue: newCostBasis,
@@ -270,6 +293,7 @@ export default function AnalysisPage() {
                     changeYTD: scaleMetric(item.changeYTD),
                     inceptionChange: {
                         absolute: newValue - newCostBasis,
+                        absoluteTarget: (newValue - newCostBasis) * conversionRate,
                         percent: newCostBasis > 0 ? ((newValue - newCostBasis) / newCostBasis) * 100 : 0
                     },
                     xirr: aggregatedXirr
@@ -422,15 +446,17 @@ export default function AnalysisPage() {
                     return {
                         ...metric,
                         absolute: metric.absolute * quantityRatio,
-                        absoluteTarget: metric.absoluteTarget ? metric.absoluteTarget * quantityRatio : undefined
+                        absoluteTarget: metric.absoluteTarget !== undefined ? metric.absoluteTarget * quantityRatio : undefined
                     };
                 };
 
                 const conversionRate = item.conversionRate || 1;
+                const newAvgPrice = newQuantity > QUANTITY_EPSILON ? newCostBasis / newQuantity : 0;
 
                 return {
                     ...item,
                     quantity: newQuantity,
+                    avgPrice: newAvgPrice,
                     value: newValue,
                     valueTarget: newValue * conversionRate,
                     bookValue: newCostBasis,
@@ -450,6 +476,7 @@ export default function AnalysisPage() {
                     changeYTD: scaleMetric(item.changeYTD),
                     inceptionChange: {
                         absolute: newValue - newCostBasis,
+                        absoluteTarget: (newValue - newCostBasis) * conversionRate,
                         percent: newCostBasis > 0 ? ((newValue - newCostBasis) / newCostBasis) * 100 : 0
                     },
                     xirr: aggregatedXirr

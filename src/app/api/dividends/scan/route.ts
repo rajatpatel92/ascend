@@ -121,14 +121,14 @@ export async function POST(request: Request) {
         });
 
         // Group activities by symbol for efficient lookup
-        const holdingsActivitiesMap = new Map<string, any[]>();
+        const holdingsActivitiesMap = new Map<string, typeof holdingsActivities>();
         holdingsActivities.forEach(a => {
             const sym = a.investment.symbol;
             if (!holdingsActivitiesMap.has(sym)) holdingsActivitiesMap.set(sym, []);
             holdingsActivitiesMap.get(sym)!.push(a);
         });
 
-        const existingDividendsMap = new Map<string, any[]>();
+        const existingDividendsMap = new Map<string, typeof existingDividends>();
         existingDividends.forEach(a => {
             const sym = a.investment.symbol;
             if (!existingDividendsMap.has(sym)) existingDividendsMap.set(sym, []);
@@ -154,11 +154,30 @@ export async function POST(request: Request) {
                     for (const div of chartResult.events.dividends) {
                         const divDate = new Date(div.date);
 
-                        // Calculate holdings on Ex-Date - 1 day
+                        // Include all holdings built through end of the day strictly before Ex-Date
                         const checkDate = new Date(divDate);
-                        checkDate.setDate(checkDate.getDate() - 1);
+                        checkDate.setUTCDate(checkDate.getUTCDate() - 1);
+                        checkDate.setUTCHours(23, 59, 59, 999);
 
                         const holdingsByAccount = calculateHoldingsFromActivities(symbolHoldingsActivities, checkDate);
+
+                        // # Reason: Yahoo Finance chart() returns split-adjusted dividend per-share amounts.
+                        // Reverse any post-dividend splits back to the actual historical payout per pre-split share.
+                        let postDivSplitFactor = 1;
+                        const seenPostSplits = new Set<string>();
+                        for (const act of symbolHoldingsActivities) {
+                            if ((act.type === 'SPLIT' || act.type === 'STOCK_SPLIT') && new Date(act.date) > divDate) {
+                                const ratio = Math.abs(act.quantity);
+                                if (ratio > 0) {
+                                    const splitDayKey = `${new Date(act.date).toISOString().split('T')[0]}:${ratio}`;
+                                    if (!seenPostSplits.has(splitDayKey)) {
+                                        seenPostSplits.add(splitDayKey);
+                                        postDivSplitFactor *= ratio;
+                                    }
+                                }
+                            }
+                        }
+                        const actualDividendRate = div.amount * postDivSplitFactor;
 
                         // Find price for the dividend date
                         let price = 0;
@@ -173,10 +192,7 @@ export async function POST(request: Request) {
                         }
 
                         for (const [accountId, quantity] of Object.entries(holdingsByAccount)) {
-                            // Use epsilon for floating point comparison to avoid ghost dividends
                             if (quantity > 0.0001) {
-                                // In-memory fuzzy match (+/- 10 days) for this account
-                                // Use epsilon for floating point comparison for the amount if needed in the future
                                 const match = symbolExistingDividends.find(d => {
                                     if (accountId !== 'unknown' && d.accountId !== accountId) return false;
                                     if (accountId === 'unknown' && d.accountId !== null) return false;
@@ -195,16 +211,16 @@ export async function POST(request: Request) {
                                 foundDividends.push({
                                     symbol,
                                     date: divDate.toISOString(),
-                                    rate: div.amount,
+                                    rate: actualDividendRate,
                                     quantity,
-                                    amount: div.amount * quantity,
+                                    amount: actualDividendRate * quantity,
                                     currency: chartResult.meta.currency || 'USD',
                                     accountId: accountId === 'unknown' ? null : accountId,
                                     price: price,
                                     isDuplicate: !!match,
                                     existingMatch: match ? {
                                         date: match.date,
-                                        amount: match.price * match.quantity // Total amount
+                                        amount: Math.max(0, match.price * match.quantity - (match.fee || 0))
                                     } : null,
                                     isHidden: hiddenMap.has(`${symbol}-${divDate.toISOString().split('T')[0]}`),
                                     accountName: account?.name,

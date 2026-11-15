@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
+import { buildBehaviorMap } from '@/lib/activity-helpers';
 
 export async function POST(request: Request) {
     const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
@@ -30,14 +31,7 @@ export async function POST(request: Request) {
 
         // 2. Map activity types to behaviors
         const activityTypes = await prisma.activityType.findMany();
-        const behaviorMap = new Map<string, string>();
-        activityTypes.forEach(t => behaviorMap.set(t.name, t.behavior));
-
-        if (!behaviorMap.has('BUY')) behaviorMap.set('BUY', 'ADD');
-        if (!behaviorMap.has('SELL')) behaviorMap.set('SELL', 'REMOVE');
-        if (!behaviorMap.has('TRANSFER_IN')) behaviorMap.set('TRANSFER_IN', 'ADD');
-        if (!behaviorMap.has('TRANSFER_OUT')) behaviorMap.set('TRANSFER_OUT', 'REMOVE');
-        if (!behaviorMap.has('DIVIDEND')) behaviorMap.set('DIVIDEND', 'NEUTRAL');
+        const behaviorMap = buildBehaviorMap(activityTypes);
 
         // 3. Calculate holdings and cost basis per investment
         const holdingsMap = new Map<string, { quantity: number; costBasis: number; investmentId: string; currency: string; platformId: string | null }>();
@@ -66,19 +60,24 @@ export async function POST(request: Request) {
             if (behavior === 'ADD') {
                 current.quantity += absQty;
                 current.costBasis += (amount + fee);
-            } else if (behavior === 'REMOVE') {
-                // Adjust cost basis proportionally for removes
-                if (current.quantity > 0) {
-                    const removeRatio = absQty / current.quantity;
-                    current.costBasis -= (current.costBasis * removeRatio);
+                if (!current.platformId && activity.platformId) {
+                    current.platformId = activity.platformId;
                 }
-                current.quantity -= absQty;
+            } else if (behavior === 'REMOVE') {
+                if (current.quantity > 0) {
+                    const removeRatio = Math.min(1, absQty / current.quantity);
+                    current.costBasis = Math.max(0, current.costBasis - (current.costBasis * removeRatio));
+                }
+                current.quantity = Math.max(0, current.quantity - absQty);
+                if (current.quantity < 1e-9) {
+                    current.quantity = 0;
+                    current.costBasis = 0;
+                }
             } else if (behavior === 'SPLIT') {
                 if (absQty > 0) {
-                    current.quantity *= absQty; // Assuming split ratio is represented by quantity
+                    current.quantity *= absQty;
                 }
             }
-            // NEUTRAL operations like DIVIDEND don't affect cost basis or quantity
         }
 
         // Fetch destination account to get its platformId so we can correctly set it for TRANSFER_IN
@@ -91,10 +90,20 @@ export async function POST(request: Request) {
         }
 
         // 4. Generate TRANSFER_IN and TRANSFER_OUT activities for positive holdings
-        const transferActivitiesToCreate: any[] = [];
+        const transferActivitiesToCreate: Array<{
+            investmentId: string;
+            type: string;
+            date: Date;
+            quantity: number;
+            price: number;
+            fee: number;
+            currency: string;
+            platformId: string | null;
+            accountId: string;
+        }> = [];
         const now = new Date();
 
-        for (const [symbol, holding] of Array.from(holdingsMap.entries())) {
+        for (const [, holding] of Array.from(holdingsMap.entries())) {
             // Because of floating point math, ensure quantity > a very small epsilon
             if (holding.quantity > 0.000001) {
                 const averageCost = holding.quantity > 0 ? (holding.costBasis / holding.quantity) : 0;

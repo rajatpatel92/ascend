@@ -9,11 +9,10 @@ import {
     buildPerShareDividendEventsFromActivities,
     type PortfolioActivityLike
 } from '@/lib/dividend-estimator';
+import { ACTIVE_QUANTITY_EPSILON, buildBehaviorMap } from '@/lib/activity-helpers';
 import { auth } from '@/auth';
 
 export const dynamic = 'force-dynamic';
-
-const ACTIVE_QUANTITY_EPSILON = 0.00001;
 
 export async function GET(request: NextRequest) {
     const session = await auth();
@@ -24,8 +23,8 @@ export async function GET(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
         const targetCurrency = searchParams.get('currency') || 'USD';
-        const investmentTypes = searchParams.get('investmentTypes')?.split(',') || [];
-        const accountTypes = searchParams.get('accountTypes')?.split(',') || [];
+        const investmentTypes = (searchParams.get('investmentTypes') || '').split(',').map(s => s.trim()).filter(Boolean);
+        const accountTypes = (searchParams.get('accountTypes') || '').split(',').map(s => s.trim()).filter(Boolean);
 
         // 1. Fetch all activities and activity types
         const [allActivities, activityTypes] = await Promise.all([
@@ -49,16 +48,7 @@ export async function GET(request: NextRequest) {
             activities = activities.filter(a => a.account && accountTypes.includes(a.account.type));
         }
 
-        // Map activity type name to behavior
-        const behaviorMap = new Map<string, string>();
-        activityTypes.forEach(t => behaviorMap.set(t.name, t.behavior));
-
-        // Default behaviors if not found (fallback)
-        if (!behaviorMap.has('BUY')) behaviorMap.set('BUY', 'ADD');
-        if (!behaviorMap.has('SELL')) behaviorMap.set('SELL', 'REMOVE');
-        if (!behaviorMap.has('DIVIDEND')) behaviorMap.set('DIVIDEND', 'NEUTRAL');
-        if (!behaviorMap.has('TRANSFER_IN')) behaviorMap.set('TRANSFER_IN', 'ADD');
-        if (!behaviorMap.has('TRANSFER_OUT')) behaviorMap.set('TRANSFER_OUT', 'REMOVE');
+        const behaviorMap = buildBehaviorMap(activityTypes);
 
         // Fetch Users for Display Name mapping
         const users = await prisma.user.findMany();
@@ -74,7 +64,8 @@ export async function GET(request: NextRequest) {
             quantity: number,
             investment: any,
             platforms: Map<string, number>,
-            accounts: Map<string, { name: string, quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>,
+            accounts: Map<string, { accountId: string | null, name: string, quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>,
+            appliedSplits: Set<string>,
             rawActivities: PortfolioActivityLike[]
         }>();
 
@@ -88,6 +79,7 @@ export async function GET(request: NextRequest) {
                     investment: activity.investment,
                     platforms: new Map(),
                     accounts: new Map(),
+                    appliedSplits: new Set(),
                     rawActivities: []
                 });
             }
@@ -98,44 +90,70 @@ export async function GET(request: NextRequest) {
                 date: activity.date,
                 quantity: activity.quantity,
                 price: activity.price,
-                fee: activity.fee
+                fee: activity.fee,
+                accountId: activity.accountId
             });
-            const platformName = activity.platform?.name || 'Unknown';
 
-            // Resolve Account Name to Display Name if available
+            const platformName = activity.platform?.name || 'Unknown';
             let accountName = activity.account?.name || 'Unassigned';
-            // Check if account name matches a username (case-insensitive)
             const displayName = userMap.get(accountName.toLowerCase());
             if (displayName) {
                 accountName = displayName;
             }
-
             const accountType = activity.account?.type || 'Unassigned';
             const behavior = behaviorMap.get(activity.type) || 'NEUTRAL';
             const absQty = Math.abs(activity.quantity);
-
-            // Per-Account Cash Flow tracking
             const amount = absQty * activity.price;
             const fee = activity.fee || 0;
 
+            if (behavior === 'SPLIT') {
+                const multiplier = absQty;
+                if (multiplier > 0) {
+                    const dayKey = new Date(activity.date).toISOString().split('T')[0];
+                    if (activity.accountId) {
+                        for (const [accKey, aData] of current.accounts.entries()) {
+                            if (aData.accountId === activity.accountId && aData.quantity > 0) {
+                                const dedupKey = `${dayKey}:${accKey}:${multiplier}`;
+                                if (!current.appliedSplits.has(dedupKey)) {
+                                    current.appliedSplits.add(dedupKey);
+                                    aData.quantity *= multiplier;
+                                }
+                            }
+                        }
+                    } else {
+                        const hasUnassignedShares = Array.from(current.accounts.values()).some(
+                            aData => !aData.accountId && aData.quantity > 0
+                        );
+                        for (const [accKey, aData] of current.accounts.entries()) {
+                            if (hasUnassignedShares && aData.accountId) continue;
+                            if (aData.quantity > 0) {
+                                const dedupKey = `${dayKey}:${accKey}:${multiplier}`;
+                                if (!current.appliedSplits.has(dedupKey)) {
+                                    current.appliedSplits.add(dedupKey);
+                                    aData.quantity *= multiplier;
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
             // Generate Unique Key for Account aggregation
-            // User might have multiple accounts with same Name but different Type
-            // AND same Name/Type across different Platforms. Must include Platform to separate.
             const accountKey = `${accountName}:${accountType}:${platformName}`;
 
             // Get account data or init
             let acc = current.accounts.get(accountKey);
             if (!acc) {
-                acc = { name: accountName, quantity: 0, platformName, accountType, costBasis: 0, lifetimeDividends: 0, dividendsYTD: 0, realizedGain: 0, cashFlows: [], firstBuyDate: null };
+                acc = { accountId: activity.accountId || null, name: accountName, quantity: 0, platformName, accountType, costBasis: 0, lifetimeDividends: 0, dividendsYTD: 0, realizedGain: 0, cashFlows: [], firstBuyDate: null };
                 current.accounts.set(accountKey, acc);
+            } else if (!acc.accountId && activity.accountId) {
+                acc.accountId = activity.accountId;
             }
 
             if (behavior === 'ADD') {
-                current.quantity += absQty;
-                // Cost Basis Aggruction Add: (Qty * Price) + Fee
+                // Cost Basis Addition: (Qty * Price) + Fee
                 const cost = (absQty * activity.price) + fee;
-                current.platforms.set(platformName, (current.platforms.get(platformName) || 0) + absQty);
-
                 acc.quantity += absQty;
                 acc.costBasis += cost;
                 acc.cashFlows.push({ amount: -(amount + fee), date: activity.date });
@@ -146,16 +164,10 @@ export async function GET(request: NextRequest) {
                 }
 
             } else if (behavior === 'REMOVE') {
-                current.quantity -= absQty;
-                if (Math.abs(current.quantity) < 1e-9) current.quantity = 0;
-
-                const nextPlatformQty = Math.max(0, (current.platforms.get(platformName) || 0) - absQty);
-                current.platforms.set(platformName, nextPlatformQty < 1e-9 ? 0 : nextPlatformQty);
-
                 const proportion = acc.quantity > 0 ? Math.min(1, absQty / acc.quantity) : 0;
                 const costToRemove = acc.costBasis * proportion;
 
-                // Realized ID: (Proceeds) - (Cost of these specific shares)
+                // Realized Gain: (Proceeds) - (Cost of these specific shares)
                 const realized = (amount - fee) - costToRemove;
                 acc.realizedGain += realized;
 
@@ -166,45 +178,35 @@ export async function GET(request: NextRequest) {
 
             } else if (activity.type === 'DIVIDEND') {
                 // Dividends are cash inflows for the account
-                acc.cashFlows.push({ amount: (amount - fee), date: activity.date });
-                acc.lifetimeDividends += (amount - fee);
+                const netDiv = Math.max(0, amount - fee);
+                acc.cashFlows.push({ amount: netDiv, date: activity.date });
+                acc.lifetimeDividends += netDiv;
 
                 if (new Date(activity.date).getUTCFullYear() === currentUtcYear) {
-                    acc.dividendsYTD += (amount - fee);
-                }
-
-            } else if (behavior === 'SPLIT') {
-                const multiplier = absQty;
-                if (multiplier > 0) {
-                    current.quantity *= multiplier;
-                    for (const [pName, pQty] of current.platforms.entries()) {
-                        current.platforms.set(pName, pQty * multiplier);
-                    }
-                    for (const [_, aData] of current.accounts.entries()) {
-                        // Split doesn't affect cash flows (no money changed hands), just share count
-                        aData.quantity *= multiplier;
-                    }
+                    acc.dividendsYTD += netDiv;
                 }
             }
-            // NEUTRAL does not affect quantity
-
-            holdingsMap.set(symbol, current);
         }
 
-        // Clamp residual float-dust positions cleanly so sold symbols never leak into active calculations
+        // Derive symbol & platform quantities cleanly from account positions and clamp float dust
         for (const holding of holdingsMap.values()) {
-            if (holding.quantity <= ACTIVE_QUANTITY_EPSILON) {
-                holding.quantity = 0;
-            }
-            for (const [pName, pQty] of holding.platforms.entries()) {
-                if (pQty <= ACTIVE_QUANTITY_EPSILON) holding.platforms.set(pName, 0);
-            }
+            let symbolQty = 0;
+            holding.platforms.clear();
+
             for (const acc of holding.accounts.values()) {
                 if (acc.quantity <= ACTIVE_QUANTITY_EPSILON) {
                     acc.quantity = 0;
                     acc.costBasis = 0;
+                } else {
+                    symbolQty += acc.quantity;
+                    holding.platforms.set(
+                        acc.platformName,
+                        (holding.platforms.get(acc.platformName) || 0) + acc.quantity
+                    );
                 }
             }
+
+            holding.quantity = symbolQty <= ACTIVE_QUANTITY_EPSILON ? 0 : symbolQty;
         }
 
         // 3. Fetch market data and calculate totals
@@ -730,7 +732,7 @@ export async function GET(request: NextRequest) {
                 name: c.name,
                 type: c.type,
                 value: c.valueTarget ?? (c.value * (c.rateToUSD || 1) * finalRate),
-                currency: targetCurrency,
+                currency: c.currency,
                 sector: c.sector,
                 country: c.country,
                 sectorAllocations: c.sectorAllocations,

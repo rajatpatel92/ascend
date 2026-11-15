@@ -25,6 +25,8 @@ interface EvolutionPoint {
     date: string;
     value: number;
     invested: number;
+    dividend?: number;
+    unreinvestedDividend?: number;
 }
 
 interface ContributionPoint {
@@ -44,7 +46,7 @@ interface EvolutionHistoryResponse {
 
 interface EvolutionFlowsResponse {
     contributions?: { day?: ContributionPoint[]; week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
-    dividends?: { month: DividendPoint[]; year: DividendPoint[] };
+    dividends?: { day?: DividendPoint[]; month: DividendPoint[]; year: DividendPoint[] };
 }
 
 type EvolutionTab = 'valueVsInvested' | 'wealthStack';
@@ -96,7 +98,7 @@ export default function EvolutionPage() {
     const [data, setData] = useState<{
         evolution?: EvolutionPoint[];
         contributions?: { day?: ContributionPoint[]; week: ContributionPoint[]; month: ContributionPoint[]; year: ContributionPoint[] };
-        dividends?: { month: DividendPoint[]; year: DividendPoint[] };
+        dividends?: { day?: DividendPoint[]; month: DividendPoint[]; year: DividendPoint[] };
     }>({});
 
     const [loadingHistory, setLoadingHistory] = useState(true);
@@ -123,7 +125,7 @@ export default function EvolutionPage() {
         const backendFilters = { ...normalizedFilters, assetClasses: normalizedFilters.investmentTypes };
 
         const fetchHistory = () => {
-            const cacheKey = ClientCache.generateKey('evolution_history_v4', { filters: normalizedFilters, currency });
+            const cacheKey = ClientCache.generateKey('evolution_history_v5', { filters: normalizedFilters, currency });
             return fetchWithStaleWhileRevalidate<EvolutionHistoryResponse>({
                 cache: ClientCache,
                 cacheKey,
@@ -161,7 +163,7 @@ export default function EvolutionPage() {
         };
 
         const fetchFlows = () => {
-            const cacheKey = ClientCache.generateKey('evolution_flows_v4', { filters: normalizedFilters, currency });
+            const cacheKey = ClientCache.generateKey('evolution_flows_v5', { filters: normalizedFilters, currency });
             return fetchWithStaleWhileRevalidate<EvolutionFlowsResponse>({
                 cache: ClientCache,
                 cacheKey,
@@ -170,7 +172,8 @@ export default function EvolutionPage() {
                         val &&
                         typeof val === 'object' &&
                         Array.isArray((val as EvolutionFlowsResponse).contributions?.day) &&
-                        Array.isArray((val as EvolutionFlowsResponse).contributions?.month)
+                        Array.isArray((val as EvolutionFlowsResponse).contributions?.month) &&
+                        Array.isArray((val as EvolutionFlowsResponse).dividends?.day)
                     ),
                 signal: controller.signal,
                 fetcher: async (signal) => {
@@ -256,7 +259,7 @@ export default function EvolutionPage() {
         const periodDelta = endingValue - startingValue;
         const periodDeltaPct = startingValue > 0.01 ? (periodDelta / startingValue) * 100 : 0;
 
-        // # Reason: Use exact daily buckets for Card 2 totals so non-ALL ranges (e.g. 1M, YTD)
+        // # Reason: Use exact daily buckets for Card 2 & Card 4 totals so non-ALL ranges (e.g. 1M, YTD)
         // don't pull in pre-cutoff flows from the start of the opening calendar month.
         const dayFlows = filterByRange(data.contributions?.day, range, 'day');
         const monthlyFlows = filterByRange(data.contributions?.month, range, 'month');
@@ -264,7 +267,13 @@ export default function EvolutionPage() {
         const totalInflows = flowSource.reduce((s, d) => s + d.inflow, 0);
         const totalOutflows = flowSource.reduce((s, d) => s + Math.abs(d.outflow), 0);
         const netFlowFromSchedule = totalInflows - totalOutflows;
-        const avgMonthlyContribution = monthlyFlows.length > 0 ? netFlowFromSchedule / monthlyFlows.length : 0;
+
+        // # Reason: flow/dividend month arrays are sparse (active months only), so divide by actual elapsed months (>= 1).
+        const elapsedDays = firstEv && lastEv
+            ? Math.max(1, Math.round((parseLocalDate(lastEv.date).getTime() - parseLocalDate(firstEv.date).getTime()) / (1000 * 60 * 60 * 24)) + 1)
+            : 30.4375;
+        const elapsedMonths = Math.max(1, elapsedDays / 30.4375);
+        const avgMonthlyContribution = netFlowFromSchedule / elapsedMonths;
 
         const isAllRange = range === 'ALL';
         const baselineEv = !isAllRange && firstEv && data.evolution
@@ -274,25 +283,34 @@ export default function EvolutionPage() {
             })()
             : null;
 
+        const endUnreinvested = lastEv?.unreinvestedDividend ?? 0;
+        const startUnreinvested = baselineEv?.unreinvestedDividend ?? 0;
         const compoundedGain = (isAllRange || !baselineEv)
-            ? (endingValue - endInvested)
-            : (endingValue - baselineEv.value) - (endInvested - baselineEv.invested);
+            ? (endingValue - endInvested) + endUnreinvested
+            : (endingValue - baselineEv.value) - (endInvested - baselineEv.invested) + (endUnreinvested - startUnreinvested);
         const gainDenominator = (isAllRange || !baselineEv)
             ? (endInvested > 0.01 ? endInvested : endingValue)
             : baselineEv.value + Math.max(0, endInvested - baselineEv.invested);
         const compoundedGainPct = gainDenominator > 0.01 ? (compoundedGain / gainDenominator) * 100 : 0;
 
+        const dayDivs = filterByRange(data.dividends?.day, range, 'day');
         const monthlyDivs = filterByRange(data.dividends?.month, range, 'month');
-        const totalDividends = monthlyDivs.reduce((s, d) => s + d.amount, 0);
-        const avgMonthlyDividend = monthlyDivs.length > 0 ? totalDividends / monthlyDivs.length : 0;
+        const divSource = data.dividends?.day ? dayDivs : monthlyDivs;
+        const totalDividends = divSource.reduce((s, d) => s + d.amount, 0);
+        const avgMonthlyDividend = totalDividends / elapsedMonths;
         const peakDivMonth = monthlyDivs.reduce(
             (best, cur) => (cur.amount > best.amount ? cur : best),
             { date: '', amount: 0 }
         );
 
-        const totalWealthCreated = Math.max(0, compoundedGain) + Math.max(0, totalDividends);
-        const gainSharePct = totalWealthCreated > 0 ? (Math.max(0, compoundedGain) / totalWealthCreated) * 100 : 0;
-        const divSharePct = totalWealthCreated > 0 ? (Math.max(0, totalDividends) / totalWealthCreated) * 100 : 0;
+        // # Reason: compoundedGain already includes both price appreciation and reinvested/unreinvested dividends
+        // (because `invested` tracks out-of-pocket principal only). Split total profit into price appreciation vs dividends
+        // so gainSharePct + divSharePct = 100% without double-counting reinvested dividends.
+        const appreciationOnly = Math.max(0, compoundedGain - totalDividends);
+        const posDividends = Math.max(0, totalDividends);
+        const totalWealthCreated = appreciationOnly + posDividends;
+        const gainSharePct = totalWealthCreated > 0 ? (appreciationOnly / totalWealthCreated) * 100 : 0;
+        const divSharePct = totalWealthCreated > 0 ? (posDividends / totalWealthCreated) * 100 : 0;
 
         return {
             endingValue,

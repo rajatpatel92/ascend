@@ -44,6 +44,80 @@ export class PortfolioAnalytics {
         return activity.accountId || withAccount.account?.id || 'portfolio';
     }
 
+    private static syncTotalHoldings(
+        holdings: Record<string, number>,
+        holdingsByAccount: Record<string, Record<string, number>>,
+        symbol: string
+    ): void {
+        const accMap = holdingsByAccount[symbol];
+        if (!accMap) {
+            holdings[symbol] = 0;
+            return;
+        }
+        let sum = 0;
+        for (const qty of Object.values(accMap)) {
+            if (qty > 0) sum += qty;
+        }
+        holdings[symbol] = sum;
+    }
+
+    private static applySplitToHoldings(params: {
+        activity: Activity & { investment: { symbol: string } };
+        holdings: Record<string, number>;
+        holdingsByAccount: Record<string, Record<string, number>>;
+        appliedSplits: Set<string>;
+        dateStr?: string;
+    }): { applied: boolean; symbol: string; multiplier: number } {
+        const { activity, holdings, holdingsByAccount, appliedSplits, dateStr } = params;
+        const symbol = activity.investment.symbol;
+        const multiplier = Math.abs(activity.quantity);
+        if (!Number.isFinite(multiplier) || multiplier <= 0) {
+            return { applied: false, symbol, multiplier: 1 };
+        }
+
+        if (!holdingsByAccount[symbol]) {
+            holdingsByAccount[symbol] = {};
+        }
+
+        const accMap = holdingsByAccount[symbol];
+        const withAccount = activity as Activity & { account?: { id?: string | null } | null };
+        const explicitAccountId = activity.accountId || withAccount.account?.id;
+        let scaledAny = false;
+
+        if (explicitAccountId) {
+            const dedupKey = dateStr ? `${dateStr}:${symbol}:${explicitAccountId}:${multiplier}` : null;
+            if (!dedupKey || !appliedSplits.has(dedupKey)) {
+                if (dedupKey) appliedSplits.add(dedupKey);
+                if ((accMap[explicitAccountId] || 0) > 0) {
+                    accMap[explicitAccountId] *= multiplier;
+                    scaledAny = true;
+                }
+            }
+        } else {
+            const hasUnassigned = (accMap['portfolio'] || 0) > 0;
+            if (hasUnassigned) {
+                const dedupKey = dateStr ? `${dateStr}:${symbol}:portfolio:${multiplier}` : null;
+                if (!dedupKey || !appliedSplits.has(dedupKey)) {
+                    if (dedupKey) appliedSplits.add(dedupKey);
+                    accMap['portfolio'] *= multiplier;
+                    scaledAny = true;
+                }
+            } else {
+                for (const accKey of Object.keys(accMap)) {
+                    if ((accMap[accKey] || 0) <= 0) continue;
+                    const dedupKey = dateStr ? `${dateStr}:${symbol}:${accKey}:${multiplier}` : null;
+                    if (dedupKey && appliedSplits.has(dedupKey)) continue;
+                    if (dedupKey) appliedSplits.add(dedupKey);
+                    accMap[accKey] *= multiplier;
+                    scaledAny = true;
+                }
+            }
+        }
+
+        this.syncTotalHoldings(holdings, holdingsByAccount, symbol);
+        return { applied: scaledAny, symbol, multiplier };
+    }
+
     private static resolveFxRate(
         fxMap: Record<string, number> | undefined,
         dateStr: string,
@@ -52,9 +126,8 @@ export class PortfolioAnalytics {
         if (fxMap && fxMap[dateStr] !== undefined && fxMap[dateStr] > 0) {
             return fxMap[dateStr];
         }
-        if (lastKnownRate !== undefined && lastKnownRate > 0) {
-            return lastKnownRate;
-        }
+        // # Reason: Check fxMap on/before dateStr before falling back to lastKnownRate,
+        // because sparse-activity callers (calculateFlows) only refresh lastKnownRate on activity days.
         if (fxMap) {
             const dateKeys = Object.keys(fxMap).filter(k => this.isIsoDateKey(k)).sort();
             let closestDate: string | null = null;
@@ -63,8 +136,14 @@ export class PortfolioAnalytics {
                 else if (d > dateStr) break;
             }
             if (closestDate) return fxMap[closestDate];
+            if (lastKnownRate !== undefined && lastKnownRate > 0) {
+                return lastKnownRate;
+            }
             const firstValid = dateKeys.find(d => fxMap[d] > 0);
             if (firstValid) return fxMap[firstValid];
+        }
+        if (lastKnownRate !== undefined && lastKnownRate > 0) {
+            return lastKnownRate;
         }
         return null;
     }
@@ -87,10 +166,17 @@ export class PortfolioAnalytics {
         log?: (msg: string) => void
     ): Promise<Record<string, Record<string, number>>> {
         const fxMaps: Record<string, Record<string, number>> = {};
-        const fxPairs = relevantCurrencies.map(c => ({ from: c, to: targetCurrency, symbol: `${c}${targetCurrency}=X` }));
-        if (log) log(`[PortfolioAnalytics] Fetching FX Pairs: ${fxPairs.map(p => p.symbol).join(', ')}`);
+        const pairCache = new Map<string, Record<string, number>>();
+        const uniqueCurrencies = Array.from(new Set(relevantCurrencies.filter(c => c && c !== targetCurrency)));
+        if (log) {
+            log(`[PortfolioAnalytics] Fetching FX Pairs: ${uniqueCurrencies.map(c => `${c}${targetCurrency}=X`).join(', ')}`);
+        }
 
-        await this.batchProcess(fxPairs, 2, async ({ from, to, symbol }) => {
+        const fetchPairHist = async (from: string, to: string): Promise<Record<string, number>> => {
+            const cacheKey = `${from}->${to}`;
+            if (pairCache.has(cacheKey)) return pairCache.get(cacheKey)!;
+
+            const symbol = `${from}${to}=X`;
             let hist: Record<string, number> = { ...(await MarketDataService.getDailyHistory(symbol, lookback)) };
 
             // # Reason: Ascend's cron jobs refresh Yahoo USD-shorthand tickers (CAD=X, EUR=X, etc.)
@@ -125,6 +211,35 @@ export class PortfolioAnalytics {
                         if (rate > 0) hist[date] = 1 / rate;
                     });
                     if (log) log(`[PortfolioAnalytics] Inverted ${Object.keys(hist).length} points from ${reverseSymbol}`);
+                }
+            }
+
+            pairCache.set(cacheKey, hist);
+            return hist;
+        };
+
+        await this.batchProcess(uniqueCurrencies, 2, async (from) => {
+            const hist = { ...(await fetchPairHist(from, targetCurrency)) };
+
+            // Cross-rate triangulation via USD when neither currency is USD (e.g., EUR -> USD -> CAD)
+            if (from !== 'USD' && targetCurrency !== 'USD') {
+                const [fromToUsd, usdToTarget] = await Promise.all([
+                    fetchPairHist(from, 'USD'),
+                    fetchPairHist('USD', targetCurrency)
+                ]);
+                const allDates = Array.from(new Set([
+                    ...Object.keys(fromToUsd).filter(d => this.isIsoDateKey(d)),
+                    ...Object.keys(usdToTarget).filter(d => this.isIsoDateKey(d))
+                ])).sort();
+
+                let lastFromUsd = 0;
+                let lastUsdTarget = 0;
+                for (const d of allDates) {
+                    if (fromToUsd[d] > 0) lastFromUsd = fromToUsd[d];
+                    if (usdToTarget[d] > 0) lastUsdTarget = usdToTarget[d];
+                    if (!(d in hist) && lastFromUsd > 0 && lastUsdTarget > 0) {
+                        hist[d] = lastFromUsd * lastUsdTarget;
+                    }
                 }
             }
 
@@ -187,6 +302,7 @@ export class PortfolioAnalytics {
         fxMaps: Record<string, Record<string, number>>;
         lastKnownFx: Record<string, number>;
         holdings: Record<string, number>;
+        holdingsByAccount: Record<string, Record<string, number>>;
         dividendCashPool: Record<string, number>;
         log?: (msg: string) => void;
     }): {
@@ -198,7 +314,7 @@ export class PortfolioAnalytics {
         dailyDivBySym: Record<string, number>;
         symTradeFlowDelta: Record<string, { netInflow: number; buys: number }>;
     } {
-        const { activities, dateStr, targetCurrency, fxMaps, lastKnownFx, holdings, dividendCashPool, log } = params;
+        const { activities, dateStr, targetCurrency, fxMaps, lastKnownFx, holdings, holdingsByAccount, dividendCashPool, log } = params;
 
         let outOfPocketInflow = 0;
         let outOfPocketOutflow = 0;
@@ -225,7 +341,8 @@ export class PortfolioAnalytics {
         for (const a of divActivities) {
             const symbol = a.investment.symbol;
             const fxRate = getActivityFx(a.investment.currency);
-            const divVal = (a.quantity * a.price) * fxRate;
+            const netNativeDiv = Math.max(0, (Math.abs(a.quantity) * a.price) - (a.fee || 0));
+            const divVal = netNativeDiv * fxRate;
             dailyDividends += divVal;
             dailyDivBySym[symbol] = (dailyDivBySym[symbol] || 0) + divVal;
 
@@ -241,19 +358,23 @@ export class PortfolioAnalytics {
         for (const a of flowActivities) {
             const symbol = a.investment.symbol;
             const fxRate = getActivityFx(a.investment.currency);
+            const poolKey = this.getAccountPoolKey(a);
+            if (!holdingsByAccount[symbol]) {
+                holdingsByAccount[symbol] = {};
+            }
             if (!symTradeFlowDelta[symbol]) {
                 symTradeFlowDelta[symbol] = { netInflow: 0, buys: 0 };
             }
 
             if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') {
-                const flowVal = (a.quantity * a.price) + (a.fee || 0);
+                const absQty = Math.abs(a.quantity);
+                const flowVal = (absQty * a.price) + (a.fee || 0);
                 const flowConverted = flowVal * fxRate;
                 grossTradeFlow += flowConverted;
                 symTradeFlowDelta[symbol].netInflow += flowConverted;
                 symTradeFlowDelta[symbol].buys += flowConverted;
 
                 if (a.type === 'BUY' && flowConverted > 0) {
-                    const poolKey = this.getAccountPoolKey(a);
                     const poolAvailable = dividendCashPool[poolKey] || 0;
                     const reinvestedFromDiv = Math.min(flowConverted, poolAvailable);
                     dividendCashPool[poolKey] = Math.max(0, poolAvailable - reinvestedFromDiv);
@@ -262,10 +383,11 @@ export class PortfolioAnalytics {
                     outOfPocketInflow += flowConverted;
                 }
 
-                holdings[symbol] = (holdings[symbol] || 0) + a.quantity;
-                if (holdings[symbol] < 0) holdings[symbol] = 0;
+                holdingsByAccount[symbol][poolKey] = Math.max(0, (holdingsByAccount[symbol][poolKey] || 0) + absQty);
+                this.syncTotalHoldings(holdings, holdingsByAccount, symbol);
             } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') {
-                const flowVal = (Math.abs(a.quantity) * a.price) - (a.fee || 0);
+                const absQty = Math.abs(a.quantity);
+                const flowVal = (absQty * a.price) - (a.fee || 0);
                 const proceedsConverted = flowVal * fxRate;
                 grossTradeFlow -= proceedsConverted;
                 symTradeFlowDelta[symbol].netInflow -= proceedsConverted;
@@ -276,16 +398,19 @@ export class PortfolioAnalytics {
                     outOfPocketInflow += Math.abs(proceedsConverted);
                 }
 
-                holdings[symbol] = (holdings[symbol] || 0) - Math.abs(a.quantity);
-                if (holdings[symbol] < 0) {
-                    const deficit = Math.abs(holdings[symbol]);
+                const newAccQty = (holdingsByAccount[symbol][poolKey] || 0) - absQty;
+                if (newAccQty < 0) {
+                    const deficit = Math.abs(newAccQty);
                     const deficitVal = deficit * a.price * fxRate;
                     outOfPocketInflow += deficitVal;
                     grossTradeFlow += deficitVal;
                     symTradeFlowDelta[symbol].netInflow += deficitVal;
                     symTradeFlowDelta[symbol].buys += deficitVal;
-                    holdings[symbol] = 0;
+                    holdingsByAccount[symbol][poolKey] = 0;
+                } else {
+                    holdingsByAccount[symbol][poolKey] = newAccQty;
                 }
+                this.syncTotalHoldings(holdings, holdingsByAccount, symbol);
             }
         }
 
@@ -331,6 +456,7 @@ export class PortfolioAnalytics {
         };
 
         const dividends = {
+            day: new Map<string, DividendData>(),
             month: new Map<string, DividendData>(),
             year: new Map<string, DividendData>()
         };
@@ -355,6 +481,8 @@ export class PortfolioAnalytics {
 
         const lastKnownFx = this.seedLastKnownFx(relevantCurrencies, fxMaps, startIso);
         const holdings: Record<string, number> = {};
+        const holdingsByAccount: Record<string, Record<string, number>> = {};
+        const appliedSplits = new Set<string>();
         const dividendCashPool: Record<string, number> = {};
 
         for (const { dateStr, items } of dayGroups) {
@@ -362,8 +490,13 @@ export class PortfolioAnalytics {
             const otherActivities = items.filter(a => a.type !== 'STOCK_SPLIT' && a.type !== 'SPLIT');
 
             for (const a of splitActivities) {
-                const sym = a.investment.symbol;
-                holdings[sym] = Math.max(0, (holdings[sym] || 0) * a.quantity);
+                this.applySplitToHoldings({
+                    activity: a,
+                    holdings,
+                    holdingsByAccount,
+                    appliedSplits,
+                    dateStr
+                });
             }
 
             const { outOfPocketInflow, outOfPocketOutflow, dailyDividends } = this.applyNonSplitActivitiesForDay({
@@ -373,6 +506,7 @@ export class PortfolioAnalytics {
                 fxMaps,
                 lastKnownFx,
                 holdings,
+                holdingsByAccount,
                 dividendCashPool
             });
 
@@ -394,6 +528,7 @@ export class PortfolioAnalytics {
             }
 
             if (dailyDividends > 0) {
+                processDivMap(dividends.day, dateStr, dateStr, dailyDividends);
                 processDivMap(dividends.month, mKey, `${mKey}-01`, dailyDividends);
                 processDivMap(dividends.year, yKey, `${yKey}-01-01`, dailyDividends);
             }
@@ -452,10 +587,21 @@ export class PortfolioAnalytics {
                 year: sort(flows.year)
             },
             dividends: {
+                day: sort(dividends.day),
                 month: sort(dividends.month),
                 year: sort(dividends.year)
             }
         };
+    }
+
+    private static inferBenchmarkCurrency(benchmarkSymbol: string, quoteCurrency?: string | null): string {
+        if (quoteCurrency && quoteCurrency.trim()) return quoteCurrency.trim().toUpperCase();
+        const upper = benchmarkSymbol.toUpperCase();
+        if (upper === '^GSPTSE' || /\.(TO|V|CN)$/.test(upper)) return 'CAD';
+        if (upper === '^FTSE' || /\.L$/.test(upper)) return 'GBP';
+        if (upper === '^N225' || /\.T$/.test(upper)) return 'JPY';
+        if (upper === '^GDAXI' || upper === '^FCHI' || upper === '^STOXX50E') return 'EUR';
+        return 'USD';
     }
 
     static async calculateComparisonHistory(
@@ -487,9 +633,28 @@ export class PortfolioAnalytics {
 
         const symbols = Array.from(new Set(sortedActivities.map(a => a.investment.symbol)));
         const assetCurrencies = Array.from(new Set(sortedActivities.map(a => a.investment.currency)));
-        const relevantCurrencies = assetCurrencies.filter(c => c && c !== targetCurrency);
+
+        let benchQuoteCurrency: string | null = null;
+        let benchLivePrice: number | null = null;
+        if (typeof MarketDataService.getPrice === 'function') {
+            try {
+                const bq = await MarketDataService.getPrice(benchmarkSymbol);
+                if (bq) {
+                    benchQuoteCurrency = bq.currency || null;
+                    if (bq.price > 0) benchLivePrice = bq.price;
+                }
+            } catch {
+                // Ignore benchmark quote lookup failures
+            }
+        }
+        const benchmarkCurrency = this.inferBenchmarkCurrency(benchmarkSymbol, benchQuoteCurrency);
+        const relevantCurrencies = Array.from(new Set([
+            ...assetCurrencies,
+            benchmarkCurrency
+        ])).filter(c => c && c !== targetCurrency);
 
         log(`[PortfolioAnalytics] Asset Currencies: ${assetCurrencies.join(', ')}`);
+        log(`[PortfolioAnalytics] Benchmark Currency (${benchmarkSymbol}): ${benchmarkCurrency}`);
         log(`[PortfolioAnalytics] Relevant Currencies for FX: ${relevantCurrencies.join(', ')}`);
 
         // 2. Parallel Fetching: Asset Prices + FX Rates
@@ -512,8 +677,9 @@ export class PortfolioAnalytics {
             try {
                 const hist = await MarketDataService.getDailyHistory(sym, lookback);
                 priceMaps[sym] = hist;
-            } catch (e: any) {
-                log(`[PortfolioAnalytics] Error fetching ${sym}: ${e.message}`);
+            } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : String(e);
+                log(`[PortfolioAnalytics] Error fetching ${sym}: ${msg}`);
             }
         });
 
@@ -523,13 +689,14 @@ export class PortfolioAnalytics {
             benchLookback.setFullYear(benchLookback.getFullYear() - 5);
             log(`[PortfolioAnalytics] Fetching Benchmark ${benchmarkSymbol} from ${benchLookback.toISOString()}`);
             const hist = await MarketDataService.getDailyHistory(benchmarkSymbol, benchLookback);
-            priceMaps[benchmarkSymbol] = hist;
+            priceMaps[benchmarkSymbol] = { ...hist };
             log(`[PortfolioAnalytics] Benchmark Points: ${Object.keys(hist).length}`);
-        } catch (e: any) {
-            log(`[PortfolioAnalytics] Error fetching Benchmark ${benchmarkSymbol}: ${e.message}`);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            log(`[PortfolioAnalytics] Error fetching Benchmark ${benchmarkSymbol}: ${msg}`);
         }
 
-        // Fetch FX Rates in batches with reverse-pair fallback
+        // Fetch FX Rates in batches with reverse-pair & cross-rate fallback
         const fxMaps = await this.fetchFxMaps(relevantCurrencies, targetCurrency, lookback, log);
 
         log(`[PortfolioAnalytics] Fetch Complete. PriceKeys: ${Object.keys(priceMaps).length}, FXKeys: ${Object.keys(fxMaps).length}`);
@@ -587,6 +754,11 @@ export class PortfolioAnalytics {
             }
         });
 
+        if (benchLivePrice && benchLivePrice > 0) {
+            if (!priceMaps[benchmarkSymbol]) priceMaps[benchmarkSymbol] = {};
+            priceMaps[benchmarkSymbol][endIso] = benchLivePrice;
+        }
+
         if (typeof MarketDataService.getPrice === 'function' && activeEndSymbols.length > 0) {
             await this.batchProcess(activeEndSymbols, 5, async (sym) => {
                 try {
@@ -612,6 +784,8 @@ export class PortfolioAnalytics {
         }
 
         const holdings: Record<string, number> = {};
+        const holdingsByAccount: Record<string, Record<string, number>> = {};
+        const appliedSplits = new Set<string>();
         const dividendCashPool: Record<string, number> = {};
         let units = 0;
         let nav = 100; // Start at 100
@@ -635,8 +809,13 @@ export class PortfolioAnalytics {
             const initOthers = initItems.filter(a => a.type !== 'STOCK_SPLIT' && a.type !== 'SPLIT');
 
             for (const a of initSplits) {
-                const sym = a.investment.symbol;
-                holdings[sym] = Math.max(0, (holdings[sym] || 0) * a.quantity);
+                this.applySplitToHoldings({
+                    activity: a,
+                    holdings,
+                    holdingsByAccount,
+                    appliedSplits,
+                    dateStr: initDateStr
+                });
             }
 
             const { dailyDividends } = this.applyNonSplitActivitiesForDay({
@@ -646,6 +825,7 @@ export class PortfolioAnalytics {
                 fxMaps,
                 lastKnownFx: initialLastKnownFx,
                 holdings,
+                holdingsByAccount,
                 dividendCashPool
             });
             initialDividends += dailyDividends;
@@ -725,6 +905,7 @@ export class PortfolioAnalytics {
         const symNetInflows: Record<string, number> = {};
         const symTotalBuys: Record<string, number> = {};
         const symTotalDividends: Record<string, number> = {};
+        const appliedCorporateSplits = new Set<string>();
         let hasNonPositiveGrowthDay = false;
 
         // Initial Units
@@ -752,21 +933,27 @@ export class PortfolioAnalytics {
             const otherActivities = rawDaysActivities.filter(a => a.type !== 'STOCK_SPLIT' && a.type !== 'SPLIT');
 
             splitActivities.forEach(a => {
-                const symbol = a.investment.symbol;
-                // Apply Split Multiplier
-                // e.g. 3:1 Split -> Quantity 3
-                holdings[symbol] = (holdings[symbol] || 0) * a.quantity;
+                const { applied, symbol, multiplier } = this.applySplitToHoldings({
+                    activity: a,
+                    holdings,
+                    holdingsByAccount,
+                    appliedSplits,
+                    dateStr
+                });
 
-                // Negative Holdings Protection
-                if (holdings[symbol] < 0) holdings[symbol] = 0;
-
-                // Also adjust lastKnownPrice so the passive MV calculation on this day (and next)
-                // doesn't spike if the new market price hasn't arrived yet.
-                if (lastKnownPrices[symbol]) {
-                    lastKnownPrices[symbol] /= a.quantity;
+                // Adjust cached market price only once per corporate split event so
+                // multi-account split rows don't divide lastKnownPrices repeatedly by ratio^N.
+                const corpSplitKey = `${dateStr}:${symbol}:${multiplier}`;
+                if (multiplier > 0 && !appliedCorporateSplits.has(corpSplitKey)) {
+                    appliedCorporateSplits.add(corpSplitKey);
+                    if (lastKnownPrices[symbol]) {
+                        lastKnownPrices[symbol] /= multiplier;
+                    }
                 }
 
-                log(`[Pre-Market Split] ${symbol} multiplied by ${a.quantity}`);
+                if (applied) {
+                    log(`[Pre-Market Split] ${symbol} multiplied by ${multiplier}`);
+                }
             });
 
             // Use other activities for Net Flow calculation
@@ -800,6 +987,7 @@ export class PortfolioAnalytics {
                 fxMaps,
                 lastKnownFx,
                 holdings,
+                holdingsByAccount,
                 dividendCashPool,
                 log
             });
@@ -859,7 +1047,7 @@ export class PortfolioAnalytics {
             // [FIX] Epsilon Start Protection
             // Use a threshold (0.01) to avoid division by floating point dust (e.g. 1e-15)
             if (prevMarketValue > 0.01) {
-                if (discoveryFlow === 0 || passiveMV > discoveryFlow || dailyDividends > 0) {
+                if (discoveryFlow === 0 || passiveMV > discoveryFlow) {
                     const growth = adjustablePassiveMV / prevMarketValue;
                     nav = nav * growth;
 
@@ -949,14 +1137,11 @@ export class PortfolioAnalytics {
             currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
 
-        // Process Benchmark (Normalize to 100)
-        // Benchmark is usually an index like ^GSPC (USD).
-        // If we want to compare correctly, should we convert Benchmark to CAD?
-        // Usually Benchmark Comparison is % return vs % return, so Currency doesn't matter for the Index Line itself
-        // AS LONG AS we compare normalized values.
-        // So we keep benchmark raw.
+        // Process Benchmark (keep .value as raw index points, convert .normalized & return to targetCurrency)
         const benchHist = priceMaps[benchmarkSymbol] || {};
+        const benchFxMap = benchmarkCurrency !== targetCurrency ? fxMaps[benchmarkCurrency] : undefined;
         let lastBenchVal = 0;
+        let lastBenchFx = 1;
         if (dailyPerf.length > 0) {
             const firstPerfDate = dailyPerf[0].date;
             const benchDates = Object.keys(benchHist).filter(isIsoDateKey).sort();
@@ -967,51 +1152,84 @@ export class PortfolioAnalytics {
                     break;
                 }
             }
+            if (benchFxMap) {
+                const seededBenchFx = this.resolveFxRate(benchFxMap, firstPerfDate);
+                if (seededBenchFx && seededBenchFx > 0) {
+                    lastBenchFx = seededBenchFx;
+                }
+            }
         }
 
-        const benchmarkData = dailyPerf.map(d => {
-            let val = benchHist[d.date];
-            if (val) {
-                lastBenchVal = val;
-            } else {
-                val = lastBenchVal;
+        const benchmarkPoints = dailyPerf.map(d => {
+            const rawVal = benchHist[d.date];
+            if (rawVal && rawVal > 0) {
+                lastBenchVal = rawVal;
             }
-            return { date: d.date, value: val || 0, normalized: 0 };
+            const val = lastBenchVal;
+
+            let fx = 1;
+            if (benchmarkCurrency !== targetCurrency && benchFxMap) {
+                const resolvedFx = this.resolveFxRate(benchFxMap, d.date, lastBenchFx);
+                if (resolvedFx && resolvedFx > 0) {
+                    lastBenchFx = resolvedFx;
+                    fx = resolvedFx;
+                } else {
+                    fx = lastBenchFx;
+                }
+            }
+
+            return {
+                date: d.date,
+                value: val || 0,
+                convertedValue: val > 0 ? val * fx : 0,
+                normalized: 0
+            };
         });
 
+        const portfolioStart = dailyPerf.find(d => d.marketValue > 0) || dailyPerf[0];
+        const portfolioEnd = dailyPerf[dailyPerf.length - 1];
 
-        // Normalize Benchmark
-        const firstValid = benchmarkData.find(d => d.value > 0);
+        // Align benchmark baseline to the portfolio's active start date when valid
+        const startAlignedPoint = portfolioStart
+            ? benchmarkPoints.find(b => b.date === portfolioStart.date && b.convertedValue > 0)
+            : undefined;
+        const firstValid = startAlignedPoint || benchmarkPoints.find(d => d.convertedValue > 0);
         if (firstValid) {
-            const startVal = firstValid.value;
-            benchmarkData.forEach(d => {
-                if (d.value > 0) {
-                    d.normalized = (d.value / startVal) * 100;
+            const startConverted = firstValid.convertedValue;
+            benchmarkPoints.forEach(d => {
+                if (d.convertedValue > 0) {
+                    d.normalized = (d.convertedValue / startConverted) * 100;
                 } else {
                     // Backfill missing initial data (e.g. holidays) to 100 to prevent Division By Zero in Frontend
                     d.normalized = 100;
                 }
             });
         } else {
-            // No valid data found at all
-            benchmarkData.forEach(d => d.normalized = 100);
+            benchmarkPoints.forEach(d => {
+                d.normalized = 100;
+            });
         }
 
-        // Calculate Summary Stats
-        const portfolioStart = dailyPerf.find(d => d.marketValue > 0) || dailyPerf[0];
-        const portfolioEnd = dailyPerf[dailyPerf.length - 1];
+        const benchmarkData = benchmarkPoints.map(({ date, value, normalized }) => ({
+            date,
+            value,
+            normalized
+        }));
 
+        // Calculate Summary Stats
         const portfolioReturn =
             portfolioStart && portfolioEnd?.nav && portfolioStart.nav
                 ? ((portfolioEnd.nav - portfolioStart.nav) / portfolioStart.nav) * 100
                 : 0;
 
         let benchmarkReturn = 0;
-        const validBenchmark = benchmarkData.filter(d => d.value > 0);
-        if (validBenchmark.length > 0) {
-            const start = validBenchmark[0].value;
-            const end = validBenchmark[validBenchmark.length - 1].value;
-            benchmarkReturn = ((end - start) / start) * 100;
+        const validBenchmark = benchmarkPoints.filter(d => d.convertedValue > 0);
+        if (validBenchmark.length > 0 && firstValid) {
+            const startNorm = firstValid.normalized;
+            const endNorm = validBenchmark[validBenchmark.length - 1].normalized;
+            if (startNorm > 0) {
+                benchmarkReturn = ((endNorm - startNorm) / startNorm) * 100;
+            }
         }
 
         // Calculate Top/Bottom Performers ranked by Portfolio Impact (Carino-linked return contribution)
@@ -1084,14 +1302,37 @@ export class PortfolioAnalytics {
 
     public static computeHoldingsState(activities: Activity[]) {
         const h: Record<string, number> = {};
-        activities.forEach(a => {
-            const s = (a as Activity & { investment: { symbol: string } }).investment.symbol;
-            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN') h[s] = (h[s] || 0) + a.quantity;
-            if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT') h[s] = (h[s] || 0) - Math.abs(a.quantity);
-            if (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') h[s] = (h[s] || 0) * a.quantity;
+        const holdingsByAccount: Record<string, Record<string, number>> = {};
+        const appliedSplits = new Set<string>();
 
-            // Negative Holdings Protection: prevent negative balances due to missing history
-            if (h[s] < 0) h[s] = 0;
+        activities.forEach(a => {
+            const act = a as Activity & { investment: { symbol: string } };
+            const s = act.investment.symbol;
+            const accKey = this.getAccountPoolKey(a);
+            if (!holdingsByAccount[s]) holdingsByAccount[s] = {};
+
+            if (a.type === 'BUY' || a.type === 'DEPOSIT' || a.type === 'TRANSFER_IN' || a.type === 'ADD') {
+                holdingsByAccount[s][accKey] = (holdingsByAccount[s][accKey] || 0) + Math.abs(a.quantity);
+                this.syncTotalHoldings(h, holdingsByAccount, s);
+            } else if (a.type === 'SELL' || a.type === 'WITHDRAWAL' || a.type === 'TRANSFER_OUT' || a.type === 'REMOVE') {
+                holdingsByAccount[s][accKey] = Math.max(0, (holdingsByAccount[s][accKey] || 0) - Math.abs(a.quantity));
+                this.syncTotalHoldings(h, holdingsByAccount, s);
+            } else if (a.type === 'STOCK_SPLIT' || a.type === 'SPLIT') {
+                let dateStr: string | undefined;
+                if (a.date) {
+                    const parsed = new Date(a.date);
+                    if (!Number.isNaN(parsed.getTime())) {
+                        dateStr = parsed.toISOString().split('T')[0];
+                    }
+                }
+                this.applySplitToHoldings({
+                    activity: act,
+                    holdings: h,
+                    holdingsByAccount,
+                    appliedSplits,
+                    dateStr
+                });
+            }
         });
         return h;
     }
@@ -1194,7 +1435,6 @@ export class PortfolioAnalytics {
         const priceMaps: Record<string, Record<string, number>> = {};
         const fxMaps: Record<string, Record<string, number>> = {};
         const dailyPriceMaps: Record<string, Record<string, number>> = {};
-        const dailyFxMaps: Record<string, Record<string, number>> = {};
 
         const dailyLookback = new Date();
         dailyLookback.setDate(dailyLookback.getDate() - 7);
@@ -1205,27 +1445,76 @@ export class PortfolioAnalytics {
             return false;
         };
 
+        const fetchIntradayFxMap = async (from: string, to: string): Promise<Record<string, number>> => {
+            const direct = await MarketDataService.getIntradayHistory(`${from}${to}=X`);
+            const combined: Record<string, number> = isNonEmptyMap(direct) ? { ...direct } : {};
+
+            if (from === 'USD') {
+                const shorthand = await MarketDataService.getIntradayHistory(`${to}=X`);
+                if (isNonEmptyMap(shorthand)) {
+                    for (const [ts, rate] of Object.entries(shorthand)) {
+                        if (rate > 0) combined[ts] = rate;
+                    }
+                }
+            } else if (to === 'USD') {
+                const shorthand = await MarketDataService.getIntradayHistory(`${from}=X`);
+                if (isNonEmptyMap(shorthand)) {
+                    for (const [ts, rate] of Object.entries(shorthand)) {
+                        if (rate > 0) combined[ts] = 1 / rate;
+                    }
+                }
+            }
+
+            if (isNonEmptyMap(combined)) return combined;
+
+            const reverse = await MarketDataService.getIntradayHistory(`${to}${from}=X`);
+            if (isNonEmptyMap(reverse)) {
+                const inverted: Record<string, number> = {};
+                for (const [ts, rate] of Object.entries(reverse)) {
+                    if (rate > 0) inverted[ts] = 1 / rate;
+                }
+                if (isNonEmptyMap(inverted)) return inverted;
+            }
+
+            return {};
+        };
+
         // Batch all I/O calls concurrently
-        await Promise.all([
+        const [dailyFxMaps] = await Promise.all([
+            this.fetchFxMaps(relevantCurrencies, targetCurrency, dailyLookback),
             ...symbols.map(async (sym) => {
                 const hist = await MarketDataService.getIntradayHistory(sym);
                 if (isNonEmptyMap(hist)) priceMaps[sym] = hist;
             }),
-            ...fxPairs.map(async ({ from, symbol }) => {
-                const hist = await MarketDataService.getIntradayHistory(symbol);
+            ...fxPairs.map(async ({ from, to }) => {
+                let hist = await fetchIntradayFxMap(from, to);
+                if (!isNonEmptyMap(hist) && from !== 'USD' && to !== 'USD') {
+                    const [fromUsd, usdTo] = await Promise.all([
+                        fetchIntradayFxMap(from, 'USD'),
+                        fetchIntradayFxMap('USD', to)
+                    ]);
+                    if (isNonEmptyMap(fromUsd) && isNonEmptyMap(usdTo)) {
+                        const allTs = Array.from(new Set([...Object.keys(fromUsd), ...Object.keys(usdTo)])).sort();
+                        let lastA = 0;
+                        let lastB = 0;
+                        const cross: Record<string, number> = {};
+                        for (const ts of allTs) {
+                            if (fromUsd[ts] > 0) lastA = fromUsd[ts];
+                            if (usdTo[ts] > 0) lastB = usdTo[ts];
+                            if (lastA > 0 && lastB > 0) {
+                                cross[ts] = lastA * lastB;
+                            }
+                        }
+                        hist = cross;
+                    }
+                }
                 if (isNonEmptyMap(hist)) fxMaps[from] = hist;
             }),
             ...symbols.map(async (sym) => {
                 try {
                     const dailyHist = await MarketDataService.getDailyHistory(sym, dailyLookback);
                     if (isNonEmptyMap(dailyHist)) dailyPriceMaps[sym] = dailyHist;
-                } catch (e) { }
-            }),
-            ...fxPairs.map(async ({ from, symbol }) => {
-                try {
-                    const dailyHist = await MarketDataService.getDailyHistory(symbol, dailyLookback);
-                    if (isNonEmptyMap(dailyHist)) dailyFxMaps[from] = dailyHist;
-                } catch (e) { }
+                } catch { }
             })
         ]);
 
@@ -1338,19 +1627,6 @@ export class PortfolioAnalytics {
                     dividend: 0
                 });
             }
-        }
-
-        // 6. Calculate % Return for the day (Simplified NAV)
-        // Base is the first point of the day
-        if (result.length > 0) {
-            const startVal = result[0].marketValue;
-            result.forEach(r => {
-                // Determine % change relative to start of day
-                // Store in 'netFlow' or 'nav' as a proxy? 
-                // The frontend expects 'value' and 'invested'.
-                // HistoryPoint interface: value, invested.
-                // We'll map this in the API route.
-            });
         }
 
         return result;
