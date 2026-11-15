@@ -285,4 +285,23 @@ test('GET /api/rebalancer route handler integration and unit test', async (t) =>
             console.error = originalConsoleError;
         }
     });
+
+    await t.test('Excludes IEEE-754 dust quantities from holdings unless targeted', async () => {
+        prismaMock.targetAllocation.findMany = async () => [
+            { symbol: 'VFV.TO', targetPercentage: 100, yearlyDriftAdjustment: null }
+        ];
+        prismaMock.activity.findMany = async () => [];
+        portfolioAnalyticsMock.computeHoldingsState = () => ({
+            'VFV.TO': 10,
+            'SOLD.DUST': 1e-12
+        });
+
+        const { NextRequest } = await import('next/server' as any);
+        const req = new NextRequest('http://localhost/api/rebalancer');
+        const response = await GET(req as any);
+        const body = await response.json();
+
+        const symbols = body.data.map((d: any) => d.symbol);
+        assert.deepStrictEqual(symbols, ['VFV.TO']);
+    });
 });

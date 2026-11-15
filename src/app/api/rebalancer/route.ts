@@ -14,8 +14,8 @@ export async function GET(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
         const targetCurrency = searchParams.get('currency') || 'USD';
-        const investmentTypes = searchParams.get('investmentTypes')?.split(',') || [];
-        const accountTypes = searchParams.get('accountTypes')?.split(',') || [];
+        const investmentTypes = searchParams.get('investmentTypes')?.split(',').map(s => s.trim()).filter(Boolean) || [];
+        const accountTypes = searchParams.get('accountTypes')?.split(',').map(s => s.trim()).filter(Boolean) || [];
         const excludeSymbols = searchParams.get('excludeSymbols')?.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) || [];
 
         // 1. Fetch Targets
@@ -52,9 +52,10 @@ export async function GET(request: NextRequest) {
         let totalValueUSD = 0;
         const holdingDetails = [];
 
-        // Identify all unique symbols from holdings and targets
+        // Identify all unique symbols from active holdings (excluding float dust) and targets
+        const QUANTITY_EPSILON = 0.00001;
         const allSymbolsSet = new Set<string>();
-        Object.keys(holdings).forEach(s => holdings[s] > 0 && allSymbolsSet.add(s));
+        Object.keys(holdings).forEach(s => holdings[s] > QUANTITY_EPSILON && allSymbolsSet.add(s));
         targets.forEach(t => allSymbolsSet.add(t.symbol));
         const allSymbols = Array.from(allSymbolsSet);
 
