@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useMemo, useEffect } from 'react';
 import {
     AreaChart,
@@ -10,7 +12,9 @@ import {
     Line
 } from 'recharts';
 import { useCurrency } from '@/context/CurrencyContext';
-import styles from './PortfolioChart.module.css'; // Reuse styles
+import { useDate } from '@/context/DateContext';
+import DateInput from './DateInput';
+import styles from './PortfolioChart.module.css';
 
 interface StockChartProps {
     data: Record<string, number>;
@@ -21,24 +25,42 @@ interface StockChartProps {
 
 const RANGES = ['1D', '1W', '1M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', '10Y', 'ALL'];
 
+function getRangeLabel(r: string): string {
+    switch (r) {
+        case '1D': return '1-day';
+        case '1W': return '1-week';
+        case '1M': return '1-month';
+        case '6M': return '6-months';
+        case 'YTD': return 'YTD';
+        case '1Y': return '1-year';
+        case '2Y': return '2-years';
+        case '3Y': return '3-years';
+        case '5Y': return '5-years';
+        case '10Y': return '10-years';
+        case 'ALL': return 'All-time';
+        case 'CUSTOM': return 'Custom';
+        default: return '';
+    }
+}
+
 export default function StockChart({ data, currency: assetCurrency, avgPriceHistory, symbol }: StockChartProps) {
     const { format, convert } = useCurrency();
+    const { formatDate } = useDate();
     const [range, setRange] = useState('1M');
     const [customStart, setCustomStart] = useState('');
     const [customEnd, setCustomEnd] = useState('');
-    const [intradayData, setIntradayData] = useState<{ date: string, value: number }[]>([]);
+    const [intradayData, setIntradayData] = useState<{ date: string; value: number }[]>([]);
     const [loadingIntraday, setLoadingIntraday] = useState(false);
 
-    // Fetch intraday data when range is 1D
     useEffect(() => {
         if (range === '1D' && symbol) {
             // eslint-disable-next-line react-hooks/set-state-in-effect
             setLoadingIntraday(true);
             fetch(`/api/market-data/intraday?symbol=${encodeURIComponent(symbol)}`)
                 .then(res => res.json())
-                .then(data => {
-                    if (Array.isArray(data)) {
-                        setIntradayData(data);
+                .then(resData => {
+                    if (Array.isArray(resData)) {
+                        setIntradayData(resData);
                     }
                 })
                 .catch(err => console.error('Failed to fetch intraday', err))
@@ -46,20 +68,20 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
         }
     }, [range, symbol]);
 
-    // Convert historical object to array and sort by date
     const allData = useMemo(() => {
-        return Object.entries(data)
+        return Object.entries(data || {})
             .filter(([key]) => !['1W', '1M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', '10Y', 'ALL'].includes(key))
             .map(([date, price]) => ({
                 date,
                 value: convert(price, assetCurrency),
                 originalValue: price,
-                avgPrice: avgPriceHistory && avgPriceHistory[date] ? convert(avgPriceHistory[date], assetCurrency) : null
+                avgPrice: avgPriceHistory && avgPriceHistory[date]
+                    ? convert(avgPriceHistory[date], assetCurrency)
+                    : null,
             }))
             .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     }, [data, assetCurrency, convert, avgPriceHistory]);
 
-    // Filter data based on range
     const chartData = useMemo(() => {
         if (allData.length === 0) return [];
 
@@ -81,12 +103,11 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
                 if (intradayData.length > 0) {
                     return intradayData.map(d => ({
                         date: d.date,
-                        value: convert(d.value, assetCurrency), // Convert if needed, though usually intraday is in asset currency
+                        value: convert(d.value, assetCurrency),
                         originalValue: d.value,
-                        avgPrice: null // No avg price for intraday usually
+                        avgPrice: null as number | null,
                     }));
                 }
-                // Fallback if no intraday data
                 if (allData.length >= 2) {
                     return allData.slice(-2);
                 }
@@ -107,191 +128,270 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
         return allData.filter(d => new Date(d.date) >= startDate);
     }, [allData, range, customStart, customEnd, intradayData, convert, assetCurrency]);
 
-    if (chartData.length === 0) {
-        return (
-            <div style={{
-                height: '400px',
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                color: 'var(--text-secondary)',
-                background: 'var(--card-bg)',
-                borderRadius: '1rem',
-                border: '1px solid var(--card-border)'
-            }}>
-                No historical data available
-            </div>
-        );
-    }
-
-    // Calculate change for header
-    let change = 0;
-    let changePercent = 0;
-    if (chartData.length > 0) {
+    const { change, changePercent, minPrice, maxPrice, hasAvgCost, latestAvgPrice } = useMemo(() => {
+        if (chartData.length === 0) {
+            return {
+                change: 0,
+                changePercent: 0,
+                minPrice: 0,
+                maxPrice: 0,
+                hasAvgCost: false,
+                latestAvgPrice: null as number | null,
+            };
+        }
         const first = chartData[0].value;
         const last = chartData[chartData.length - 1].value;
-        change = last - first;
-        changePercent = first !== 0 ? (change / first) * 100 : 0;
-    }
+        const diff = last - first;
+        const pct = first !== 0 ? (diff / first) * 100 : 0;
+
+        let minV = Infinity;
+        let maxV = -Infinity;
+        let avgFound = false;
+        let lastAvg: number | null = null;
+
+        for (const pt of chartData) {
+            if (pt.value < minV) minV = pt.value;
+            if (pt.value > maxV) maxV = pt.value;
+            if (pt.avgPrice !== null && pt.avgPrice > 0) {
+                avgFound = true;
+                lastAvg = pt.avgPrice;
+            }
+        }
+
+        return {
+            change: diff,
+            changePercent: pct,
+            minPrice: Number.isFinite(minV) ? minV : 0,
+            maxPrice: Number.isFinite(maxV) ? maxV : 0,
+            hasAvgCost: avgFound,
+            latestAvgPrice: lastAvg,
+        };
+    }, [chartData]);
+
     const isPositive = change >= 0;
 
-    const getRangeLabel = (r: string) => {
-        switch (r) {
-            case '1D': return '1-day';
-            case '1W': return '1-week';
-            case '1M': return '1-month';
-            case '6M': return '6-months';
-            case 'YTD': return 'YTD';
-            case '1Y': return '1-year';
-            case '2Y': return '2-years';
-            case '3Y': return '3-years';
-            case '5Y': return '5-years';
-            case '10Y': return '10-years';
-            case 'ALL': return 'All-time';
-            case 'CUSTOM': return 'Custom';
-            default: return '';
-        }
-    };
-
     return (
-        <div className={styles.container}>
-            <div className={styles.header}>
-                <div>
-                    <h3>Price History</h3>
-                    <div className={`${styles.change} ${isPositive ? styles.positive : styles.negative}`}>
-                        {change > 0 ? '+' : ''}{format(change)} ({changePercent > 0 ? '+' : ''}{changePercent.toFixed(2)}%) <span style={{ opacity: 0.8, fontWeight: 'bold' }}>({getRangeLabel(range)})</span>
-                    </div>
-                </div>
-                <div className={styles.controls}>
-                    <div className={styles.ranges}>
-                        {RANGES.map(r => (
-                            <button
-                                key={r}
-                                className={`${styles.rangeButton} ${range === r ? styles.active : ''}`}
-                                onClick={() => setRange(r)}
+        <div className={styles.unifiedContainer}>
+            <div className={styles.unifiedHeader}>
+                <div className={styles.headerTopRow}>
+                    <div className={styles.headerTitleArea}>
+                        <div className={styles.modeTablist}>
+                            <span
+                                className={styles.modeTab}
+                                aria-selected="true"
+                                style={{ cursor: 'default' }}
                             >
-                                {r}
-                            </button>
-                        ))}
-                        <button
-                            className={`${styles.rangeButton} ${range === 'CUSTOM' ? styles.active : ''}`}
-                            onClick={() => setRange('CUSTOM')}
-                        >
-                            Custom
-                        </button>
+                                Price &amp; Cost Basis History
+                            </span>
+                        </div>
                     </div>
 
-                    {/* Mobile Range Select */}
-                    <div className={styles.mobileControls}>
-                        <select
-                            value={range}
-                            onChange={(e) => setRange(e.target.value)}
-                            className={styles.mobileSelect}
-                        >
-                            {RANGES.map(r => (
-                                <option key={r} value={r}>{r}</option>
-                            ))}
-                            <option value="CUSTOM">Custom</option>
-                        </select>
-                    </div>
-                    {range === 'CUSTOM' && (
-                        <div className={styles.dateInputs}>
-                            <input
-                                type="date"
-                                value={customStart}
-                                onChange={(e) => setCustomStart(e.target.value)}
-                                className={styles.dateInput}
-                            />
-                            <span className={styles.separator}>to</span>
-                            <input
-                                type="date"
-                                value={customEnd}
-                                onChange={(e) => setCustomEnd(e.target.value)}
-                                className={styles.dateInput}
-                            />
+                    <div className={styles.controls}>
+                        <div className={styles.desktopControls}>
+                            <div className={styles.ranges}>
+                                {RANGES.map(r => (
+                                    <button
+                                        key={r}
+                                        type="button"
+                                        aria-pressed={range === r}
+                                        className={`${styles.rangeButton} ${range === r ? styles.active : ''}`}
+                                        onClick={() => setRange(r)}
+                                    >
+                                        {r}
+                                    </button>
+                                ))}
+                                <button
+                                    type="button"
+                                    aria-pressed={range === 'CUSTOM'}
+                                    className={`${styles.rangeButton} ${range === 'CUSTOM' ? styles.active : ''}`}
+                                    onClick={() => setRange('CUSTOM')}
+                                >
+                                    Custom
+                                </button>
+                            </div>
                         </div>
-                    )}
+
+                        <div className={styles.mobileControls}>
+                            <select
+                                aria-label="Chart timeframe"
+                                value={range}
+                                onChange={(e) => setRange(e.target.value)}
+                                className={styles.mobileSelect}
+                            >
+                                {RANGES.map(r => (
+                                    <option key={r} value={r}>{r === 'ALL' ? 'All Time' : r}</option>
+                                ))}
+                                <option value="CUSTOM">Custom Range</option>
+                            </select>
+                        </div>
+
+                        {range === 'CUSTOM' && (
+                            <div className={styles.dateInputs}>
+                                <DateInput
+                                    value={customStart}
+                                    onChange={setCustomStart}
+                                    ariaLabel="Custom start date"
+                                    className={styles.dateInput}
+                                />
+                                <span className={styles.separator}>to</span>
+                                <DateInput
+                                    value={customEnd}
+                                    onChange={setCustomEnd}
+                                    ariaLabel="Custom end date"
+                                    className={styles.dateInput}
+                                />
+                            </div>
+                        )}
+                    </div>
                 </div>
+
+                {chartData.length > 0 && (
+                    <div className={styles.periodMetricsStrip}>
+                        <div className={styles.metricGroup}>
+                            <div className={styles.metricChip}>
+                                <span className={styles.metricChipLabel}>Period Change</span>
+                                <span className={styles.metricChipValue}>
+                                    {change > 0 ? '+' : ''}{format(change)}
+                                </span>
+                                <span className={`${styles.metricPill} ${isPositive ? styles.metricPillPos : styles.metricPillNeg}`}>
+                                    {changePercent > 0 ? '+' : ''}{changePercent.toFixed(2)}% ({getRangeLabel(range)})
+                                </span>
+                            </div>
+
+                            <div className={styles.metricChip}>
+                                <span className={styles.metricChipLabel}>Range Low / High</span>
+                                <span className={styles.metricChipValue}>
+                                    {format(minPrice)} – {format(maxPrice)}
+                                </span>
+                            </div>
+
+                            {hasAvgCost && latestAvgPrice !== null && (
+                                <div className={styles.metricChip}>
+                                    <span className={styles.metricChipLabel}>Avg Cost</span>
+                                    <span className={styles.metricChipValue}>
+                                        {format(latestAvgPrice)}
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className={styles.chartLegend}>
+                            <span className={styles.legendItem}>
+                                <span className={styles.legendLinePrimary} />
+                                Market Price
+                            </span>
+                            {hasAvgCost && (
+                                <span className={styles.legendItem}>
+                                    <span
+                                        style={{
+                                            width: '14px',
+                                            height: '2.5px',
+                                            background: '#f59e0b',
+                                            borderRadius: '9999px',
+                                            display: 'inline-block',
+                                        }}
+                                    />
+                                    Avg Cost Basis
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
-            <div className={styles.chartWrapper}>
-                <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData}>
-                        <defs>
-                            <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#2563eb" stopOpacity={0.1} />
-                                <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
-                            </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                        <XAxis
-                            dataKey="date"
-                            tickFormatter={(str) => {
-                                const date = new Date(str);
-                                if (range === '1D') {
-                                    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-                                }
-                                return range === '1W' || range === '1M'
-                                    ? date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-                                    : date.toLocaleDateString(undefined, { month: 'short', year: '2-digit' });
-                            }}
-                            stroke="#9ca3af"
-                            fontSize={12}
-                            tickMargin={10}
-                            minTickGap={30}
-                        />
-                        <YAxis
-                            tickFormatter={(val) => format(val)}
-                            stroke="#9ca3af"
-                            fontSize={12}
-                            tickMargin={10}
-                            domain={['auto', 'auto']}
-                            width={80}
-                        />
-                        <Tooltip
-                            formatter={(val: number, name: string) => {
-                                if (name === 'avgPrice') return [format(val), 'Avg Price'];
-                                return [format(val), 'Price'];
-                            }}
-                            labelFormatter={(label) => {
-                                const d = new Date(label);
-                                if (range === '1D') {
-                                    return d.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-                                }
-                                return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-                            }}
-                            contentStyle={{
-                                backgroundColor: 'var(--card-bg)',
-                                border: '1px solid var(--card-border)',
-                                borderRadius: '0.5rem',
-                                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                                color: 'var(--text-primary)'
-                            }}
-                            itemStyle={{ color: 'var(--text-primary)' }}
-                            labelStyle={{ color: 'var(--text-secondary)' }}
-                        />
+            <div className={styles.chartWrapper} style={{ position: 'relative' }}>
+                {loadingIntraday && <div className={styles.loading}>Loading intraday data...</div>}
+                {!loadingIntraday && chartData.length === 0 && (
+                    <div className={styles.emptyOverlay}>
+                        No historical price data available for this range
+                    </div>
+                )}
+                {chartData.length > 0 && (
+                    <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 4 }}>
+                            <defs>
+                                <linearGradient id="stockPriceGradient" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.22} />
+                                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                                </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--card-border)" strokeOpacity={0.7} />
+                            <XAxis
+                                dataKey="date"
+                                tickFormatter={(str) => {
+                                    const date = new Date(str);
+                                    if (range === '1D') {
+                                        return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                                    }
+                                    return range === '1W' || range === '1M'
+                                        ? formatDate(date).split(',')[0]
+                                        : formatDate(date);
+                                }}
+                                stroke="var(--text-secondary)"
+                                fontSize={11}
+                                tickMargin={6}
+                                minTickGap={34}
+                                tickLine={false}
+                                axisLine={false}
+                            />
+                            <YAxis
+                                tickFormatter={(val) => format(val)}
+                                stroke="var(--text-secondary)"
+                                fontSize={11}
+                                tickMargin={6}
+                                domain={['auto', 'auto']}
+                                width={76}
+                                tickLine={false}
+                                axisLine={false}
+                            />
+                            <Tooltip
+                                formatter={(val: number, name: string) => {
+                                    if (name === 'avgPrice') return [format(val), 'Avg Cost Basis'];
+                                    return [format(val), 'Market Price'];
+                                }}
+                                labelFormatter={(label) => {
+                                    const d = new Date(label);
+                                    if (range === '1D') {
+                                        return d.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+                                    }
+                                    return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                                }}
+                                contentStyle={{
+                                    backgroundColor: 'var(--card-bg)',
+                                    border: '1px solid var(--card-border)',
+                                    borderRadius: '0.625rem',
+                                    boxShadow: '0 8px 16px -4px rgba(0, 0, 0, 0.14)',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.8125rem',
+                                }}
+                                itemStyle={{ color: 'var(--text-primary)', fontWeight: 600 }}
+                                labelStyle={{ color: 'var(--text-secondary)', marginBottom: '0.25rem' }}
+                            />
 
-                        <Area
-                            type="monotone"
-                            dataKey="value"
-                            stroke="#2563eb"
-                            strokeWidth={2}
-                            fillOpacity={1}
-                            fill="url(#colorValue)"
-                            name="Price"
-                        />
+                            <Area
+                                type="monotone"
+                                dataKey="value"
+                                stroke="#3b82f6"
+                                strokeWidth={2.25}
+                                fillOpacity={1}
+                                fill="url(#stockPriceGradient)"
+                                name="Price"
+                            />
 
-                        <Line
-                            type="stepAfter"
-                            dataKey="avgPrice"
-                            stroke="#f59e0b"
-                            strokeWidth={2}
-                            dot={false}
-                            name="avgPrice"
-                            connectNulls
-                        />
-                    </AreaChart>
-                </ResponsiveContainer>
+                            {hasAvgCost && (
+                                <Line
+                                    type="stepAfter"
+                                    dataKey="avgPrice"
+                                    stroke="#f59e0b"
+                                    strokeWidth={2}
+                                    dot={false}
+                                    name="avgPrice"
+                                    connectNulls
+                                />
+                            )}
+                        </AreaChart>
+                    </ResponsiveContainer>
+                )}
             </div>
         </div>
     );

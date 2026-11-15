@@ -1,17 +1,24 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+import { MdArrowBack, MdRefresh } from 'react-icons/md';
 import { useCurrency } from '@/context/CurrencyContext';
+import { useDate } from '@/context/DateContext';
 import StockChart from '@/components/StockChart';
+import SymbolSkeleton from '@/components/SymbolSkeleton';
 import { formatQuantity } from '@/lib/format';
 import styles from './page.module.css';
-import { MdRefresh, MdArrowBack } from 'react-icons/md';
-import Link from 'next/link';
-import SymbolSkeleton from '@/components/SymbolSkeleton';
 
-// ... imports
+interface AccountAllocation {
+    quantity: number;
+    value: number;
+    name: string;
+    type: string;
+    platform?: { name: string };
+}
 
 interface AnalysisData {
     symbol: string;
@@ -39,7 +46,7 @@ interface AnalysisData {
         dividendYield?: number;
     };
     allocation: {
-        accounts: { quantity: number; value: number; name: string; type: string; platform: { name: string } }[];
+        accounts: AccountAllocation[];
     };
     activities: any[];
     historical: Record<string, number>;
@@ -52,10 +59,7 @@ interface User {
     name?: string;
 }
 
-
-
-
-import { Suspense } from 'react';
+const ALLOCATION_PALETTE = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#06b6d4', '#ec4899'];
 
 function AnalysisContent() {
     const { symbol } = useParams();
@@ -63,18 +67,21 @@ function AnalysisContent() {
     const from = searchParams.get('from');
     const [data, setData] = useState<AnalysisData | null>(null);
     const { format, convert } = useCurrency();
+    const { formatDate } = useDate();
     const [activeTab, setActiveTab] = useState<'overview' | 'activities'>('overview');
     const [users, setUsers] = useState<User[]>([]);
     const [navContext, setNavContext] = useState<string | null>(null);
+    const [isRefreshing, setIsRefreshing] = useState(false);
 
-    // Filters
+    // Activities tab filters
     const [filterType, setFilterType] = useState('');
     const [filterAccount, setFilterAccount] = useState('');
     const [filterAccountType, setFilterAccountType] = useState('');
     const [filterPlatform, setFilterPlatform] = useState('');
 
+    const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
     useEffect(() => {
-        // Prioritize search param, then session storage
         if (from) {
             setNavContext(from);
             sessionStorage.setItem('navContext', from);
@@ -89,18 +96,17 @@ function AnalysisContent() {
     };
 
     useEffect(() => {
-        // Fetch users for display names
         fetch('/api/users')
             .then(res => res.json())
-            .then(setUsers)
+            .then(resData => {
+                if (Array.isArray(resData)) setUsers(resData);
+            })
             .catch(err => console.error('Failed to fetch users', err));
     }, []);
 
     useEffect(() => {
         if (symbol) {
             const cacheKey = `analysis_${symbol}`;
-
-            // 1. Try cache
             const cached = localStorage.getItem(cacheKey);
             if (cached) {
                 try {
@@ -110,7 +116,6 @@ function AnalysisContent() {
                 }
             }
 
-            // 2. Fetch fresh
             fetch(`/api/analysis/${symbol}`)
                 .then(res => res.json())
                 .then(newData => {
@@ -121,57 +126,99 @@ function AnalysisContent() {
         }
     }, [symbol]);
 
-    if (!data) return null; // Return null here, Suspense will handle the fallback
+    const sortedActivities = useMemo(() => {
+        if (!data?.activities) return [];
+        return [...data.activities].sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+    }, [data]);
+
+    const filteredActivities = useMemo(() => {
+        return sortedActivities
+            .filter((a: any) => !filterType || a.type === filterType)
+            .filter((a: any) => !filterAccount || a.account?.name === filterAccount)
+            .filter((a: any) => !filterAccountType || a.account?.type === filterAccountType)
+            .filter((a: any) => !filterPlatform || a.platform?.name === filterPlatform);
+    }, [sortedActivities, filterType, filterAccount, filterAccountType, filterPlatform]);
+
+    if (!data) return <SymbolSkeleton />;
 
     if ('error' in data) {
-        return <div className={styles.error}>Error: {(data as any).error}</div>;
+        return (
+            <div className={styles.container}>
+                <div className={styles.errorState}>Error: {(data as any).error}</div>
+            </div>
+        );
     }
 
     if (!data.stats) {
-        return <div className={styles.error}>Error: Invalid data received</div>;
+        return (
+            <div className={styles.container}>
+                <div className={styles.errorState}>Error: Invalid data received</div>
+            </div>
+        );
     }
 
     const isPositive = data.stats.absoluteReturn >= 0;
 
-    // Process Sector Allocations
-    const sectorAllocations = data.stats.sectorAllocations?.flatMap(obj =>
-        Object.entries(obj).map(([key, value]) => ({
-            name: key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-            value: (value as number) * 100
-        }))
-    ).sort((a, b) => b.value - a.value) || [];
+    const sectorAllocations = data.stats.sectorAllocations
+        ?.flatMap(obj =>
+            Object.entries(obj).map(([key, value]) => ({
+                name: key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+                value: (value as number) * 100,
+            }))
+        )
+        .sort((a, b) => b.value - a.value) || [];
 
-    // Process Account Allocations
-    const totalValue = data.allocation.accounts.reduce((sum, acc) => sum + acc.value, 0);
-    const accountAllocations = data.allocation.accounts.map(acc => {
-        const user = users.find(u => u.username === acc.name);
-        const displayName = user?.name || acc.name;
-        return {
-            name: `${displayName} - ${acc.type}`,
-            value: acc.value,
-            percent: totalValue > 0 ? (acc.value / totalValue) * 100 : 0
-        };
-    }).sort((a, b) => b.value - a.value);
+    const totalAllocValue = data.allocation.accounts.reduce((sum, acc) => sum + acc.value, 0);
+    const accountAllocations = data.allocation.accounts
+        .map(acc => {
+            const user = users.find(u => u.username === acc.name);
+            const displayName = user?.name || acc.name;
+            return {
+                name: `${displayName} · ${acc.type}`,
+                quantity: acc.quantity,
+                value: acc.value,
+                percent: totalAllocValue > 0 ? (acc.value / totalAllocValue) * 100 : 0,
+            };
+        })
+        .sort((a, b) => b.value - a.value);
 
     const handleRefresh = async () => {
-        if (!data) return;
-        const btn = document.getElementById('refresh-btn');
-        if (btn) btn.classList.add(styles.spinning);
+        if (!data || isRefreshing) return;
+        setIsRefreshing(true);
 
         try {
             await fetch('/api/market-data/refresh', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbol: data.symbol })
+                body: JSON.stringify({ symbol: data.symbol }),
             });
-            // Reload page data
             const res = await fetch(`/api/analysis/${data.symbol}`);
             const newData = await res.json();
             setData(newData);
+            localStorage.setItem(`analysis_${data.symbol}`, JSON.stringify(newData));
         } catch (error) {
             console.error('Refresh failed', error);
         } finally {
-            if (btn) btn.classList.remove(styles.spinning);
+            setIsRefreshing(false);
+        }
+    };
+
+    const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        const tabs: Array<'overview' | 'activities'> = ['overview', 'activities'];
+        const currentIndex = tabs.indexOf(activeTab);
+        let nextIndex: number | null = null;
+
+        if (e.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+        else if (e.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        else if (e.key === 'Home') nextIndex = 0;
+        else if (e.key === 'End') nextIndex = tabs.length - 1;
+
+        if (nextIndex !== null) {
+            e.preventDefault();
+            setActiveTab(tabs[nextIndex]);
+            tabRefs.current[nextIndex]?.focus();
         }
     };
 
@@ -184,304 +231,571 @@ function AnalysisContent() {
     } else if (navContext === 'comparison') {
         backHref = '/analysis/comparison';
         backLabel = 'Back to Comparison';
+    } else if (navContext === 'rebalancer') {
+        backHref = '/rebalancer';
+        backLabel = 'Back to Rebalancer';
+    } else if (navContext === 'activities') {
+        backHref = '/activities';
+        backLabel = 'Back to Activities';
     }
+
+    const low52 = data.stats.fiftyTwoWeekLow;
+    const high52 = data.stats.fiftyTwoWeekHigh;
+    const has52WRange = typeof low52 === 'number' && typeof high52 === 'number' && high52 > low52;
+    const rangePosition = has52WRange
+        ? Math.min(100, Math.max(0, ((data.stats.marketPrice - low52) / (high52 - low52)) * 100))
+        : 0;
+
+    const estAnnualDiv = data.stats.dividendRate && data.stats.quantity > 0
+        ? data.stats.dividendRate * data.stats.quantity
+        : null;
+
+    const hasActiveFilters = Boolean(filterType || filterAccount || filterAccountType || filterPlatform);
+
+    const clearFilters = () => {
+        setFilterType('');
+        setFilterAccount('');
+        setFilterAccountType('');
+        setFilterPlatform('');
+    };
 
     return (
         <div className={styles.container}>
-
             <div className={styles.backLinkContainer}>
                 <Link href={backHref} className={styles.backLink} onClick={handleBack}>
-                    <MdArrowBack size={20} />
+                    <MdArrowBack size={16} />
                     <span>{backLabel}</span>
                 </Link>
             </div>
 
             <header className={styles.header}>
-                <div>
-                    <div className={styles.mobileNav}>
-                        <div className={styles.navigation}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <h1 className={styles.title}>{data.name} ({data.symbol})</h1>
-                                <button
-                                    id="refresh-btn-mobile"
-                                    className={`${styles.iconButton} ${styles.mobileRefresh}`}
-                                    onClick={handleRefresh}
-                                    title="Refresh Data"
-                                >
-                                    <MdRefresh size={20} />
-                                </button>
-                            </div>
-                        </div>
+                <div className={styles.headerLeft}>
+                    <div className={styles.titleRow}>
+                        <h1 className={styles.title}>{data.name}</h1>
+                        <span className={styles.symbolPill}>{data.symbol}</span>
                     </div>
-
-                    <div className={styles.desktopHeaderGroup} style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <h1 className={styles.desktopTitle}>{data.name} ({data.symbol})</h1>
-                        <button
-                            id="refresh-btn"
-                            className={styles.iconButton}
-                            onClick={handleRefresh}
-                            title="Refresh Data"
-                        >
-                            <MdRefresh size={24} />
-                        </button>
-                    </div>
-
-                    <div className={styles.price}>
-                        {format(convert(data.stats.marketPrice, data.currency))}
+                    <div className={styles.metaChips}>
+                        <span className={styles.metaChip}>{data.currency}</span>
+                        {data.stats.sector && (
+                            <span className={styles.metaChip}>{data.stats.sector}</span>
+                        )}
+                        {data.stats.country && (
+                            <span className={styles.metaChip}>{data.stats.country}</span>
+                        )}
+                        <span className={styles.metaChip}>
+                            {data.stats.activityCount} {data.stats.activityCount === 1 ? 'Activity' : 'Activities'}
+                        </span>
                     </div>
                 </div>
-                <div className={styles.headerRight}>
-                    <div className={`${styles.return} ${isPositive ? styles.positive : styles.negative}`}>
-                        <div className={styles.returnLabel}>Total Return</div>
-                        <div className={styles.returnValue}>
-                            {isPositive ? '+' : ''}{format(convert(data.stats.absoluteReturn, data.currency))} ({data.stats.percentReturn.toFixed(2)}%)
-                        </div>
-                    </div>
-                </div>
-            </header >
 
-            <div className={styles.tabs}>
-                <button
-                    className={`${styles.tab} ${activeTab === 'overview' ? styles.activeTab : ''}`}
-                    onClick={() => setActiveTab('overview')}
+                <div className={styles.headerActions}>
+                    <button
+                        type="button"
+                        id="refresh-btn"
+                        className={styles.refreshButton}
+                        onClick={handleRefresh}
+                        disabled={isRefreshing}
+                        title="Refresh Market Data"
+                    >
+                        <MdRefresh size={18} className={isRefreshing ? styles.spinning : undefined} />
+                        <span>{isRefreshing ? 'Refreshing...' : 'Refresh Quote'}</span>
+                    </button>
+                </div>
+            </header>
+
+            <div className={styles.tablistBar}>
+                <div
+                    role="tablist"
+                    aria-label="Symbol details sections"
+                    className={styles.tablist}
+                    onKeyDown={handleTabKeyDown}
                 >
-                    Overview
-                </button>
-                <button
-                    className={`${styles.tab} ${activeTab === 'activities' ? styles.activeTab : ''}`}
-                    onClick={() => setActiveTab('activities')}
-                >
-                    Activities
-                </button>
+                    <button
+                        ref={el => { tabRefs.current[0] = el; }}
+                        type="button"
+                        role="tab"
+                        id="symbol-tab-overview"
+                        aria-selected={activeTab === 'overview'}
+                        aria-controls="symbol-panel-overview"
+                        tabIndex={activeTab === 'overview' ? 0 : -1}
+                        className={styles.tabBtn}
+                        onClick={() => setActiveTab('overview')}
+                    >
+                        Overview
+                    </button>
+                    <button
+                        ref={el => { tabRefs.current[1] = el; }}
+                        type="button"
+                        role="tab"
+                        id="symbol-tab-activities"
+                        aria-selected={activeTab === 'activities'}
+                        aria-controls="symbol-panel-activities"
+                        tabIndex={activeTab === 'activities' ? 0 : -1}
+                        className={styles.tabBtn}
+                        onClick={() => setActiveTab('activities')}
+                    >
+                        Activities
+                        <span className={styles.tabCount}>{data.activities.length}</span>
+                    </button>
+                </div>
             </div>
 
-            {
-                activeTab === 'overview' && (
-                    <div className={styles.content}>
-                        {/* Chart Section */}
-                        <section className={styles.section}>
-                            <StockChart
-                                data={data.historical}
-                                currency={data.currency}
-                                avgPriceHistory={data.avgPriceHistory}
-                                symbol={data.symbol}
-                            />
-                        </section>
-
-                        {/* Key Stats Grid */}
-                        <section className={styles.statsGrid}>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Total Investment</div>
-                                <div className={styles.statValue}>{format(convert(data.stats.totalInvestment, data.currency))}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Current Value</div>
-                                <div className={styles.statValue}>{format(convert(data.stats.currentValue, data.currency))}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Quantity</div>
-                                <div className={styles.statValue}>{formatQuantity(data.stats.quantity)}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Avg Price</div>
-                                <div className={styles.statValue}>{format(convert(data.stats.avgPrice, data.currency))}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>52W High</div>
-                                <div className={styles.statValue}>{data.stats.fiftyTwoWeekHigh ? format(convert(data.stats.fiftyTwoWeekHigh, data.currency)) : '-'}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>52W Low</div>
-                                <div className={styles.statValue}>{data.stats.fiftyTwoWeekLow ? format(convert(data.stats.fiftyTwoWeekLow, data.currency)) : '-'}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Dividend Amount</div>
-                                <div className={styles.statValue}>{data.stats.totalDividends !== undefined ? format(convert(data.stats.totalDividends, data.currency)) : format(0)}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Dividend Yield</div>
-                                <div className={styles.statValue}>{data.stats.dividendYield ? `${(data.stats.dividendYield * 100).toFixed(2)}%` : '-'}</div>
+            {activeTab === 'overview' && (
+                <div
+                    role="tabpanel"
+                    id="symbol-panel-overview"
+                    aria-labelledby="symbol-tab-overview"
+                    className={styles.content}
+                >
+                    {/* Tier 1: Executive Wealth Strip */}
+                    <section className={styles.executiveGrid}>
+                        <div className={styles.heroCard}>
+                            <div className={styles.heroTop}>
+                                <span className={styles.heroLabel}>Position Value</span>
+                                <div className={styles.heroValue}>
+                                    {format(convert(data.stats.currentValue, data.currency))}
+                                </div>
+                                <div className={styles.heroChange}>
+                                    <span>{isPositive ? '▲ +' : '▼ '}{format(convert(data.stats.absoluteReturn, data.currency))}</span>
+                                    <span>({isPositive ? '+' : ''}{data.stats.percentReturn.toFixed(2)}%)</span>
+                                    <span className={styles.heroChangeLabel}>Total</span>
+                                </div>
                             </div>
 
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Total Fees</div>
-                                <div className={styles.statValue}>{format(convert(data.stats.totalFees, data.currency))}</div>
+                            <div className={styles.heroMetaGrid}>
+                                <div className={styles.heroMetaItem}>
+                                    <span className={styles.heroMetaLabel}>Market Price</span>
+                                    <span className={styles.heroMetaValue}>
+                                        {format(convert(data.stats.marketPrice, data.currency))}
+                                    </span>
+                                </div>
+                                <div className={styles.heroMetaItem}>
+                                    <span className={styles.heroMetaLabel}>Avg Cost</span>
+                                    <span className={styles.heroMetaValue}>
+                                        {format(convert(data.stats.avgPrice, data.currency))}
+                                    </span>
+                                </div>
+                                <div className={styles.heroMetaItem}>
+                                    <span className={styles.heroMetaLabel}>Shares Held</span>
+                                    <span className={styles.heroMetaValue}>
+                                        {formatQuantity(data.stats.quantity)}
+                                    </span>
+                                </div>
                             </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Investment Age</div>
-                                <div className={styles.statValue}>{data.stats.investmentAge}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Activities</div>
-                                <div className={styles.statValue}>{data.stats.activityCount}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Sector</div>
-                                <div className={styles.statValue}>{data.stats.sector || 'N/A'}</div>
-                            </div>
-                            <div className={styles.statCard}>
-                                <div className={styles.statLabel}>Country</div>
-                                <div className={styles.statValue}>{data.stats.country || 'N/A'}</div>
-                            </div>
-                        </section>
-
-                        {/* Info & Allocation */}
-                        <div className={styles.splitSection}>
-                            {sectorAllocations.length > 0 && (
-                                <section className={styles.infoSection}>
-                                    <h3>Sector Allocation</h3>
-                                    <div className={styles.sectorAllocation}>
-                                        {sectorAllocations.map((item) => (
-                                            <div key={item.name} className={styles.allocationRow}>
-                                                <div className={styles.allocationLabel}>
-                                                    <span>{item.name}</span>
-                                                    <span>{item.value.toFixed(2)}%</span>
-                                                </div>
-                                                <div className={styles.progressBar}>
-                                                    <div
-                                                        className={styles.progressFill}
-                                                        style={{ width: `${item.value}%` }}
-                                                    />
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </section>
-                            )}
-
-                            <section className={styles.allocationSection}>
-                                <h3>Account Allocation</h3>
-                                {accountAllocations.length > 0 ? (
-                                    <div className={styles.sectorAllocation}>
-                                        {accountAllocations.map((item) => (
-                                            <div key={item.name} className={styles.allocationRow}>
-                                                <div className={styles.allocationLabel}>
-                                                    <span>{item.name}</span>
-                                                    <span>{format(convert(item.value, data.currency))} ({item.percent.toFixed(2)}%)</span>
-                                                </div>
-                                                <div className={styles.progressBar}>
-                                                    <div
-                                                        className={styles.progressFill}
-                                                        style={{ width: `${item.percent}%`, backgroundColor: '#3b82f6' }}
-                                                    />
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <div style={{ padding: '1rem', color: 'var(--text-secondary)' }}>No allocation data</div>
-                                )}
-                            </section>
-                        </div >
-                    </div >
-                )
-            }
-
-            {
-                activeTab === 'activities' && (
-                    <div className={styles.content}>
-                        {/* Filters */}
-                        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-                            <select
-                                className={styles.select}
-                                value={filterType}
-                                onChange={(e) => setFilterType(e.target.value)}
-                            >
-                                <option value="">All Types</option>
-                                {Array.from(new Set(data.activities.map((a: any) => a.type))).sort().map((type: any) => (
-                                    <option key={type} value={type}>{type}</option>
-                                ))}
-                            </select>
-
-                            <select
-                                className={styles.select}
-                                value={filterAccount}
-                                onChange={(e) => setFilterAccount(e.target.value)}
-                            >
-                                <option value="">All Accounts</option>
-                                {Array.from(new Set(data.activities.map((a: any) => a.account?.name).filter(Boolean))).sort().map((name: any) => {
-                                    const user = users.find(u => u.username === name);
-                                    const displayName = user?.name || name;
-                                    return <option key={name} value={name}>{displayName}</option>
-                                })}
-                            </select>
-
-                            <select
-                                className={styles.select}
-                                value={filterAccountType}
-                                onChange={(e) => setFilterAccountType(e.target.value)}
-                            >
-                                <option value="">All Account Types</option>
-                                {Array.from(new Set(data.activities.map((a: any) => a.account?.type).filter(Boolean))).sort().map((type: any) => (
-                                    <option key={type} value={type}>{type}</option>
-                                ))}
-                            </select>
-
-                            <select
-                                className={styles.select}
-                                value={filterPlatform}
-                                onChange={(e) => setFilterPlatform(e.target.value)}
-                            >
-                                <option value="">All Platforms</option>
-                                {Array.from(new Set(data.activities.map((a: any) => a.platform?.name).filter(Boolean))).sort().map((name: any) => (
-                                    <option key={name} value={name}>{name}</option>
-                                ))}
-                            </select>
                         </div>
 
-                        <table className={styles.table}>
-                            <thead>
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Type</th>
-                                    <th>Quantity</th>
-                                    <th>Price</th>
-                                    <th>Total</th>
-                                    <th>Account</th>
-                                    <th>Platform</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {data.activities
-                                    .filter((a: any) => !filterType || a.type === filterType)
-                                    .filter((a: any) => !filterAccount || a.account?.name === filterAccount)
-                                    .filter((a: any) => !filterAccountType || a.account?.type === filterAccountType)
-                                    .filter((a: any) => !filterPlatform || a.platform?.name === filterPlatform)
-                                    .map((activity: any) => (
-                                        <tr key={activity.id}>
-                                            <td>{new Date(activity.date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
-                                            <td>
-                                                <span className={`${styles.badge} ${styles[activity.type]}`}>
-                                                    {activity.type === 'STOCK_SPLIT' ? 'SPLIT' : activity.type}
-                                                </span>
-                                            </td>
-                                            <td style={{ fontFamily: 'var(--font-mono)' }}>{formatQuantity(activity.quantity)}</td>
-                                            <td style={{ fontFamily: 'var(--font-mono)' }}>{format(activity.price)}</td>
-                                            <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{format(activity.quantity * activity.price)}</td>
-                                            <td>
-                                                {(() => {
-                                                    const user = users.find(u => u.username === activity.account?.name);
-                                                    const displayName = user?.name || activity.account?.name;
-                                                    return activity.account ? (
-                                                        <span style={{ fontSize: '0.85em', color: 'var(--text-secondary)' }}>
-                                                            {displayName} • {activity.account.type}
-                                                        </span>
-                                                    ) : '-';
-                                                })()}
-                                            </td>
-                                            <td>
-                                                <span style={{ fontSize: '0.85em', color: 'var(--text-secondary)' }}>
-                                                    {activity.platform?.name || '-'}
-                                                </span>
+                        <div className={styles.kpiCard}>
+                            <div className={styles.kpiHeader}>
+                                <span className={styles.kpiLabel}>Total Return</span>
+                                <span className={`${styles.kpiPill} ${isPositive ? styles.positivePill : styles.negativePill}`}>
+                                    {isPositive ? '+' : ''}{data.stats.percentReturn.toFixed(2)}%
+                                </span>
+                            </div>
+                            <div className={`${styles.kpiValue} ${isPositive ? styles.positiveText : styles.negativeText}`}>
+                                {isPositive ? '+' : ''}{format(convert(data.stats.absoluteReturn, data.currency))}
+                            </div>
+                            <div className={styles.kpiFooter}>
+                                <div className={styles.kpiFootDivider} />
+                                <div className={styles.kpiSubRow}>
+                                    <span>Cost Basis: <strong>{format(convert(data.stats.totalInvestment, data.currency))}</strong></span>
+                                    <span>Fees: <strong>{format(convert(data.stats.totalFees, data.currency))}</strong></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className={styles.kpiCard}>
+                            <div className={styles.kpiHeader}>
+                                <span className={styles.kpiLabel}>Dividends Received</span>
+                                {data.stats.dividendYield ? (
+                                    <span className={`${styles.kpiPill} ${styles.positivePill}`}>
+                                        Yield {(data.stats.dividendYield * 100).toFixed(2)}%
+                                    </span>
+                                ) : (
+                                    <span className={styles.kpiTag}>Income</span>
+                                )}
+                            </div>
+                            <div className={styles.kpiValue}>
+                                {data.stats.totalDividends !== undefined
+                                    ? format(convert(data.stats.totalDividends, data.currency))
+                                    : format(0)}
+                            </div>
+                            <div className={styles.kpiFooter}>
+                                <div className={styles.kpiFootDivider} />
+                                <div className={styles.kpiSubRow}>
+                                    <span>
+                                        Rate/Sh:{' '}
+                                        <strong>
+                                            {data.stats.dividendRate
+                                                ? format(convert(data.stats.dividendRate, data.currency))
+                                                : '—'}
+                                        </strong>
+                                    </span>
+                                    <span>
+                                        Est. Annual:{' '}
+                                        <strong>
+                                            {estAnnualDiv !== null
+                                                ? format(convert(estAnnualDiv, data.currency))
+                                                : '—'}
+                                        </strong>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className={styles.kpiCard}>
+                            <div className={styles.kpiHeader}>
+                                <span className={styles.kpiLabel}>Holding Tenure</span>
+                                <span className={styles.kpiTag}>{data.stats.activityCount} Trades</span>
+                            </div>
+                            <div className={styles.kpiValue}>{data.stats.investmentAge}</div>
+                            <div className={styles.kpiFooter}>
+                                {has52WRange ? (
+                                    <div className={styles.rangeTrackWrap}>
+                                        <div className={styles.rangeHeader}>
+                                            <span>52W Low</span>
+                                            <span>52W High</span>
+                                        </div>
+                                        <div className={styles.rangeTrack}>
+                                            <div className={styles.rangeFill} style={{ width: `${rangePosition}%` }} />
+                                            <span className={styles.rangeMarker} style={{ left: `${rangePosition}%` }} />
+                                        </div>
+                                        <div className={styles.kpiSubRow}>
+                                            <strong>{format(convert(low52, data.currency))}</strong>
+                                            <strong>{format(convert(high52, data.currency))}</strong>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className={styles.kpiFootDivider} />
+                                        <div className={styles.kpiSubRow}>
+                                            <span>Sector: <strong>{data.stats.sector || 'N/A'}</strong></span>
+                                            <span>Country: <strong>{data.stats.country || 'N/A'}</strong></span>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* Tier 2: Chart Section */}
+                    <section className={styles.chartSection}>
+                        <StockChart
+                            data={data.historical}
+                            currency={data.currency}
+                            avgPriceHistory={data.avgPriceHistory}
+                            symbol={data.symbol}
+                        />
+                    </section>
+
+                    {/* Tier 3: Allocation & Fundamentals */}
+                    <div className={styles.splitGrid}>
+                        <section className={styles.detailCard}>
+                            <div className={styles.detailCardHeader}>
+                                <h2 className={styles.detailCardTitle}>Account Allocation</h2>
+                                <span className={styles.kpiTag}>
+                                    {accountAllocations.length} {accountAllocations.length === 1 ? 'Account' : 'Accounts'}
+                                </span>
+                            </div>
+
+                            {accountAllocations.length > 0 ? (
+                                <>
+                                    <div className={styles.stackedBar} aria-hidden="true">
+                                        {accountAllocations.map((item, idx) => (
+                                            <div
+                                                key={item.name}
+                                                className={styles.stackedSegment}
+                                                style={{
+                                                    width: `${item.percent}%`,
+                                                    backgroundColor: ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length],
+                                                }}
+                                            />
+                                        ))}
+                                    </div>
+                                    <ul className={styles.allocList}>
+                                        {accountAllocations.map((item, idx) => {
+                                            const color = ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length];
+                                            return (
+                                                <li key={item.name} className={styles.allocRow}>
+                                                    <div className={styles.allocRowTop}>
+                                                        <div className={styles.allocNameWrap}>
+                                                            <span className={styles.allocDot} style={{ backgroundColor: color }} />
+                                                            <span className={styles.allocName}>{item.name}</span>
+                                                            <span className={styles.allocSub}>
+                                                                ({formatQuantity(item.quantity)} sh)
+                                                            </span>
+                                                        </div>
+                                                        <div className={styles.allocStats}>
+                                                            <span className={styles.allocVal}>
+                                                                {format(convert(item.value, data.currency))}
+                                                            </span>
+                                                            <span className={styles.allocPct}>
+                                                                {item.percent.toFixed(1)}%
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <div className={styles.allocBarTrack}>
+                                                        <div
+                                                            className={styles.allocBarFill}
+                                                            style={{ width: `${item.percent}%`, backgroundColor: color }}
+                                                        />
+                                                    </div>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                </>
+                            ) : (
+                                <div className={styles.emptyState}>No active position held across accounts</div>
+                            )}
+                        </section>
+
+                        {sectorAllocations.length > 0 ? (
+                            <section className={styles.detailCard}>
+                                <div className={styles.detailCardHeader}>
+                                    <h2 className={styles.detailCardTitle}>Sector Exposure</h2>
+                                    <span className={styles.kpiTag}>{sectorAllocations.length} Sectors</span>
+                                </div>
+
+                                <div className={styles.stackedBar} aria-hidden="true">
+                                    {sectorAllocations.map((item, idx) => (
+                                        <div
+                                            key={item.name}
+                                            className={styles.stackedSegment}
+                                            style={{
+                                                width: `${item.value}%`,
+                                                backgroundColor: ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length],
+                                            }}
+                                        />
+                                    ))}
+                                </div>
+
+                                <ul className={styles.allocList}>
+                                    {sectorAllocations.map((item, idx) => {
+                                        const color = ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length];
+                                        return (
+                                            <li key={item.name} className={styles.allocRow}>
+                                                <div className={styles.allocRowTop}>
+                                                    <div className={styles.allocNameWrap}>
+                                                        <span className={styles.allocDot} style={{ backgroundColor: color }} />
+                                                        <span className={styles.allocName}>{item.name}</span>
+                                                    </div>
+                                                    <div className={styles.allocStats}>
+                                                        <span className={styles.allocPct}>{item.value.toFixed(2)}%</span>
+                                                    </div>
+                                                </div>
+                                                <div className={styles.allocBarTrack}>
+                                                    <div
+                                                        className={styles.allocBarFill}
+                                                        style={{ width: `${item.value}%`, backgroundColor: color }}
+                                                    />
+                                                </div>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </section>
+                        ) : (
+                            <section className={styles.detailCard}>
+                                <div className={styles.detailCardHeader}>
+                                    <h2 className={styles.detailCardTitle}>Security Fundamentals</h2>
+                                    <span className={styles.kpiTag}>{data.currency}</span>
+                                </div>
+
+                                <div className={styles.fundamentalsList}>
+                                    <div className={styles.fundamentalRow}>
+                                        <span className={styles.fundamentalLabel}>Sector</span>
+                                        <span className={styles.fundamentalValue}>{data.stats.sector || 'N/A'}</span>
+                                    </div>
+                                    <div className={styles.fundamentalRow}>
+                                        <span className={styles.fundamentalLabel}>Country</span>
+                                        <span className={styles.fundamentalValue}>{data.stats.country || 'N/A'}</span>
+                                    </div>
+                                    <div className={styles.fundamentalRow}>
+                                        <span className={styles.fundamentalLabel}>52-Week High</span>
+                                        <span className={styles.fundamentalValue}>
+                                            {data.stats.fiftyTwoWeekHigh
+                                                ? format(convert(data.stats.fiftyTwoWeekHigh, data.currency))
+                                                : '—'}
+                                        </span>
+                                    </div>
+                                    <div className={styles.fundamentalRow}>
+                                        <span className={styles.fundamentalLabel}>52-Week Low</span>
+                                        <span className={styles.fundamentalValue}>
+                                            {data.stats.fiftyTwoWeekLow
+                                                ? format(convert(data.stats.fiftyTwoWeekLow, data.currency))
+                                                : '—'}
+                                        </span>
+                                    </div>
+                                    <div className={styles.fundamentalRow}>
+                                        <span className={styles.fundamentalLabel}>Cost Basis</span>
+                                        <span className={styles.fundamentalValue}>
+                                            {format(convert(data.stats.totalInvestment, data.currency))}
+                                        </span>
+                                    </div>
+                                    <div className={styles.fundamentalRow}>
+                                        <span className={styles.fundamentalLabel}>Total Fees Paid</span>
+                                        <span className={styles.fundamentalValue}>
+                                            {format(convert(data.stats.totalFees, data.currency))}
+                                        </span>
+                                    </div>
+                                </div>
+                            </section>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'activities' && (
+                <div
+                    role="tabpanel"
+                    id="symbol-panel-activities"
+                    aria-labelledby="symbol-tab-activities"
+                    className={styles.content}
+                >
+                    <section className={styles.tableCard}>
+                        <div className={styles.filterBar}>
+                            <div className={styles.filterGroup}>
+                                <select
+                                    aria-label="Filter by activity type"
+                                    className={styles.select}
+                                    value={filterType}
+                                    onChange={(e) => setFilterType(e.target.value)}
+                                >
+                                    <option value="">All Types</option>
+                                    {Array.from(new Set(data.activities.map((a: any) => a.type))).sort().map((type: any) => (
+                                        <option key={type} value={type}>{type === 'STOCK_SPLIT' ? 'SPLIT' : type}</option>
+                                    ))}
+                                </select>
+
+                                <select
+                                    aria-label="Filter by account owner"
+                                    className={styles.select}
+                                    value={filterAccount}
+                                    onChange={(e) => setFilterAccount(e.target.value)}
+                                >
+                                    <option value="">All Accounts</option>
+                                    {Array.from(new Set(data.activities.map((a: any) => a.account?.name).filter(Boolean))).sort().map((name: any) => {
+                                        const user = users.find(u => u.username === name);
+                                        const displayName = user?.name || name;
+                                        return <option key={name} value={name}>{displayName}</option>;
+                                    })}
+                                </select>
+
+                                <select
+                                    aria-label="Filter by account type"
+                                    className={styles.select}
+                                    value={filterAccountType}
+                                    onChange={(e) => setFilterAccountType(e.target.value)}
+                                >
+                                    <option value="">All Account Types</option>
+                                    {Array.from(new Set(data.activities.map((a: any) => a.account?.type).filter(Boolean))).sort().map((type: any) => (
+                                        <option key={type} value={type}>{type}</option>
+                                    ))}
+                                </select>
+
+                                <select
+                                    aria-label="Filter by platform"
+                                    className={styles.select}
+                                    value={filterPlatform}
+                                    onChange={(e) => setFilterPlatform(e.target.value)}
+                                >
+                                    <option value="">All Platforms</option>
+                                    {Array.from(new Set(data.activities.map((a: any) => a.platform?.name).filter(Boolean))).sort().map((name: any) => (
+                                        <option key={name} value={name}>{name}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className={styles.filterMeta}>
+                                <span className={styles.filterCount}>
+                                    Showing {filteredActivities.length} of {data.activities.length}
+                                </span>
+                                {hasActiveFilters && (
+                                    <button type="button" className={styles.clearBtn} onClick={clearFilters}>
+                                        Clear filters
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className={styles.tableWrap}>
+                            <table className={styles.table}>
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Type</th>
+                                        <th className={styles.alignRight}>Quantity</th>
+                                        <th className={styles.alignRight}>Price</th>
+                                        <th className={styles.alignRight}>Fee</th>
+                                        <th className={styles.alignRight}>Total</th>
+                                        <th>Account</th>
+                                        <th>Platform</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredActivities.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={8} className={styles.emptyState}>
+                                                No activities match the selected filters.
                                             </td>
                                         </tr>
-                                    ))}
-                            </tbody>
-                        </table>
-                    </div>
-                )
-            }
-        </div >
+                                    ) : (
+                                        filteredActivities.map((activity: any) => {
+                                            const isSplit = activity.type === 'STOCK_SPLIT';
+                                            const actCurrency = activity.currency || data.currency;
+                                            const convertedPrice = convert(activity.price, actCurrency);
+                                            const convertedFee = activity.fee ? convert(activity.fee, actCurrency) : 0;
+                                            const totalRaw = activity.quantity * activity.price + (activity.type === 'BUY' ? (activity.fee || 0) : activity.type === 'SELL' ? -(activity.fee || 0) : 0);
+                                            const convertedTotal = convert(totalRaw, actCurrency);
+
+                                            const user = users.find(u => u.username === activity.account?.name);
+                                            const displayName = user?.name || activity.account?.name;
+
+                                            return (
+                                                <tr key={activity.id}>
+                                                    <td>{formatDate(activity.date)}</td>
+                                                    <td>
+                                                        <span className={`${styles.badge} ${styles[activity.type] || ''}`}>
+                                                            {isSplit ? 'SPLIT' : activity.type}
+                                                        </span>
+                                                    </td>
+                                                    <td className={styles.numCell}>
+                                                        {isSplit ? `${formatQuantity(activity.quantity)}:1` : formatQuantity(activity.quantity)}
+                                                    </td>
+                                                    <td className={styles.numCell}>
+                                                        {isSplit ? '—' : format(convertedPrice)}
+                                                    </td>
+                                                    <td className={`${styles.numCell} ${styles.mutedCell}`}>
+                                                        {activity.fee ? format(convertedFee) : '—'}
+                                                    </td>
+                                                    <td className={`${styles.numCell} ${styles.strongCell}`}>
+                                                        {isSplit ? '—' : format(convertedTotal)}
+                                                    </td>
+                                                    <td>
+                                                        {activity.account ? (
+                                                            <span className={styles.mutedCell}>
+                                                                {displayName} · {activity.account.type}
+                                                            </span>
+                                                        ) : (
+                                                            '—'
+                                                        )}
+                                                    </td>
+                                                    <td>
+                                                        <span className={styles.mutedCell}>
+                                                            {activity.platform?.name || '—'}
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            )}
+        </div>
     );
 }
 
