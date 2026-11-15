@@ -1,16 +1,32 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+'use client';
+
 import { useState, useEffect } from 'react';
+import { FaSpinner, FaTimes } from 'react-icons/fa';
+import { MdEditNote } from 'react-icons/md';
+import { useModalBehavior } from '@/hooks/useModalBehavior';
+import styles from './ActivitiesModal.module.css';
 
 interface BulkEditModalProps {
     count: number;
     onClose: () => void;
-    onSuccess: () => void;
+    onSuccess: (updatedCount?: number) => void;
     selectedIds: string[];
     uniqueSymbolsCount: number;
 }
 
-export default function BulkEditModal({ count, onClose, onSuccess, selectedIds, uniqueSymbolsCount }: BulkEditModalProps) {
+export default function BulkEditModal({
+    count,
+    onClose,
+    onSuccess,
+    selectedIds,
+    uniqueSymbolsCount
+}: BulkEditModalProps) {
     const [loading, setLoading] = useState(false);
+    const [loadingMeta, setLoadingMeta] = useState(true);
+    const [confirmStep, setConfirmStep] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
     const [accounts, setAccounts] = useState<any[]>([]);
     const [platforms, setPlatforms] = useState<any[]>([]);
     const [users, setUsers] = useState<any[]>([]);
@@ -24,7 +40,12 @@ export default function BulkEditModal({ count, onClose, onSuccess, selectedIds, 
         investmentType?: string;
     }>({});
 
-    // Fetch dropdown data
+    const { handleOverlayPointerDown, handleOverlayPointerUp } = useModalBehavior({
+        isOpen: true,
+        onClose,
+        disabled: loading
+    });
+
     useEffect(() => {
         const loadData = async () => {
             try {
@@ -41,23 +62,42 @@ export default function BulkEditModal({ count, onClose, onSuccess, selectedIds, 
                 if (usersRes.ok) setUsers(await usersRes.json());
                 if (typesRes.ok) setTypes(await typesRes.json());
                 if (invTypesRes.ok) setInvestmentTypes(await invTypesRes.json());
-
-            } catch (error) {
-                console.error('Failed to load metadata', error);
+            } catch (err) {
+                console.error('Failed to load metadata', err);
+                setError('Unable to load account and type options.');
+            } finally {
+                setLoadingMeta(false);
             }
         };
         loadData();
     }, []);
 
-    const handleSubmit = async () => {
+    const handleChange = (field: keyof typeof updates, value: string) => {
+        setError(null);
+        setConfirmStep(false);
+        setUpdates((prev) => {
+            const next = { ...prev };
+            if (value === '') {
+                delete next[field];
+            } else {
+                next[field] = value;
+            }
+            return next;
+        });
+    };
+
+    const handleProceedConfirm = () => {
         if (Object.keys(updates).length === 0) {
-            alert('No changes selected');
+            setError('Please select at least one field to update.');
             return;
         }
+        setError(null);
+        setConfirmStep(true);
+    };
 
-        if (!confirm(`Update ${count} activities? This cannot be undone.`)) return;
-
+    const handleSubmit = async () => {
         setLoading(true);
+        setError(null);
         try {
             const res = await fetch('/api/activities/batch-update', {
                 method: 'POST',
@@ -65,136 +105,231 @@ export default function BulkEditModal({ count, onClose, onSuccess, selectedIds, 
                 body: JSON.stringify({ ids: selectedIds, updates })
             });
 
+            const data = await res.json().catch(() => ({}));
             if (res.ok) {
-                const data = await res.json();
-                alert(`Successfully updated ${data.count} activities.`);
-                onSuccess();
+                onSuccess(data.count ?? count);
             } else {
-                alert('Failed to update activities.');
+                setError(data.error || 'Failed to update selected activities.');
+                setConfirmStep(false);
             }
-        } catch (error) {
-            console.error('Update failed', error);
-            alert('An error occurred.');
+        } catch (err) {
+            console.error('Update failed', err);
+            setError('An unexpected error occurred while updating.');
+            setConfirmStep(false);
         } finally {
             setLoading(false);
         }
     };
 
-    const handleChange = (field: string, value: string) => {
-        setUpdates(prev => {
-            const next = { ...prev };
-            if (value === '') {
-                delete next[field as keyof typeof next];
-            } else {
-                (next as any)[field] = value;
-            }
-            return next;
-        });
-    };
+    const selectedFieldCount = Object.keys(updates).length;
 
     return (
-        <div style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
-            display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000
-        }}>
-            <div style={{
-                background: 'var(--card-bg)', padding: '2rem', borderRadius: '1rem',
-                width: '90%', maxWidth: '500px', border: '1px solid var(--card-border)'
-            }}>
-                <h2 style={{ marginBottom: '1.5rem', fontSize: '1.25rem' }}>Bulk Update ({count} Items)</h2>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-
-                    {/* Account Select */}
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem' }}>Change Account</label>
-                        <select
-                            className="select"
-                            style={{ width: '100%', padding: '0.5rem', borderRadius: '0.5rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--card-border)' }}
-                            value={updates.accountId || ''}
-                            onChange={e => handleChange('accountId', e.target.value)}
-                        >
-                            <option value="">-- No Change --</option>
-                            {accounts.map(acc => {
-                                const user = users.find(u => u.username === acc.name);
-                                const displayName = user?.name || acc.name; // Fallback to username if name not found
-                                return (
-                                    <option key={acc.id} value={acc.id}>
-                                        {displayName} - {acc.type} ({acc.platform?.name})
-                                    </option>
-                                );
-                            })}
-                        </select>
+        <div
+            className={styles.overlay}
+            onPointerDown={handleOverlayPointerDown}
+            onPointerUp={handleOverlayPointerUp}
+        >
+            <div
+                className={`${styles.modal} ${styles.modalMd}`}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="bulk-edit-title"
+            >
+                <div className={styles.header}>
+                    <div className={styles.headerTitleGroup}>
+                        <span className={styles.headerIcon} aria-hidden="true">
+                            <MdEditNote />
+                        </span>
+                        <div className={styles.headerText}>
+                            <div className={styles.titleRow}>
+                                <h2 id="bulk-edit-title" className={styles.title}>
+                                    Bulk Update Activities
+                                </h2>
+                                <span className={`${styles.pill} ${styles.pillInfo}`}>
+                                    {count} selected
+                                </span>
+                            </div>
+                            <p className={styles.subtitle}>
+                                Apply changes across {count} {count === 1 ? 'activity' : 'activities'} ({uniqueSymbolsCount}{' '}
+                                {uniqueSymbolsCount === 1 ? 'symbol' : 'symbols'}). Blank fields stay unchanged.
+                            </p>
+                        </div>
                     </div>
-
-                    {/* Platform Select */}
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem' }}>Change Platform</label>
-                        <select
-                            className="select"
-                            style={{ width: '100%', padding: '0.5rem', borderRadius: '0.5rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--card-border)' }}
-                            value={updates.platformId || ''}
-                            onChange={e => handleChange('platformId', e.target.value)}
-                        >
-                            <option value="">-- No Change --</option>
-                            {platforms.map(p => (
-                                <option key={p.id} value={p.id}>{p.name}</option>
-                            ))}
-                        </select>
-                    </div>
-
-                    {/* Activity Type Select */}
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem' }}>Change Activity Type</label>
-                        <select
-                            className="select"
-                            style={{ width: '100%', padding: '0.5rem', borderRadius: '0.5rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--card-border)' }}
-                            value={updates.type || ''}
-                            onChange={e => handleChange('type', e.target.value)}
-                        >
-                            <option value="">-- No Change --</option>
-                            {types.map(t => (
-                                <option key={t.id} value={t.code}>{t.name}</option>
-                            ))}
-                        </select>
-                    </div>
-
-                    {/* Investment Type Select */}
-                    <div style={{ borderTop: '1px solid var(--card-border)', paddingTop: '1rem', marginTop: '0.5rem' }}>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: uniqueSymbolsCount > 1 ? 'var(--text-disabled)' : 'var(--warning)' }}>
-                            Change Investment Type {uniqueSymbolsCount > 1 ? '(Disabled: Multiple Symbols Selected)' : '(Caution: Updates Symbol)'}
-                        </label>
-                        <select
-                            className="select"
-                            style={{ width: '100%', padding: '0.5rem', borderRadius: '0.5rem', background: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--card-border)' }}
-                            value={updates.investmentType || ''}
-                            onChange={e => handleChange('investmentType', e.target.value)}
-                            disabled={uniqueSymbolsCount > 1}
-                        >
-                            <option value="">-- No Change --</option>
-                            {investmentTypes.map(t => (
-                                <option key={t.id} value={t.code}>{t.name}</option>
-                            ))}
-                        </select>
-                    </div>
-
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '2rem' }}>
                     <button
+                        type="button"
+                        className={styles.closeButton}
                         onClick={onClose}
                         disabled={loading}
-                        style={{ padding: '0.75rem 1.5rem', borderRadius: '0.5rem', background: 'transparent', border: '1px solid var(--card-border)', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                        aria-label="Close bulk update modal"
                     >
-                        Cancel
+                        <FaTimes aria-hidden="true" />
                     </button>
-                    <button
-                        onClick={handleSubmit}
-                        disabled={loading}
-                        style={{ padding: '0.75rem 1.5rem', borderRadius: '0.5rem', background: 'var(--primary)', border: 'none', color: 'white', fontWeight: 600, cursor: 'pointer' }}
-                    >
-                        {loading ? 'Updating...' : 'Update Activities'}
-                    </button>
+                </div>
+
+                <div className={styles.body}>
+                    {error && (
+                        <div className={styles.errorBanner} role="alert">
+                            {error}
+                        </div>
+                    )}
+
+                    {loadingMeta ? (
+                        <div className={styles.loadingState}>
+                            <FaSpinner className={styles.spinner} aria-hidden="true" />
+                            <p style={{ margin: 0 }}>Loading options...</p>
+                        </div>
+                    ) : (
+                        <>
+                            <div className={styles.field}>
+                                <label htmlFor="bulk-edit-account" className={styles.label}>
+                                    <span>Change Account</span>
+                                </label>
+                                <select
+                                    id="bulk-edit-account"
+                                    className={styles.select}
+                                    value={updates.accountId || ''}
+                                    onChange={(e) => handleChange('accountId', e.target.value)}
+                                >
+                                    <option value="">-- No Change --</option>
+                                    {accounts.map((acc) => {
+                                        const user = users.find((u) => u.username === acc.name);
+                                        const displayName = user?.name || acc.name;
+                                        return (
+                                            <option key={acc.id} value={acc.id}>
+                                                {displayName} - {acc.type} ({acc.platform?.name || 'No Platform'})
+                                            </option>
+                                        );
+                                    })}
+                                </select>
+                            </div>
+
+                            <div className={styles.field}>
+                                <label htmlFor="bulk-edit-platform" className={styles.label}>
+                                    <span>Change Platform</span>
+                                </label>
+                                <select
+                                    id="bulk-edit-platform"
+                                    className={styles.select}
+                                    value={updates.platformId || ''}
+                                    onChange={(e) => handleChange('platformId', e.target.value)}
+                                >
+                                    <option value="">-- No Change --</option>
+                                    {platforms.map((p) => (
+                                        <option key={p.id} value={p.id}>
+                                            {p.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className={styles.field}>
+                                <label htmlFor="bulk-edit-activity-type" className={styles.label}>
+                                    <span>Change Activity Type</span>
+                                </label>
+                                <select
+                                    id="bulk-edit-activity-type"
+                                    className={styles.select}
+                                    value={updates.type || ''}
+                                    onChange={(e) => handleChange('type', e.target.value)}
+                                >
+                                    <option value="">-- No Change --</option>
+                                    {types.map((t) => (
+                                        <option key={t.id} value={t.name}>
+                                            {t.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className={styles.field}>
+                                <label htmlFor="bulk-edit-investment-type" className={styles.label}>
+                                    <span>Change Investment Type</span>
+                                    <span className={styles.labelMeta}>
+                                        {uniqueSymbolsCount > 1
+                                            ? 'Disabled for multiple symbols'
+                                            : 'Updates symbol classification'}
+                                    </span>
+                                </label>
+                                <select
+                                    id="bulk-edit-investment-type"
+                                    className={styles.select}
+                                    value={updates.investmentType || ''}
+                                    onChange={(e) => handleChange('investmentType', e.target.value)}
+                                    disabled={uniqueSymbolsCount > 1}
+                                >
+                                    <option value="">-- No Change --</option>
+                                    {investmentTypes.map((t) => (
+                                        <option key={t.id} value={t.name}>
+                                            {t.name}
+                                        </option>
+                                    ))}
+                                </select>
+                                {uniqueSymbolsCount === 1 && updates.investmentType && (
+                                    <p className={styles.fieldHint}>
+                                        Changing investment type updates the underlying security across the portfolio.
+                                    </p>
+                                )}
+                            </div>
+
+                            {confirmStep && (
+                                <div className={styles.confirmPrompt} role="status">
+                                    Ready to apply {selectedFieldCount} field update(s) to {count} selected{' '}
+                                    {count === 1 ? 'activity' : 'activities'}. This cannot be undone.
+                                </div>
+                            )}
+                        </>
+                    )}
+                </div>
+
+                <div className={styles.footer}>
+                    <div className={styles.footerEnd}>
+                        {confirmStep ? (
+                            <>
+                                <button
+                                    type="button"
+                                    className={styles.secondaryBtn}
+                                    onClick={() => setConfirmStep(false)}
+                                    disabled={loading}
+                                >
+                                    Back
+                                </button>
+                                <button
+                                    type="button"
+                                    className={styles.primaryBtn}
+                                    onClick={handleSubmit}
+                                    disabled={loading}
+                                >
+                                    {loading ? (
+                                        <>
+                                            <FaSpinner className={styles.spinnerSm} aria-hidden="true" />
+                                            Updating...
+                                        </>
+                                    ) : (
+                                        `Confirm Update (${count})`
+                                    )}
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <button
+                                    type="button"
+                                    className={styles.secondaryBtn}
+                                    onClick={onClose}
+                                    disabled={loading}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    className={styles.primaryBtn}
+                                    onClick={handleProceedConfirm}
+                                    disabled={loadingMeta || selectedFieldCount === 0}
+                                >
+                                    Update Activities
+                                </button>
+                            </>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>

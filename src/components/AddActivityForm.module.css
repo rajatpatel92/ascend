@@ -1,61 +1,128 @@
 .form {
     background: var(--card-bg);
-    padding: 2rem;
-    border-radius: 1rem;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    padding: 1.75rem;
+    border-radius: 1.125rem;
     border: 1px solid var(--card-border);
-    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
 }
 
-.grid {
+.modalForm {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.modalBody {
+    padding: 1.35rem 1.5rem;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+    overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.modalFooter {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--card-border);
+    background: var(--card-bg);
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
+}
+
+.sectionBlock {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+}
+
+.sectionTitle {
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.gridTwo {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 1.5rem;
-    margin-bottom: 1.5rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.95rem 1rem;
 }
 
-@media (max-width: 1024px) {
-    .grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
-
-@media (max-width: 640px) {
-    .grid {
-        grid-template-columns: 1fr;
-    }
+.gridThree {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.95rem 1rem;
 }
 
 .field {
-    margin-bottom: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    min-width: 0;
 }
 
-.field>label {
-    display: block;
-    font-size: 0.875rem;
+.fieldLabel {
+    font-size: 0.8125rem;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+
+.labelHint {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-secondary);
 }
 
 .input,
 .select {
     width: 100%;
-    padding: 0.625rem 0.875rem;
-    border: 1px solid var(--card-border);
-    border-radius: 0.5rem;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.55rem 0.85rem;
+    border: 1px solid #94a3b8;
+    border-radius: 0.625rem;
     font-size: 0.875rem;
+    line-height: 1.35;
     color: var(--text-primary);
     background-color: var(--input-bg);
-    transition: all 0.2s;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
     font-family: inherit;
 }
 
-.input:focus,
-.select:focus {
-    outline: none;
+.select {
+    padding-right: 2.2rem;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 0.7rem center;
+    background-size: 0.95rem;
+    cursor: pointer;
+}
+
+:global([data-theme='dark']) .input,
+:global([data-theme='dark']) .select {
+    border-color: #64748b;
+    color-scheme: dark;
+}
+
+.input:focus-visible,
+.select:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
 .readOnly {
@@ -64,50 +131,137 @@
     cursor: not-allowed;
 }
 
-.button {
-    width: 100%;
-    padding: 0.75rem;
-    background-color: var(--primary);
-    color: white;
-    border: none;
-    border-radius: 0.5rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background-color 0.2s;
+.totalCard {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.9rem 1.1rem;
+    border-radius: 0.875rem;
+    background: var(--background);
+    border: 1px solid var(--card-border);
 }
 
-.button:hover {
-    background-color: var(--primary-hover);
+.totalMeta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.totalLabel {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.totalSub {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.totalValue {
+    font-family: var(--font-display), var(--font-sans), sans-serif;
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.errorBanner {
+    padding: 0.8rem 1rem;
+    border-radius: 0.75rem;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #b91c1c;
+    font-size: 0.84375rem;
+    font-weight: 500;
+    line-height: 1.4;
+}
+
+:global([data-theme='dark']) .errorBanner {
+    color: #f87171;
 }
 
 .actions {
     display: flex;
-    gap: 1rem;
-    margin-top: 2rem;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
 }
 
-@media (max-width: 640px) {
-    .actions {
-        flex-direction: column-reverse;
-    }
+.button {
+    min-height: 44px;
+    padding: 0.6rem 1.35rem;
+    background-color: var(--primary);
+    color: #ffffff;
+    border: 1px solid transparent;
+    border-radius: 0.625rem;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.button:hover:not(:disabled) {
+    background-color: var(--primary-hover);
+}
+
+.button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.button:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
 }
 
 .cancelButton {
-    width: 100%;
-    padding: 0.75rem;
+    min-height: 44px;
+    padding: 0.6rem 1.25rem;
     background-color: var(--card-bg);
-    color: var(--text-secondary);
+    color: var(--text-primary);
     border: 1px solid var(--card-border);
-    border-radius: 0.5rem;
+    border-radius: 0.625rem;
+    font: inherit;
+    font-size: 0.875rem;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.cancelButton:hover {
+.cancelButton:hover:not(:disabled) {
     background-color: var(--hover-bg);
-    color: var(--text-primary);
-    border-color: var(--text-tertiary);
+}
+
+.cancelButton:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.cancelButton:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.spinner {
+    animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .autocomplete {
@@ -116,75 +270,116 @@
 
 .results {
     position: absolute;
-    top: 100%;
+    top: calc(100% + 0.35rem);
     left: 0;
-    min-width: 300px;
-    /* Ensure dropdown is wide enough */
+    right: 0;
+    width: 100%;
+    min-width: 0;
     background: var(--card-bg);
     border: 1px solid var(--card-border);
-    border-radius: 0.5rem;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-    max-height: 250px;
+    border-radius: 0.75rem;
+    box-shadow: 0 12px 24px -4px rgba(15, 23, 42, 0.2);
+    max-height: 240px;
     overflow-y: auto;
-    z-index: 20;
+    z-index: 30;
     list-style: none;
-    padding: 0.5rem 0;
-    margin: 0.5rem 0 0;
+    padding: 0.35rem 0;
+    margin: 0;
 }
 
 .resultItem {
-    padding: 0.75rem 1rem;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    padding: 0.65rem 0.95rem;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    transition: background-color 0.1s;
+    gap: 0.65rem;
+    font: inherit;
+    transition: background-color 0.12s ease;
 }
 
-.resultItem:hover {
+.resultItem:hover,
+.resultItem:focus-visible {
     background-color: var(--hover-bg);
+    outline: none;
 }
 
 .resultSymbol {
-    font-weight: 600;
+    font-weight: 700;
+    font-size: 0.875rem;
     color: var(--text-primary);
-    min-width: 100px;
+    min-width: 72px;
     flex-shrink: 0;
 }
 
 .resultName {
     flex: 1;
+    min-width: 0;
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
 }
 
 .resultExchange {
-    font-size: 0.75rem;
-    color: var(--text-tertiary);
-    font-weight: 500;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    background: var(--hover-bg);
+    padding: 0.15rem 0.45rem;
+    border-radius: 0.35rem;
+    font-weight: 600;
+    flex-shrink: 0;
 }
 
 .hint {
     font-size: 0.75rem;
     color: var(--danger);
-    margin-top: 0.5rem;
+    margin: 0.2rem 0 0;
 }
 
-.totalDisplay {
-    font-size: 0.875rem;
-    font-weight: 700;
-    color: var(--text-primary);
-    padding: 0.625rem 0.875rem;
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: 0.5rem;
-    text-align: right;
-    height: 42px;
-    /* Match standard input height */
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
+@media (max-width: 768px) {
+    .input,
+    .select {
+        font-size: 1rem;
+    }
+}
+
+@media (max-width: 640px) {
+    .modalBody {
+        padding: 1rem 1.15rem;
+    }
+
+    .modalFooter {
+        padding: 0.875rem 1.15rem;
+        padding-bottom: max(0.875rem, env(safe-area-inset-bottom));
+        flex-direction: column-reverse;
+    }
+
+    .modalFooter > button,
+    .actions > button {
+        width: 100%;
+    }
+
+    .actions {
+        flex-direction: column-reverse;
+    }
+
+    .gridTwo,
+    .gridThree {
+        grid-template-columns: 1fr;
+    }
+
+    .totalCard {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.35rem;
+    }
+
+    .totalValue {
+        text-align: left;
+    }
 }

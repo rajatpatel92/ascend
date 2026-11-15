@@ -2,9 +2,11 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { FaSpinner } from 'react-icons/fa';
 import styles from './AddActivityForm.module.css';
 import DateInput from './DateInput';
 import { filterSelectableAccounts, type SelectableAccount } from '@/lib/activity-accounts';
+import { computeActivityNetAmount } from '@/lib/activities-filters';
 
 interface SearchResult {
     symbol: string;
@@ -15,9 +17,16 @@ interface SearchResult {
 
 interface AddActivityFormProps {
     onSuccess?: () => void;
-    initialData?: any; // Using any for simplicity, ideally should match Activity type
+    initialData?: any;
     onCancel?: () => void;
     accountsRefreshKey?: number;
+    inModal?: boolean;
+}
+
+interface InvestmentType {
+    id: string;
+    name: string;
+    yahooInvestmentType?: { name: string };
 }
 
 function toLocalDateString(d: Date | string): string {
@@ -41,16 +50,34 @@ function toLocalDateString(d: Date | string): string {
     return '';
 }
 
-export default function AddActivityForm({ onSuccess, initialData, onCancel, accountsRefreshKey }: AddActivityFormProps) {
+function handleNumericKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (
+        !/[0-9.]/.test(e.key) &&
+        !['Backspace', 'Delete', 'Tab', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'].includes(e.key)
+    ) {
+        e.preventDefault();
+    }
+}
+
+export default function AddActivityForm({
+    onSuccess,
+    initialData,
+    onCancel,
+    accountsRefreshKey,
+    inModal = false
+}: AddActivityFormProps) {
     const [symbol, setSymbol] = useState('');
     const [symbolName, setSymbolName] = useState('');
     const [results, setResults] = useState<SearchResult[]>([]);
     const [showResults, setShowResults] = useState(false);
-    const [loading, setLoading] = useState(false);
+    const [searching, setSearching] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [formError, setFormError] = useState<string | null>(null);
     const isSelectionRef = useRef(false);
     const wasEditingRef = useRef(false);
+    const autocompleteRef = useRef<HTMLDivElement>(null);
 
-    // Other form fields
     const [type, setType] = useState('BUY');
     const [date, setDate] = useState(toLocalDateString(new Date()));
     const [quantity, setQuantity] = useState('');
@@ -62,17 +89,11 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
     const [symbolType, setSymbolType] = useState('');
     const [currency, setCurrency] = useState('CAD');
 
-    const [platforms, setPlatforms] = useState<{ id: string, name: string }[]>([]);
+    const [platforms, setPlatforms] = useState<{ id: string; name: string }[]>([]);
     const [accounts, setAccounts] = useState<SelectableAccount[]>([]);
-    // ... inside component ...
-    interface InvestmentType {
-        id: string;
-        name: string;
-        yahooInvestmentType?: { name: string };
-    }
     const [investmentTypes, setInvestmentTypes] = useState<InvestmentType[]>([]);
-    const [activityTypes, setActivityTypes] = useState<{ id: string, name: string }[]>([]);
-    const [users, setUsers] = useState<{ id: string, username: string, name?: string }[]>([]);
+    const [activityTypes, setActivityTypes] = useState<{ id: string; name: string }[]>([]);
+    const [users, setUsers] = useState<{ id: string; username: string; name?: string }[]>([]);
     const [isInvestmentTypeLocked, setIsInvestmentTypeLocked] = useState(false);
 
     const fetchAccounts = useCallback(async () => {
@@ -88,15 +109,14 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
     }, []);
 
     useEffect(() => {
-        // Fetch platforms, accounts, and types
         Promise.allSettled([
-            fetch('/api/platforms').then(res => res.json()),
-            fetch('/api/accounts?includeInactive=true').then(res => res.json()),
-            fetch('/api/settings/investment-types').then(res => res.json()),
-            fetch('/api/settings/activity-types').then(res => res.json()),
-            fetch('/api/users').then(res => res.json())
-        ]).then((results) => {
-            const [platformsRes, accountsRes, invTypesRes, actTypesRes, usersRes] = results;
+            fetch('/api/platforms').then((res) => res.json()),
+            fetch('/api/accounts?includeInactive=true').then((res) => res.json()),
+            fetch('/api/settings/investment-types').then((res) => res.json()),
+            fetch('/api/settings/activity-types').then((res) => res.json()),
+            fetch('/api/users').then((res) => res.json())
+        ]).then((settled) => {
+            const [platformsRes, accountsRes, invTypesRes, actTypesRes, usersRes] = settled;
 
             if (platformsRes.status === 'fulfilled' && Array.isArray(platformsRes.value)) {
                 setPlatforms(platformsRes.value);
@@ -122,8 +142,18 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
         }
     }, [accountsRefreshKey, fetchAccounts]);
 
-    // Populate form with initial data when editing, and reset when exiting edit mode
     useEffect(() => {
+        const handleOutside = (event: MouseEvent) => {
+            if (autocompleteRef.current && !autocompleteRef.current.contains(event.target as Node)) {
+                setShowResults(false);
+            }
+        };
+        document.addEventListener('mousedown', handleOutside);
+        return () => document.removeEventListener('mousedown', handleOutside);
+    }, []);
+
+    useEffect(() => {
+        setFormError(null);
         if (initialData) {
             wasEditingRef.current = true;
             setSymbol(initialData.investment.symbol);
@@ -137,19 +167,16 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
             setQuantity(initialData.quantity.toString());
             setPrice(initialData.price.toString());
             setFee(initialData.fee ? initialData.fee.toString() : '');
+            setIsInvestmentTypeLocked(true);
 
             if (initialData.account) {
                 setAccountId(initialData.account.id);
-                // Platform is derived from account usually, but we can set it explicitly if available
-                // or let the account selection logic handle it. 
-                // However, setting it explicitly ensures it matches the record.
                 if (initialData.platform) {
                     setPlatformId(initialData.platform.id);
                 } else if (initialData.account.platformId) {
                     setPlatformId(initialData.account.platformId);
                 }
             } else if (initialData.platform) {
-                // Case where only platform is known (unlikely given schema, but possible in legacy data)
                 setPlatformId(initialData.platform.id);
                 setAccountId('');
             } else {
@@ -181,45 +208,30 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
         setSymbol(result.symbol);
         setSymbolName(result.name);
         setSymbolType(result.type);
+        setFormError(null);
 
-        // Check if symbol exists in DB to lock Investment Type
         try {
             const res = await fetch(`/api/investments?symbol=${encodeURIComponent(result.symbol)}`);
             const existingInvestments = await res.json();
 
             if (Array.isArray(existingInvestments) && existingInvestments.length > 0) {
-                // Symbol exists! Use its existing type.
                 const existingType = existingInvestments[0].type;
                 if (existingType) {
                     setInvestmentType(existingType);
                     setIsInvestmentTypeLocked(true);
                 }
             } else {
-                // New symbol: Auto-detect based on mapping
                 setIsInvestmentTypeLocked(false);
-
-                // Find Investment Type where mapped Yahoo Type matches result.type
-                // Yahoo types from search are usually uppercase, e.g. "ETF", "EQUITY"
                 const yahooType = result.type.toUpperCase();
-
                 const matchedType = investmentTypes.find(
-                    it => it.yahooInvestmentType?.name === yahooType
+                    (it) => it.yahooInvestmentType?.name === yahooType
                 );
 
                 if (matchedType) {
                     setInvestmentType(matchedType.name);
-                } else {
-                    // Fallback logic
-                    if (yahooType === 'EQUITY' || yahooType === 'ETF' || yahooType === 'MUTUALFUND') {
-                        // Try to find "Stock" or "Equity"
-                        const stockType = investmentTypes.find(t => t.name === 'Stock' || t.name === 'Equity');
-                        if (stockType) setInvestmentType(stockType.name);
-                    } else if (investmentTypes.length > 0) {
-                        // Default to first if completely unknown
-                        // setInvestmentType(investmentTypes[0].name); 
-                        // Actually, better to leave it as 'EQUITY' default or whatever the state initialized to, 
-                        // or just let user select.
-                    }
+                } else if (yahooType === 'EQUITY' || yahooType === 'ETF' || yahooType === 'MUTUALFUND') {
+                    const stockType = investmentTypes.find((t) => t.name === 'Stock' || t.name === 'Equity');
+                    if (stockType) setInvestmentType(stockType.name);
                 }
             }
         } catch (error) {
@@ -229,9 +241,8 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
 
         setShowResults(false);
 
-        // Fetch currency and price
         try {
-            const res = await fetch(`/api/market-data?symbol=${result.symbol}`);
+            const res = await fetch(`/api/market-data?symbol=${encodeURIComponent(result.symbol)}`);
             const data = await res.json();
             if (data.currency) {
                 setCurrency(data.currency);
@@ -244,11 +255,12 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
         }
     };
 
-    // Effect for symbol search
     useEffect(() => {
+        if (initialData) return;
+
         const delayDebounceFn = setTimeout(async () => {
             if (symbol.length > 1 && !isSelectionRef.current) {
-                setLoading(true);
+                setSearching(true);
                 try {
                     const res = await fetch(`/api/search?q=${encodeURIComponent(symbol)}`);
                     const data = await res.json();
@@ -257,26 +269,41 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
                 } catch (error) {
                     console.error('Search failed', error);
                 } finally {
-                    setLoading(false);
+                    setSearching(false);
                 }
             } else if (symbol.length <= 1) {
                 setResults([]);
                 setShowResults(false);
             }
-            isSelectionRef.current = false; // Reset after potential selection or search
-        }, 300); // Debounce time
+            isSelectionRef.current = false;
+        }, 300);
 
         return () => clearTimeout(delayDebounceFn);
-    }, [symbol]);
+    }, [symbol, initialData]);
+
+    useEffect(() => {
+        if (!initialData && type === 'DIVIDEND' && symbol) {
+            fetch(`/api/holdings?symbol=${encodeURIComponent(symbol)}`)
+                .then((res) => res.json())
+                .then((data) => {
+                    if (data.quantity !== undefined) {
+                        setQuantity(data.quantity.toString());
+                    }
+                })
+                .catch((err) => console.error('Failed to fetch holdings', err));
+        }
+    }, [type, symbol, initialData]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setFormError(null);
 
         if (!platformId) {
-            alert('Please select an account (which determines the platform)');
+            setFormError('Please select an account (which automatically links the platform).');
             return;
         }
 
+        setSubmitting(true);
         try {
             const url = initialData ? `/api/activities/${initialData.id}` : '/api/activities';
             const method = initialData ? 'PUT' : 'POST';
@@ -296,287 +323,389 @@ export default function AddActivityForm({ onSuccess, initialData, onCancel, acco
                     accountId,
                     investmentType,
                     currency
-                }),
+                })
             });
 
             if (res.ok) {
                 if (!initialData) {
-                    // Reset form only if creating
                     setSymbol('');
                     setSymbolName('');
+                    setSymbolType('');
                     setQuantity('');
                     setPrice('');
                     setFee('');
                     setInvestmentType('EQUITY');
                     setCurrency('CAD');
-                    // Keep account/platform selected for convenience
+                    setIsInvestmentTypeLocked(false);
                 }
                 if (onSuccess) onSuccess();
             } else {
-                const error = await res.json();
-                alert(`Error: ${error.error}`);
+                const errJson = await res.json().catch(() => ({}));
+                setFormError(errJson.error || 'Failed to save activity. Please check your entries.');
             }
         } catch (error) {
             console.error('Submit failed', error);
-            alert('Failed to submit activity');
+            setFormError('Unable to reach server. Please try again.');
+        } finally {
+            setSubmitting(false);
         }
     };
 
-    // Fetch holdings when type changes to DIVIDEND (only for new activities)
-    useEffect(() => {
-        if (!initialData && type === 'DIVIDEND' && symbol) {
-            fetch(`/api/holdings?symbol=${encodeURIComponent(symbol)}`)
-                .then(res => res.json())
-                .then(data => {
-                    if (data.quantity !== undefined) {
-                        setQuantity(data.quantity.toString());
-                    }
-                })
-                .catch(err => console.error('Failed to fetch holdings', err));
-        }
-    }, [type, symbol]);
+    const isSplit = type === 'STOCK_SPLIT' || type === 'SPLIT';
+    const quantityLabel = isSplit ? 'Split Ratio' : 'Quantity';
+    const priceLabel = type === 'DIVIDEND' ? 'Dividend / Unit' : isSplit ? 'Price / Unit (0 for split)' : 'Price / Unit';
 
-    const getPriceLabel = () => {
-        if (type === 'DIVIDEND') return 'Dividend / Unit';
-        return 'Price / Unit';
-    };
+    const parsedQty = parseFloat(quantity || '0') || 0;
+    const parsedPrice = parseFloat(price || '0') || 0;
+    const parsedFee = parseFloat(fee || '0') || 0;
+    const netAmount = computeActivityNetAmount({
+        type,
+        quantity: parsedQty,
+        price: parsedPrice,
+        fee: parsedFee
+    });
+
+    const selectableAccounts = filterSelectableAccounts(
+        accounts,
+        currency,
+        initialData?.account?.id ?? initialData?.accountId
+    );
+
+    const formContent = (
+        <>
+            {formError && (
+                <div className={styles.errorBanner} role="alert">
+                    {formError}
+                </div>
+            )}
+
+            <div className={styles.sectionBlock}>
+                <h3 className={styles.sectionTitle}>Security &amp; Classification</h3>
+                <div className={styles.gridTwo}>
+                    <div className={styles.field}>
+                        <label htmlFor="activity-symbol" className={styles.fieldLabel}>
+                            <span>Symbol</span>
+                            {searching && <span className={styles.labelHint}>Searching...</span>}
+                        </label>
+                        <div className={styles.autocomplete} ref={autocompleteRef}>
+                            <input
+                                type="text"
+                                id="activity-symbol"
+                                value={symbol}
+                                onChange={(e) => setSymbol(e.target.value)}
+                                className={`${styles.input} ${initialData ? styles.readOnly : ''}`}
+                                placeholder="Search symbol (e.g. AAPL, VFV.TO)"
+                                autoComplete="off"
+                                required
+                                disabled={!!initialData}
+                            />
+                            {showResults && results.length > 0 && (
+                                <ul className={styles.results} role="listbox" aria-label="Symbol suggestions">
+                                    {results.map((result) => (
+                                        <li key={result.symbol}>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleSelectSymbol(result)}
+                                                className={styles.resultItem}
+                                            >
+                                                <span className={styles.resultSymbol}>{result.symbol}</span>
+                                                <span className={styles.resultName}>{result.name}</span>
+                                                <span className={styles.resultExchange}>{result.exchange}</span>
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className={styles.field}>
+                        <label htmlFor="activity-investment-type" className={styles.fieldLabel}>
+                            <span>Investment Type</span>
+                            {isInvestmentTypeLocked && <span className={styles.labelHint}>Locked to symbol</span>}
+                        </label>
+                        <select
+                            id="activity-investment-type"
+                            value={investmentType}
+                            onChange={(e) => setInvestmentType(e.target.value)}
+                            className={`${styles.select} ${isInvestmentTypeLocked ? styles.readOnly : ''}`}
+                            disabled={isInvestmentTypeLocked}
+                        >
+                            {investmentTypes.map((invType) => (
+                                <option key={invType.id} value={invType.name}>
+                                    {invType.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className={styles.field}>
+                        <label htmlFor="activity-symbol-type" className={styles.fieldLabel}>
+                            <span>Security Name / Class</span>
+                        </label>
+                        <input
+                            type="text"
+                            id="activity-symbol-type"
+                            value={symbolName ? `${symbolName}${symbolType ? ` (${symbolType})` : ''}` : symbolType}
+                            readOnly
+                            className={`${styles.input} ${styles.readOnly}`}
+                            placeholder="Auto-filled on selection"
+                        />
+                    </div>
+
+                    <div className={styles.field}>
+                        <label htmlFor="activity-currency" className={styles.fieldLabel}>
+                            <span>Currency</span>
+                        </label>
+                        <input
+                            type="text"
+                            id="activity-currency"
+                            value={currency}
+                            readOnly
+                            className={`${styles.input} ${styles.readOnly}`}
+                        />
+                    </div>
+                </div>
+            </div>
+
+            <div className={styles.sectionBlock}>
+                <h3 className={styles.sectionTitle}>Transaction &amp; Account</h3>
+                <div className={styles.gridTwo}>
+                    <div className={styles.field}>
+                        <label htmlFor="activity-type" className={styles.fieldLabel}>
+                            <span>Activity Type</span>
+                        </label>
+                        <select
+                            id="activity-type"
+                            value={type}
+                            onChange={(e) => setType(e.target.value)}
+                            className={styles.select}
+                        >
+                            {activityTypes.map((actType) => (
+                                <option key={actType.id} value={actType.name}>
+                                    {actType.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className={styles.field}>
+                        <DateInput
+                            label="Date"
+                            id="activity-date"
+                            value={date}
+                            onChange={setDate}
+                            required
+                        />
+                    </div>
+
+                    <div className={styles.field}>
+                        <label htmlFor="activity-account" className={styles.fieldLabel}>
+                            <span>Account</span>
+                        </label>
+                        <select
+                            id="activity-account"
+                            value={accountId}
+                            onChange={(e) => {
+                                const newAccountId = e.target.value;
+                                setAccountId(newAccountId);
+                                const account = accounts.find((a) => a.id === newAccountId);
+                                if (account) {
+                                    setPlatformId(account.platformId);
+                                } else {
+                                    setPlatformId('');
+                                }
+                            }}
+                            className={styles.select}
+                            required
+                        >
+                            <option value="">Select Account</option>
+                            {selectableAccounts.map((a) => {
+                                const user = users.find((u) => u.username === a.name);
+                                const displayName = user?.name || a.name;
+                                const platform = platforms.find((p) => p.id === a.platformId);
+                                const platformName = platform?.name || '';
+                                const label = platformName
+                                    ? `${displayName} - ${a.type} - ${platformName}`
+                                    : `${displayName} - ${a.type}`;
+                                return (
+                                    <option key={a.id} value={a.id}>
+                                        {label}
+                                    </option>
+                                );
+                            })}
+                        </select>
+                        {accounts.length === 0 && (
+                            <p className={styles.hint}>No accounts found. Add one in Settings.</p>
+                        )}
+                    </div>
+
+                    <div className={styles.field}>
+                        <label htmlFor="activity-platform" className={styles.fieldLabel}>
+                            <span>Platform</span>
+                            <span className={styles.labelHint}>Auto-linked</span>
+                        </label>
+                        <select
+                            id="activity-platform"
+                            value={platformId}
+                            disabled
+                            className={`${styles.select} ${styles.readOnly}`}
+                        >
+                            <option value="">Platform</option>
+                            {platforms.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                    {p.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div className={styles.sectionBlock}>
+                <h3 className={styles.sectionTitle}>Execution Details</h3>
+                <div className={styles.gridThree}>
+                    <div className={styles.field}>
+                        <label htmlFor="activity-quantity" className={styles.fieldLabel}>
+                            <span>{quantityLabel}</span>
+                        </label>
+                        <input
+                            type="number"
+                            id="activity-quantity"
+                            value={quantity}
+                            onChange={(e) => setQuantity(e.target.value)}
+                            className={styles.input}
+                            step="any"
+                            min="0"
+                            placeholder={isSplit ? 'e.g. 4' : '0'}
+                            required
+                            onKeyDown={handleNumericKeyDown}
+                        />
+                    </div>
+
+                    <div className={styles.field}>
+                        <label htmlFor="activity-price" className={styles.fieldLabel}>
+                            <span>{priceLabel}</span>
+                        </label>
+                        <input
+                            type="number"
+                            id="activity-price"
+                            value={price}
+                            onChange={(e) => setPrice(e.target.value)}
+                            className={styles.input}
+                            step="any"
+                            min="0"
+                            placeholder="0.00"
+                            required
+                            onKeyDown={handleNumericKeyDown}
+                        />
+                    </div>
+
+                    <div className={styles.field}>
+                        <label htmlFor="activity-fee" className={styles.fieldLabel}>
+                            <span>Fee / Brokerage</span>
+                        </label>
+                        <input
+                            type="number"
+                            id="activity-fee"
+                            value={fee}
+                            onChange={(e) => setFee(e.target.value)}
+                            className={styles.input}
+                            step="any"
+                            min="0"
+                            placeholder="0.00"
+                            onKeyDown={handleNumericKeyDown}
+                        />
+                    </div>
+                </div>
+
+                <div className={styles.totalCard}>
+                    <div className={styles.totalMeta}>
+                        <span className={styles.totalLabel}>
+                            {isSplit ? 'Split Multiplier' : 'Estimated Net Amount'}
+                        </span>
+                        <span className={styles.totalSub}>
+                            {isSplit
+                                ? 'Multiplies shares held across the account on split date'
+                                : ['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT', 'DIVIDEND', 'INTEREST'].includes(type)
+                                    ? 'Gross amount minus brokerage fee'
+                                    : 'Gross amount plus brokerage fee'}
+                        </span>
+                    </div>
+                    <div className={styles.totalValue}>
+                        {isSplit
+                            ? `${quantity || '0'}:1 Split`
+                            : `${currency} ${netAmount.toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2
+                            })}`}
+                    </div>
+                </div>
+            </div>
+        </>
+    );
+
+    if (inModal) {
+        return (
+            <form className={styles.modalForm} onSubmit={handleSubmit}>
+                <div className={styles.modalBody}>{formContent}</div>
+                <div className={styles.modalFooter}>
+                    {onCancel && (
+                        <button
+                            type="button"
+                            onClick={onCancel}
+                            className={styles.cancelButton}
+                            disabled={submitting}
+                        >
+                            Cancel
+                        </button>
+                    )}
+                    <button type="submit" className={styles.button} disabled={submitting}>
+                        {submitting ? (
+                            <>
+                                <FaSpinner className={styles.spinner} aria-hidden="true" />
+                                Saving...
+                            </>
+                        ) : initialData ? (
+                            'Update Activity'
+                        ) : (
+                            'Add Activity'
+                        )}
+                    </button>
+                </div>
+            </form>
+        );
+    }
 
     return (
         <form className={styles.form} onSubmit={handleSubmit}>
-            {/* ... existing fields ... */}
-
-            <div className={styles.grid}>
-                {/* ... Symbol, Symbol Type, Investment Type, Currency, Activity Type, Date, Account, Platform ... */}
-
-                <div className={styles.field}>
-                    <label htmlFor="symbol">Symbol</label>
-                    <div className={styles.autocomplete}>
-                        <input
-                            type="text"
-                            id="symbol"
-                            value={symbol}
-                            onChange={(e) => setSymbol(e.target.value)}
-                            className={styles.input}
-                            placeholder="Search symbol (e.g. AAPL)"
-                            autoComplete="off"
-                            required
-                            disabled={!!initialData}
-                        />
-                        {showResults && results.length > 0 && (
-                            <ul className={styles.results}>
-                                {results.map((result) => (
-                                    <li
-                                        key={result.symbol}
-                                        onClick={() => handleSelectSymbol(result)}
-                                        className={styles.resultItem}
-                                    >
-                                        <span className={styles.resultSymbol}>{result.symbol}</span>
-                                        <span className={styles.resultName}>{result.name}</span>
-                                        <span className={styles.resultExchange}>{result.exchange}</span>
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
-                    </div>
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="symbolType">Symbol Type</label>
-                    <input
-                        type="text"
-                        id="symbolType"
-                        value={symbolType}
-                        readOnly
-                        className={`${styles.input} ${styles.readOnly}`}
-                        placeholder="e.g. ETF"
-                    />
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="investmentType">Investment Type</label>
-                    <select
-                        id="investmentType"
-                        value={investmentType}
-                        onChange={(e) => setInvestmentType(e.target.value)}
-                        className={styles.select}
-                        disabled={isInvestmentTypeLocked}
-                    >
-                        {investmentTypes.map(type => (
-                            <option key={type.id} value={type.name}>{type.name}</option>
-                        ))}
-                    </select>
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="currency">Currency</label>
-                    <input
-                        type="text"
-                        id="currency"
-                        value={currency}
-                        readOnly
-                        className={`${styles.input} ${styles.readOnly}`}
-                    />
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="type">Activity Type</label>
-                    <select
-                        id="type"
-                        value={type}
-                        onChange={(e) => setType(e.target.value)}
-                        className={styles.select}
-                    >
-                        {activityTypes.map(type => (
-                            <option key={type.id} value={type.name}>{type.name}</option>
-                        ))}
-                    </select>
-                </div>
-
-                <div className={styles.field}>
-                    <DateInput
-                        label="Date"
-                        id="date"
-                        value={date}
-                        onChange={setDate}
-                        required
-                    />
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="account">Account</label>
-                    <select
-                        id="account"
-                        value={accountId}
-                        onChange={(e) => {
-                            const newAccountId = e.target.value;
-                            setAccountId(newAccountId);
-                            const account = accounts.find(a => a.id === newAccountId);
-                            if (account) {
-                                setPlatformId(account.platformId);
-                            } else {
-                                setPlatformId('');
-                            }
-                        }}
-                        className={styles.select}
-                        required
-                    >
-                        <option value="">Select Account</option>
-                        {filterSelectableAccounts(accounts, currency, initialData?.account?.id ?? initialData?.accountId)
-                            .map(a => {
-                                const user = users.find(u => u.username === a.name);
-                                const displayName = user?.name || a.name;
-                                const platform = platforms.find(p => p.id === a.platformId);
-                                const platformName = platform?.name || '';
-                                const label = platformName ? `${displayName} - ${a.type} - ${platformName}` : `${displayName} - ${a.type}`;
-                                return (
-                                    <option key={a.id} value={a.id}>{label}</option>
-                                );
-                            })}
-                    </select>
-                    {accounts.length === 0 && (
-                        <p className={styles.hint}>No accounts found. Add one in Settings.</p>
-                    )}
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="platform">Platform (Auto-selected)</label>
-                    <select
-                        id="platform"
-                        value={platformId}
-                        disabled
-                        className={`${styles.select} ${styles.readOnly}`}
-                    >
-                        <option value="">Platform</option>
-                        {platforms.map(p => (
-                            <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                    </select>
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="quantity">Quantity</label>
-                    <input
-                        type="number"
-                        id="quantity"
-                        value={quantity}
-                        onChange={(e) => setQuantity(e.target.value)}
-                        className={styles.input}
-                        step="any"
-                        min="0"
-                        required
-                        onKeyDown={(e) => {
-                            if (!/[0-9.]/.test(e.key) && !['Backspace', 'Delete', 'Tab', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) {
-                                e.preventDefault();
-                            }
-                        }}
-                    />
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="price">{getPriceLabel()}</label>
-                    <input
-                        type="number"
-                        id="price"
-                        value={price}
-                        onChange={(e) => setPrice(e.target.value)}
-                        className={styles.input}
-                        step="any"
-                        min="0"
-                        required
-                        onKeyDown={(e) => {
-                            if (!/[0-9.]/.test(e.key) && !['Backspace', 'Delete', 'Tab', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) {
-                                e.preventDefault();
-                            }
-                        }}
-                    />
-                </div>
-
-                <div className={styles.field}>
-                    <label htmlFor="fee">Platform Fee / Brokerage</label>
-                    <input
-                        type="number"
-                        id="fee"
-                        value={fee}
-                        onChange={(e) => setFee(e.target.value)}
-                        className={styles.input}
-                        step="any"
-                        min="0"
-                        placeholder="0.00"
-                        onKeyDown={(e) => {
-                            if (!/[0-9.]/.test(e.key) && !['Backspace', 'Delete', 'Tab', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) {
-                                e.preventDefault();
-                            }
-                        }}
-                    />
-                </div>
-
-                <div className={styles.field}>
-                    <label>Total Amount</label>
-                    <div className={styles.totalDisplay}>
-                        {type === 'STOCK_SPLIT' || type === 'SPLIT'
-                            ? `${quantity || '0'}:1 Split`
-                            : (() => {
-                                const gross = parseFloat(quantity || '0') * parseFloat(price || '0');
-                                const feeVal = parseFloat(fee || '0');
-                                const net = ['SELL', 'REMOVE', 'WITHDRAWAL', 'TRANSFER_OUT', 'DIVIDEND', 'INTEREST'].includes(type)
-                                    ? gross - feeVal
-                                    : gross + feeVal;
-                                return `${currency} ${net.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                            })()}
-                    </div>
-                </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                {formContent}
             </div>
-
             <div className={styles.actions}>
-                <button type="submit" className={styles.button}>
-                    {initialData ? 'Update Activity' : 'Add Activity'}
-                </button>
                 {onCancel && (
-                    <button type="button" onClick={onCancel} className={styles.cancelButton}>
+                    <button
+                        type="button"
+                        onClick={onCancel}
+                        className={styles.cancelButton}
+                        disabled={submitting}
+                    >
                         Cancel
                     </button>
                 )}
+                <button type="submit" className={styles.button} disabled={submitting}>
+                    {submitting ? (
+                        <>
+                            <FaSpinner className={styles.spinner} aria-hidden="true" />
+                            Saving...
+                        </>
+                    ) : initialData ? (
+                        'Update Activity'
+                    ) : (
+                        'Add Activity'
+                    )}
+                </button>
             </div>
-        </form >
+        </form>
     );
 }

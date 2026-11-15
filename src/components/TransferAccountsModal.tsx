@@ -1,10 +1,13 @@
+'use client';
+
 import { useState, useEffect } from 'react';
-import { FaExchangeAlt, FaTimes, FaSpinner } from 'react-icons/fa';
-import styles from './BulkUploadModal.module.css'; // Reusing styles
+import { FaArrowDown, FaExchangeAlt, FaTimes, FaSpinner } from 'react-icons/fa';
+import { useModalBehavior } from '@/hooks/useModalBehavior';
+import styles from './ActivitiesModal.module.css';
 
 interface TransferAccountsModalProps {
     onClose: () => void;
-    onSuccess: () => void;
+    onSuccess: (transferredCount?: number) => void;
 }
 
 interface Account {
@@ -18,22 +21,51 @@ interface Account {
     };
 }
 
+interface UserOption {
+    id: string;
+    username: string;
+    name?: string | null;
+}
+
 export default function TransferAccountsModal({ onClose, onSuccess }: TransferAccountsModalProps) {
     const [accounts, setAccounts] = useState<Account[]>([]);
+    const [users, setUsers] = useState<UserOption[]>([]);
+    const [loadingAccounts, setLoadingAccounts] = useState(true);
     const [sourceAccountId, setSourceAccountId] = useState('');
     const [destinationAccountId, setDestinationAccountId] = useState('');
     const [deactivateSourceAccount, setDeactivateSourceAccount] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    const { handleOverlayPointerDown, handleOverlayPointerUp } = useModalBehavior({
+        isOpen: true,
+        onClose,
+        disabled: loading
+    });
+
     useEffect(() => {
-        fetch('/api/accounts')
-            .then(res => res.json())
-            .then(data => {
-                if (Array.isArray(data)) setAccounts(data);
+        Promise.allSettled([
+            fetch('/api/accounts').then((res) => res.json()),
+            fetch('/api/users').then((res) => res.json())
+        ])
+            .then(([accRes, userRes]) => {
+                if (accRes.status === 'fulfilled' && Array.isArray(accRes.value)) {
+                    setAccounts(accRes.value);
+                }
+                if (userRes.status === 'fulfilled' && Array.isArray(userRes.value)) {
+                    setUsers(userRes.value);
+                }
             })
-            .catch(err => console.error('Failed to fetch accounts:', err));
+            .catch((err) => console.error('Failed to fetch accounts:', err))
+            .finally(() => setLoadingAccounts(false));
     }, []);
+
+    const formatAccountLabel = (acc: Account) => {
+        const user = users.find((u) => u.username === acc.name);
+        const ownerName = user?.name?.trim() || acc.name;
+        const platformName = acc.platform?.name || 'Unknown Platform';
+        return `${ownerName} - ${acc.type} - ${platformName} (${acc.currency})`;
+    };
 
     const handleTransfer = async () => {
         if (!sourceAccountId || !destinationAccountId) {
@@ -42,7 +74,7 @@ export default function TransferAccountsModal({ onClose, onSuccess }: TransferAc
         }
 
         if (sourceAccountId === destinationAccountId) {
-            setError('Source and Destination accounts cannot be the same.');
+            setError('Source and destination accounts cannot be the same.');
             return;
         }
 
@@ -62,7 +94,7 @@ export default function TransferAccountsModal({ onClose, onSuccess }: TransferAc
                 throw new Error(data.error || 'Failed to transfer accounts.');
             }
 
-            onSuccess();
+            onSuccess(data.transferredHoldingsCount);
         } catch (err: unknown) {
             if (err instanceof Error) {
                 setError(err.message);
@@ -74,71 +106,170 @@ export default function TransferAccountsModal({ onClose, onSuccess }: TransferAc
     };
 
     return (
-        <div className={styles.overlay}>
-            <div className={styles.modal}>
-                <button className={styles.closeButton} onClick={onClose} aria-label="Close">
-                    <FaTimes />
-                </button>
+        <div
+            className={styles.overlay}
+            onPointerDown={handleOverlayPointerDown}
+            onPointerUp={handleOverlayPointerUp}
+        >
+            <div
+                className={`${styles.modal} ${styles.modalMd}`}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="transfer-accounts-title"
+            >
+                <div className={styles.header}>
+                    <div className={styles.headerTitleGroup}>
+                        <span className={styles.headerIcon} aria-hidden="true">
+                            <FaExchangeAlt />
+                        </span>
+                        <div className={styles.headerText}>
+                            <h2 id="transfer-accounts-title" className={styles.title}>
+                                Transfer Accounts
+                            </h2>
+                            <p className={styles.subtitle}>
+                                Move all positive holdings from one account to another while preserving average cost basis.
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        className={styles.closeButton}
+                        onClick={onClose}
+                        disabled={loading}
+                        aria-label="Close transfer accounts modal"
+                    >
+                        <FaTimes aria-hidden="true" />
+                    </button>
+                </div>
 
-                <h2 className={styles.title}>
-                    <FaExchangeAlt style={{ marginRight: '0.5rem', verticalAlign: 'middle', color: 'var(--primary)' }} />
-                    Transfer Accounts
-                </h2>
-                <p style={{ marginBottom: '1.5rem', color: 'var(--text-secondary)' }}>Transfer all holdings from one account to another.</p>
-
-                <div className={styles.stepContent}>
+                <div className={styles.body}>
                     {error && (
-                        <div className={styles.error}>
-                            <p>{error}</p>
+                        <div className={styles.errorBanner} role="alert">
+                            {error}
                         </div>
                     )}
 
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, color: 'var(--text-primary)' }}>Source Account</label>
-                        <select
-                            value={sourceAccountId}
-                            onChange={(e) => setSourceAccountId(e.target.value)}
-                            style={{ width: '100%', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid var(--card-border)', background: 'var(--card-bg)', color: 'var(--text-primary)' }}
+                    {loadingAccounts ? (
+                        <div className={styles.loadingState}>
+                            <FaSpinner className={styles.spinner} aria-hidden="true" />
+                            <p style={{ margin: 0 }}>Loading accounts...</p>
+                        </div>
+                    ) : (
+                        <>
+                            <div className={styles.accountBlock}>
+                                <div className={styles.field}>
+                                    <label htmlFor="transfer-source-account" className={styles.label}>
+                                        <span>Source Account</span>
+                                        <span className={styles.labelMeta}>From</span>
+                                    </label>
+                                    <select
+                                        id="transfer-source-account"
+                                        className={styles.select}
+                                        value={sourceAccountId}
+                                        onChange={(e) => {
+                                            setSourceAccountId(e.target.value);
+                                            setError(null);
+                                        }}
+                                    >
+                                        <option value="">Select Source Account</option>
+                                        {accounts.map((acc) => (
+                                            <option key={acc.id} value={acc.id}>
+                                                {formatAccountLabel(acc)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <p className={styles.fieldHint}>
+                                        Generates matching TRANSFER_OUT entries for all positive holdings.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className={styles.transferArrow} aria-hidden="true">
+                                <FaArrowDown />
+                            </div>
+
+                            <div className={styles.accountBlock}>
+                                <div className={styles.field}>
+                                    <label htmlFor="transfer-dest-account" className={styles.label}>
+                                        <span>Destination Account</span>
+                                        <span className={styles.labelMeta}>To</span>
+                                    </label>
+                                    <select
+                                        id="transfer-dest-account"
+                                        className={styles.select}
+                                        value={destinationAccountId}
+                                        onChange={(e) => {
+                                            setDestinationAccountId(e.target.value);
+                                            setError(null);
+                                        }}
+                                    >
+                                        <option value="">Select Destination Account</option>
+                                        {accounts.map((acc) => (
+                                            <option
+                                                key={acc.id}
+                                                value={acc.id}
+                                                disabled={acc.id === sourceAccountId}
+                                            >
+                                                {formatAccountLabel(acc)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <p className={styles.fieldHint}>
+                                        Generates matching TRANSFER_IN entries preserving average cost per share.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <label className={styles.checkboxCard} htmlFor="deactivateSourceAccount">
+                                <input
+                                    type="checkbox"
+                                    id="deactivateSourceAccount"
+                                    checked={deactivateSourceAccount}
+                                    onChange={(e) => setDeactivateSourceAccount(e.target.checked)}
+                                />
+                                <div>
+                                    <div className={styles.checkboxTitle}>
+                                        Deactivate source account after transfer
+                                    </div>
+                                    <div className={styles.checkboxDesc}>
+                                        Hides the old account from new activity dropdowns while preserving history.
+                                    </div>
+                                </div>
+                            </label>
+                        </>
+                    )}
+                </div>
+
+                <div className={styles.footer}>
+                    <div className={styles.footerEnd}>
+                        <button
+                            type="button"
+                            className={styles.secondaryBtn}
+                            onClick={onClose}
+                            disabled={loading}
                         >
-                            <option value="">Select Source Account</option>
-                            {accounts.map(acc => (
-                                <option key={acc.id} value={acc.id}>{acc.name} - {acc.type} - {acc.platform?.name || 'Unknown'}</option>
-                            ))}
-                        </select>
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>All positive holdings will be transferred out of this account.</p>
-                    </div>
-
-                    <div>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600, color: 'var(--text-primary)' }}>Destination Account</label>
-                        <select
-                            value={destinationAccountId}
-                            onChange={(e) => setDestinationAccountId(e.target.value)}
-                            style={{ width: '100%', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid var(--card-border)', background: 'var(--card-bg)', color: 'var(--text-primary)' }}
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            className={styles.primaryBtn}
+                            onClick={handleTransfer}
+                            disabled={
+                                loadingAccounts ||
+                                loading ||
+                                !sourceAccountId ||
+                                !destinationAccountId ||
+                                sourceAccountId === destinationAccountId
+                            }
                         >
-                            <option value="">Select Destination Account</option>
-                            {accounts.map(acc => (
-                                <option key={acc.id} value={acc.id} disabled={acc.id === sourceAccountId}>{acc.name} - {acc.type} - {acc.platform?.name || 'Unknown'}</option>
-                            ))}
-                        </select>
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>The holdings will be transferred into this account and their average cost will be preserved.</p>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
-                        <input
-                            type="checkbox"
-                            id="deactivateSourceAccount"
-                            checked={deactivateSourceAccount}
-                            onChange={(e) => setDeactivateSourceAccount(e.target.checked)}
-                        />
-                        <label htmlFor="deactivateSourceAccount" style={{ fontSize: '0.9rem', userSelect: 'none', color: 'var(--text-primary)', fontWeight: 500 }}>
-                            Deactivate source account after transfer
-                        </label>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-                        <button className={styles.secondaryButton} onClick={onClose} disabled={loading}>Cancel</button>
-                        <button className={styles.primaryButton} onClick={handleTransfer} disabled={loading || !sourceAccountId || !destinationAccountId || sourceAccountId === destinationAccountId}>
-                            {loading ? <><FaSpinner className={styles.spinner} style={{ marginRight: '0.5rem', fontSize: '1rem' }} /> Transferring...</> : 'Transfer Accounts'}
+                            {loading ? (
+                                <>
+                                    <FaSpinner className={styles.spinnerSm} aria-hidden="true" />
+                                    Transferring...
+                                </>
+                            ) : (
+                                'Transfer Holdings'
+                            )}
                         </button>
                     </div>
                 </div>
