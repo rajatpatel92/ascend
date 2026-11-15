@@ -182,7 +182,7 @@ export default function Sidebar() {
                         className={styles.brandLink}
                         onClick={() => setIsOpen(false)}
                         aria-label="Ascend Dashboard"
-                        title="Ascend Portfolio"
+                        title="Ascend Portfolio Manager"
                     >
                         <AscendLogo compact={collapsedDesktop} size="md" />
                     </Link>

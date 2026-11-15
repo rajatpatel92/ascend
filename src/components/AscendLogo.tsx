@@ -13,7 +13,7 @@ export default function AscendLogo({
     compact = false,
     size = 'md',
     showSubtitle = true,
-    subtitle = 'Portfolio',
+    subtitle = 'Portfolio Manager',
 }: AscendLogoProps) {
     const rawId = useId();
     const gradientId = `ascend-prism-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -94,6 +94,7 @@ export default function AscendLogo({
                                 color: 'var(--text-secondary)',
                                 lineHeight: 1.15,
                                 marginTop: '0.18rem',
+                                whiteSpace: 'nowrap',
                             }}
                         >
                             {subtitle}
