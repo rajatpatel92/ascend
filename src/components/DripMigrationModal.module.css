@@ -1,0 +1,133 @@
+.headerIconTeal {
+    background: rgba(13, 148, 136, 0.14);
+    color: #0f766e;
+}
+
+:global([data-theme='dark']) .headerIconTeal {
+    background: rgba(20, 184, 166, 0.2);
+    color: #2dd4bf;
+}
+
+.summaryStrip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.summaryCard {
+    padding: 0.75rem 0.9rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--card-border);
+    background: var(--background);
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.summaryLabel {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+}
+
+.summaryValue {
+    font-family: var(--font-display), var(--font-sans), sans-serif;
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.summarySub {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.quickActions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.reasonList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
+
+.reasonChip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.14rem 0.48rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    background: var(--hover-bg);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.reasonChipExact {
+    background: rgba(13, 148, 136, 0.14);
+    color: #0f766e;
+}
+
+:global([data-theme='dark']) .reasonChipExact {
+    background: rgba(20, 184, 166, 0.2);
+    color: #2dd4bf;
+}
+
+.pillHigh {
+    background: rgba(13, 148, 136, 0.14);
+    color: #0f766e;
+}
+
+:global([data-theme='dark']) .pillHigh {
+    background: rgba(20, 184, 166, 0.2);
+    color: #2dd4bf;
+}
+
+.rowSub {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+}
+
+.diffBadge {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.footerMeta {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+    .summaryStrip {
+        grid-template-columns: 1fr;
+        gap: 0.5rem;
+    }
+
+    .summaryCard {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.65rem 0.85rem;
+    }
+
+    .summarySub {
+        display: none;
+    }
+}

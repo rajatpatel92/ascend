@@ -259,6 +259,10 @@ export default function BulkUploadModal({ onClose, onSuccess }: BulkUploadModalP
                                         </span>
                                     ))}
                                 </div>
+                                <p className={modalStyles.fieldHint} style={{ marginTop: '0.45rem' }}>
+                                    Reinvestment labels such as <code>REINVEST</code>, <code>REINVESTMENT</code>, or{' '}
+                                    <code>DIVIDEND REINVESTMENT</code> automatically map to <code>DRIP</code>.
+                                </p>
                             </div>
                         </>
                     )}
@@ -314,6 +318,15 @@ export default function BulkUploadModal({ onClose, onSuccess }: BulkUploadModalP
                                             All {validRows.length} row(s) passed validation and are ready to import.
                                         </span>
                                     </div>
+                                    {(validationResult?.mappedDripCount ?? 0) > 0 && (
+                                        <div className={modalStyles.infoBanner}>
+                                            <span>
+                                                {validationResult.mappedDripCount} reinvestment{' '}
+                                                {validationResult.mappedDripCount === 1 ? 'row was' : 'rows were'} automatically
+                                                normalized to <strong>DRIP</strong>.
+                                            </span>
+                                        </div>
+                                    )}
                                     {validRows.length > 0 && (
                                         <div className={modalStyles.tableWrap}>
                                             <table className={modalStyles.modalTable}>
@@ -331,7 +344,10 @@ export default function BulkUploadModal({ onClose, onSuccess }: BulkUploadModalP
                                                         <tr key={idx}>
                                                             <td>{r.Date}</td>
                                                             <td style={{ fontWeight: 700 }}>{r.Symbol}</td>
-                                                            <td>{r.Type}</td>
+                                                            <td>
+                                                                {r.Type}
+                                                                {r.originalType ? ` (from ${r.originalType})` : ''}
+                                                            </td>
                                                             <td style={{ textAlign: 'right' }}>{r.Quantity}</td>
                                                             <td style={{ textAlign: 'right' }}>{r.Price}</td>
                                                         </tr>

@@ -8,6 +8,7 @@ import Papa from 'papaparse';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     MdAdd,
+    MdAutorenew,
     MdCalendarMonth,
     MdClose,
     MdDeleteOutline,
@@ -28,6 +29,7 @@ import FetchDividendsModal from '@/components/FetchDividendsModal';
 import BulkUploadModal from '@/components/BulkUploadModal';
 import BulkEditModal from '@/components/BulkEditModal';
 import TransferAccountsModal from '@/components/TransferAccountsModal';
+import DripMigrationModal from '@/components/DripMigrationModal';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { formatQuantity } from '@/lib/format';
 import {
@@ -63,6 +65,7 @@ export default function ActivitiesPage() {
     const [showActivityModal, setShowActivityModal] = useState(false);
     const [editingActivity, setEditingActivity] = useState<ActivityRecord | null>(null);
     const [showDividendModal, setShowDividendModal] = useState(false);
+    const [showDripMigrationModal, setShowDripMigrationModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
     const [showBulkEditModal, setShowBulkEditModal] = useState(false);
     const [showTransferModal, setShowTransferModal] = useState(false);
@@ -435,6 +438,18 @@ export default function ActivitiesPage() {
                                                 role="menuitem"
                                                 className={styles.menuItem}
                                                 onClick={() => {
+                                                    setShowDripMigrationModal(true);
+                                                    setShowOverflowMenu(false);
+                                                }}
+                                            >
+                                                <MdAutorenew size={18} aria-hidden="true" />
+                                                Migrate DRIPs
+                                            </button>
+                                            <button
+                                                type="button"
+                                                role="menuitem"
+                                                className={styles.menuItem}
+                                                onClick={() => {
                                                     setShowImportModal(true);
                                                     setShowOverflowMenu(false);
                                                 }}
@@ -495,18 +510,32 @@ export default function ActivitiesPage() {
                                 />
                                 <div className={styles.dropdownMenu} role="menu">
                                     {canEdit && (
-                                        <button
-                                            type="button"
-                                            role="menuitem"
-                                            className={styles.menuItem}
-                                            onClick={() => {
-                                                setShowDividendModal(true);
-                                                setShowMobileMenu(false);
-                                            }}
-                                        >
-                                            <MdCalendarMonth size={18} aria-hidden="true" />
-                                            Fetch Dividends
-                                        </button>
+                                        <>
+                                            <button
+                                                type="button"
+                                                role="menuitem"
+                                                className={styles.menuItem}
+                                                onClick={() => {
+                                                    setShowDividendModal(true);
+                                                    setShowMobileMenu(false);
+                                                }}
+                                            >
+                                                <MdCalendarMonth size={18} aria-hidden="true" />
+                                                Fetch Dividends
+                                            </button>
+                                            <button
+                                                type="button"
+                                                role="menuitem"
+                                                className={styles.menuItem}
+                                                onClick={() => {
+                                                    setShowDripMigrationModal(true);
+                                                    setShowMobileMenu(false);
+                                                }}
+                                            >
+                                                <MdAutorenew size={18} aria-hidden="true" />
+                                                Migrate DRIPs
+                                            </button>
+                                        </>
                                     )}
                                     <button
                                         type="button"
@@ -1242,6 +1271,19 @@ export default function ActivitiesPage() {
                 onClose={() => setShowDividendModal(false)}
                 onSuccess={(addedCount) => {
                     setSuccessBanner(`Added ${addedCount} dividend ${addedCount === 1 ? 'activity' : 'activities'}.`);
+                    fetchActivities();
+                }}
+            />
+
+            <DripMigrationModal
+                isOpen={showDripMigrationModal}
+                onClose={() => setShowDripMigrationModal(false)}
+                onSuccess={(migratedCount) => {
+                    setShowDripMigrationModal(false);
+                    setSelectedActivities(new Set());
+                    setSuccessBanner(
+                        `Converted ${migratedCount} historical ${migratedCount === 1 ? 'activity' : 'activities'} from BUY to DRIP.`
+                    );
                     fetchActivities();
                 }}
             />

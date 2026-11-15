@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import Papa from 'papaparse';
 import { MarketDataService } from '@/lib/market-data';
 import { auth } from '@/auth';
+import { isDripAlias, normalizeActivityType } from '@/lib/activity-helpers';
 
 const REQUIRED_FIELDS = ['Date', 'Type', 'Symbol', 'Quantity', 'Price', 'Username', 'Account Type', 'Platform'];
 
@@ -137,8 +138,14 @@ export async function POST(req: NextRequest) {
             if (rowErrors.length > 0) {
                 errors.push({ row: rowNum, message: rowErrors.join('; ') });
             } else {
+                const rawType = row['Type'];
+                const normalizedType = normalizeActivityType(rawType);
+                const dripAliasMapped = isDripAlias(rawType);
+
                 validRows.push({
                     ...row,
+                    Type: normalizedType,
+                    ...(dripAliasMapped ? { originalType: String(rawType).trim() } : {}),
                     accountId: account!.id,
                     platformId: platform!.id,
                     parsedDate: date,
@@ -149,11 +156,14 @@ export async function POST(req: NextRequest) {
             }
         });
 
+        const mappedDripCount = validRows.filter((r) => Boolean(r.originalType)).length;
+
         return NextResponse.json({
             valid: errors.length === 0,
             errors,
             data: validRows,
-            totalRows: rows.length
+            totalRows: rows.length,
+            mappedDripCount
         });
 
     } catch (error) {

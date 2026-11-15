@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { requireAuth } from '@/lib/api-auth';
-import { auth } from "@/auth";
+import { normalizeActivityType } from '@/lib/activity-helpers';
 
 export async function POST(req: NextRequest) {
     const authResult = await requireAuth(req, ['ADMIN', 'EDITOR'], true);
@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
 
             return {
                 date: new Date(activity.parsedDate),
-                type: String(activity.Type || '').trim().toUpperCase(),
+                type: normalizeActivityType(activity.Type),
                 quantity: finalQuantity,
                 price: finalPrice,
                 fee: finalFee,
