@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import ReportFilters, { type FilterOptions } from '@/components/ReportFilters';
 import usePersistentState from '@/hooks/usePersistentState';
-import { MdClose, MdSettings } from 'react-icons/md';
+import { MdClose, MdExpandLess, MdExpandMore, MdSettings, MdWarningAmber } from 'react-icons/md';
 import {
     computeRebalancePlan,
     formatShareCount,
@@ -16,6 +16,21 @@ import {
     type RebalanceMode,
     type TargetConfig
 } from '@/lib/rebalance-planner';
+import {
+    allocateTradeAcrossAccounts,
+    buildEqualWeightTargets,
+    computeCategoryRebalancePlan,
+    getTaxStatusLabel,
+    normalizeCategoryTargetsTo100,
+    seedCategoryTargetsFromHoldings,
+    simulateGlideStep,
+    type CategoryTargetConfig,
+    type PlannedCategoryRow,
+    type RebalanceDimension,
+    type RebalanceProfile,
+    type RebalanceProfileStore,
+    type TaxStatus
+} from '@/lib/rebalance-extensions';
 import RebalancerCharts from './_components/RebalancerCharts';
 import RebalancerConfigPanel from './_components/RebalancerConfigPanel';
 
@@ -24,18 +39,48 @@ type ChecklistFilter = 'ALL' | 'ACTIONABLE' | 'BUY' | 'SELL' | 'HOLD';
 const TOLERANCE_PRESETS = [0, 0.5, 1, 2, 5];
 const CASH_PRESETS = [500, 1000, 2500, 5000];
 
+function getTaxTierClassName(status: TaxStatus): string {
+    if (status === 'TAX_FREE') return styles.taxTierFree;
+    if (status === 'TAX_DEFERRED') return styles.taxTierDeferred;
+    return styles.taxTierTaxable;
+}
+
+function enrichTargetTimestamps(targetList: TargetConfig[], items: RebalanceItem[]): TargetConfig[] {
+    const itemMap = new Map(items.map((item) => [item.symbol.toUpperCase(), item]));
+    return targetList.map((t) => {
+        const match = itemMap.get(t.symbol.trim().toUpperCase());
+        return {
+            ...t,
+            lastAdjustmentDate: match?.lastAdjustmentDate ?? t.lastAdjustmentDate ?? null,
+            createdAt: match?.createdAt ?? t.createdAt ?? null
+        };
+    });
+}
+
 export default function RebalancerPage() {
     const { format, currency } = useCurrency();
 
     const [rebalanceData, setRebalanceData] = useState<RebalanceItem[] | null>(null);
     const [knownSymbols, setKnownSymbols] = useState<string[]>([]);
+    const [configuredInvestmentTypes, setConfiguredInvestmentTypes] = useState<string[]>([]);
+
+    const [profiles, setProfiles] = useState<RebalanceProfile[]>([]);
+    const [activeProfileId, setActiveProfileId] = useState<string>('default');
+    const [dimension, setDimension] = useState<RebalanceDimension>('TICKER');
     const [targets, setTargets] = useState<TargetConfig[]>([]);
+    const [categoryTargets, setCategoryTargets] = useState<CategoryTargetConfig[]>([]);
+    const [bindFiltersToProfile, setBindFiltersToProfile] = useState(false);
+
     const [isSaving, setIsSaving] = useState(false);
+    const [isApplyingGlide, setIsApplyingGlide] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isConfigOpen, setIsConfigOpen] = useState(false);
     const [checklistFilter, setChecklistFilter] = useState<ChecklistFilter>('ALL');
+    const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set());
     const [errorBanner, setErrorBanner] = useState<string | null>(null);
     const [successBanner, setSuccessBanner] = useState<string | null>(null);
+
+    const hasHydratedProfilesRef = useRef(false);
 
     // Persistent Filters & Strategy Controls
     const [globalFilters, setGlobalFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('rebalancer_filters', null);
@@ -67,6 +112,22 @@ export default function RebalancerPage() {
 
     const checkedTrades = useMemo(() => new Set(checkedTradeList), [checkedTradeList]);
 
+    const applyProfileToState = useCallback(
+        (profile: RebalanceProfile, items: RebalanceItem[]) => {
+            setActiveProfileId(profile.id);
+            setDimension(profile.dimension === 'CATEGORY' ? 'CATEGORY' : 'TICKER');
+            setTargets(enrichTargetTimestamps(profile.tickerTargets || [], items));
+            setCategoryTargets(profile.categoryTargets || []);
+            setBindFiltersToProfile(
+                Boolean(
+                    (profile.accountTypes && profile.accountTypes.length > 0) ||
+                    (profile.investmentTypes && profile.investmentTypes.length > 0)
+                )
+            );
+        },
+        []
+    );
+
     const fetchData = useCallback(async (signal?: AbortSignal) => {
         setIsLoading(true);
         setErrorBanner(null);
@@ -85,9 +146,10 @@ export default function RebalancerPage() {
                 url += `&excludeSymbols=${encodeURIComponent(debouncedExclude.trim())}`;
             }
 
-            const [dataRes, targetRes] = await Promise.all([
+            const [dataRes, profileRes, invTypeRes] = await Promise.all([
                 fetch(url, { signal }),
-                fetch('/api/rebalancer/targets', { signal })
+                fetch('/api/rebalancer/profiles', { signal }),
+                fetch('/api/settings/investment-types', { signal }).catch(() => null)
             ]);
 
             if (!dataRes.ok) {
@@ -104,16 +166,25 @@ export default function RebalancerPage() {
                 return Array.from(merged).sort();
             });
 
-            if (targetRes.ok) {
-                const targetJson = await targetRes.json();
-                if (Array.isArray(targetJson.targets)) {
-                    setTargets(
-                        targetJson.targets.map((t: { symbol: string; targetPercentage: number; yearlyDriftAdjustment: number | null }) => ({
-                            symbol: t.symbol,
-                            targetPercentage: t.targetPercentage,
-                            yearlyDriftAdjustment: t.yearlyDriftAdjustment
-                        }))
-                    );
+            if (invTypeRes && invTypeRes.ok) {
+                const invTypesJson = await invTypeRes.json().catch(() => []);
+                if (Array.isArray(invTypesJson)) {
+                    setConfiguredInvestmentTypes(invTypesJson.map((it: { name: string }) => it.name));
+                }
+            }
+
+            if (profileRes.ok) {
+                const store = (await profileRes.json()) as RebalanceProfileStore;
+                if (Array.isArray(store.profiles) && store.profiles.length > 0) {
+                    setProfiles(store.profiles);
+                    if (!hasHydratedProfilesRef.current) {
+                        hasHydratedProfilesRef.current = true;
+                        const active =
+                            store.profiles.find((p) => p.id === store.activeProfileId) || store.profiles[0];
+                        applyProfileToState(active, items);
+                    } else {
+                        setTargets((prev) => enrichTargetTimestamps(prev, items));
+                    }
                 }
             }
         } catch (error) {
@@ -123,7 +194,7 @@ export default function RebalancerPage() {
         } finally {
             setIsLoading(false);
         }
-    }, [currency, globalFilters, debouncedExclude]);
+    }, [currency, globalFilters, debouncedExclude, applyProfileToState]);
 
     useEffect(() => {
         if (!isFiltersLoaded) return;
@@ -132,22 +203,46 @@ export default function RebalancerPage() {
         return () => controller.abort();
     }, [isFiltersLoaded, fetchData]);
 
-    const saveTargets = async () => {
+    const persistProfile = async (
+        profileId: string,
+        profileName: string,
+        successMessage: string
+    ) => {
         setIsSaving(true);
         setErrorBanner(null);
         setSuccessBanner(null);
+
         try {
-            const validTargets = targets
+            const validTickerTargets = targets
                 .map((t) => ({
                     ...t,
                     symbol: t.symbol.trim().toUpperCase()
                 }))
                 .filter((t) => t.symbol !== '');
 
-            const res = await fetch('/api/rebalancer/targets', {
+            const validCategoryTargets = categoryTargets
+                .map((c) => ({
+                    ...c,
+                    investmentType: c.investmentType.trim()
+                }))
+                .filter((c) => c.investmentType !== '');
+
+            const profilePayload: RebalanceProfile = {
+                id: profileId,
+                name: profileName,
+                dimension,
+                tickerTargets: validTickerTargets,
+                categoryTargets: validCategoryTargets,
+                accountTypes: bindFiltersToProfile && globalFilters ? globalFilters.accountTypes : undefined,
+                investmentTypes: bindFiltersToProfile && globalFilters ? globalFilters.investmentTypes : undefined,
+                excludeSymbols: bindFiltersToProfile ? excludeSymbols : undefined,
+                updatedAt: new Date().toISOString()
+            };
+
+            const res = await fetch('/api/rebalancer/profiles', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ targets: validTargets })
+                body: JSON.stringify({ profile: profilePayload })
             });
 
             if (!res.ok) {
@@ -155,34 +250,279 @@ export default function RebalancerPage() {
                     setErrorBanner('Only Admin or Editor accounts can modify target allocations.');
                 } else {
                     const errBody = await res.json().catch(() => ({}));
-                    setErrorBanner(errBody.error || `Failed to save targets (HTTP ${res.status}).`);
+                    setErrorBanner(errBody.error || `Failed to save profile (HTTP ${res.status}).`);
                 }
                 return;
             }
 
-            setSuccessBanner('Target allocations saved and drift recalculated.');
+            const updatedStore = (await res.json()) as RebalanceProfileStore;
+            setProfiles(updatedStore.profiles);
+            const active =
+                updatedStore.profiles.find((p) => p.id === updatedStore.activeProfileId) ||
+                updatedStore.profiles[0];
+            if (active) {
+                applyProfileToState(active, rebalanceData || []);
+            }
+
+            setSuccessBanner(successMessage);
             await fetchData();
         } catch (error) {
-            console.error('Failed to save targets:', error);
-            setErrorBanner('Network error while saving target allocations.');
+            console.error('Failed to save profile:', error);
+            setErrorBanner('Network error while saving target profile.');
         } finally {
             setIsSaving(false);
         }
     };
 
+    const saveTargets = async () => {
+        const currentProfile = profiles.find((p) => p.id === activeProfileId);
+        const name = currentProfile?.name || 'Default Portfolio';
+        await persistProfile(
+            activeProfileId || 'default',
+            name,
+            `Profile "${name}" saved and portfolio drift recalculated.`
+        );
+    };
+
+    const handleSaveAsNewProfile = async (newName: string) => {
+        const slug = newName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '') || 'custom';
+        const newId = `${slug}-${Date.now().toString(36)}`;
+        await persistProfile(
+            newId,
+            newName,
+            `Created and activated profile "${newName}".`
+        );
+    };
+
+    const handleSelectProfile = async (nextProfileId: string) => {
+        const targetProfile = profiles.find((p) => p.id === nextProfileId);
+        if (!targetProfile) return;
+
+        setErrorBanner(null);
+        setSuccessBanner(null);
+        applyProfileToState(targetProfile, rebalanceData || []);
+        setExpandedRows(new Set());
+
+        if (
+            (targetProfile.accountTypes && targetProfile.accountTypes.length > 0) ||
+            (targetProfile.investmentTypes && targetProfile.investmentTypes.length > 0)
+        ) {
+            setGlobalFilters({
+                accountTypes: targetProfile.accountTypes || [],
+                investmentTypes: targetProfile.investmentTypes || []
+            });
+        }
+        if (typeof targetProfile.excludeSymbols === 'string') {
+            setExcludeSymbols(targetProfile.excludeSymbols);
+        }
+
+        try {
+            const res = await fetch('/api/rebalancer/profiles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ activeProfileId: nextProfileId, activateOnly: true })
+            });
+            if (res.ok) {
+                await fetchData();
+                setSuccessBanner(`Switched to profile "${targetProfile.name}".`);
+            }
+        } catch (error) {
+            console.error('Failed to switch profile:', error);
+        }
+    };
+
+    const handleDeleteProfile = async (profileId: string) => {
+        setIsSaving(true);
+        setErrorBanner(null);
+        setSuccessBanner(null);
+        try {
+            const res = await fetch(`/api/rebalancer/profiles?id=${encodeURIComponent(profileId)}`, {
+                method: 'DELETE'
+            });
+            if (!res.ok) {
+                const errBody = await res.json().catch(() => ({}));
+                setErrorBanner(errBody.error || `Failed to delete profile (HTTP ${res.status}).`);
+                return;
+            }
+            const store = (await res.json()) as RebalanceProfileStore;
+            setProfiles(store.profiles);
+            const active = store.profiles.find((p) => p.id === store.activeProfileId) || store.profiles[0];
+            if (active) {
+                applyProfileToState(active, rebalanceData || []);
+            }
+            setSuccessBanner('Profile deleted.');
+            await fetchData();
+        } catch (error) {
+            console.error('Failed to delete profile:', error);
+            setErrorBanner('Network error while deleting profile.');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const availableInvestmentTypes = useMemo(() => {
+        const set = new Set<string>(configuredInvestmentTypes);
+        (rebalanceData || []).forEach((item) => {
+            if (item.investmentType) set.add(item.investmentType);
+        });
+        return Array.from(set).sort();
+    }, [configuredInvestmentTypes, rebalanceData]);
+
     const handleSeedFromHoldings = () => {
         if (!rebalanceData || rebalanceData.length === 0) return;
-        setTargets(seedTargetsFromHoldings(rebalanceData, targets));
+        if (dimension === 'CATEGORY') {
+            setCategoryTargets(seedCategoryTargetsFromHoldings(rebalanceData));
+        } else {
+            setTargets(seedTargetsFromHoldings(rebalanceData, targets));
+        }
+    };
+
+    const handleEqualWeight = () => {
+        if (dimension === 'CATEGORY') {
+            const activeTypes = categoryTargets
+                .map((c) => c.investmentType.trim())
+                .filter(Boolean);
+            const fallbackTypes = Array.from(
+                new Set((rebalanceData || []).map((r) => r.investmentType || 'Uncategorized'))
+            );
+            const list = Array.from(new Set(activeTypes.length > 0 ? activeTypes : fallbackTypes));
+            if (list.length === 0) return;
+            const base = Math.round((100 / list.length) * 10) / 10;
+            setCategoryTargets(
+                list.map((investmentType, idx) => ({
+                    investmentType,
+                    targetPercentage: idx === 0
+                        ? Math.round((100 - base * (list.length - 1)) * 10) / 10
+                        : base
+                }))
+            );
+            return;
+        }
+
+        const activeSyms = targets.map((t) => t.symbol.trim().toUpperCase()).filter(Boolean);
+        const list = activeSyms.length > 0 ? activeSyms : (rebalanceData || []).map((r) => r.symbol);
+        setTargets(buildEqualWeightTargets(list, targets));
+    };
+
+    const handleApplyCategoryTemplate = (template: '80_20' | '60_40') => {
+        const findType = (candidates: string[], fallback: string) =>
+            availableInvestmentTypes.find((t) => candidates.includes(t.toUpperCase())) || fallback;
+
+        const equityType = findType(['ETF', 'STOCK', 'EQUITY'], 'ETF');
+        const fixedType = findType(['BOND', 'CASH', 'GIC', 'FIXED INCOME'], 'Bond');
+
+        if (equityType === fixedType) {
+            setCategoryTargets([{ investmentType: equityType, targetPercentage: 100 }]);
+            return;
+        }
+
+        const eqWeight = template === '80_20' ? 80 : 60;
+        const fiWeight = 100 - eqWeight;
+        setCategoryTargets([
+            { investmentType: equityType, targetPercentage: eqWeight },
+            { investmentType: fixedType, targetPercentage: fiWeight }
+        ]);
     };
 
     const handleNormalizeTargets = () => {
-        setTargets((prev) => normalizeTargetsTo100(prev));
+        if (dimension === 'CATEGORY') {
+            setCategoryTargets((prev) => normalizeCategoryTargetsTo100(prev));
+        } else {
+            setTargets((prev) => normalizeTargetsTo100(prev));
+        }
     };
 
-    const toggleTradeCheck = (symbol: string) => {
-        setCheckedTradeList((prev) =>
-            prev.includes(symbol) ? prev.filter((s) => s !== symbol) : [...prev, symbol]
+    const handleSimulateGlideStep = () => {
+        const { simulatedTargets, postStepTotal } = simulateGlideStep(targets, 1);
+        setTargets(simulatedTargets);
+        setSuccessBanner(
+            `Previewing +1 year glide path step in Target Studio & Glide Path Preview (new sum: ${postStepTotal.toFixed(1)}%). Click "Save Profile" to commit.`
         );
+    };
+
+    const handleApplyGlideStepNow = async () => {
+        setIsApplyingGlide(true);
+        setErrorBanner(null);
+        setSuccessBanner(null);
+        try {
+            const res = await fetch('/api/cron/glide-path-adjust', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ dryRun: false, forceOneYearStep: true })
+            });
+
+            if (!res.ok) {
+                const errBody = await res.json().catch(() => ({}));
+                setErrorBanner(errBody.error || `Failed to apply glide path step (HTTP ${res.status}).`);
+                return;
+            }
+
+            const result = await res.json();
+            const targetRes = await fetch('/api/rebalancer/targets');
+            if (targetRes.ok) {
+                const targetJson = await targetRes.json();
+                if (Array.isArray(targetJson.targets)) {
+                    const refreshedTargets: TargetConfig[] = targetJson.targets.map(
+                        (t: {
+                            symbol: string;
+                            targetPercentage: number;
+                            yearlyDriftAdjustment: number | null;
+                            lastAdjustmentDate?: string | null;
+                            createdAt?: string | null;
+                        }) => ({
+                            symbol: t.symbol,
+                            targetPercentage: t.targetPercentage,
+                            yearlyDriftAdjustment: t.yearlyDriftAdjustment,
+                            lastAdjustmentDate: t.lastAdjustmentDate ?? null,
+                            createdAt: t.createdAt ?? null
+                        })
+                    );
+                    setTargets(refreshedTargets);
+
+                    const currentProfile = profiles.find((p) => p.id === activeProfileId);
+                    if (currentProfile) {
+                        await fetch('/api/rebalancer/profiles', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                profile: {
+                                    ...currentProfile,
+                                    tickerTargets: refreshedTargets
+                                }
+                            })
+                        });
+                    }
+                }
+            }
+
+            await fetchData();
+            setSuccessBanner(
+                `Applied +1 year glide path shift to ${result.adjustedCount || 0} asset(s) and updated target baselines.`
+            );
+        } catch (error) {
+            console.error('Failed to apply glide path step:', error);
+            setErrorBanner('Network error while applying glide path step.');
+        } finally {
+            setIsApplyingGlide(false);
+        }
+    };
+
+    const toggleTradeCheck = (key: string) => {
+        setCheckedTradeList((prev) =>
+            prev.includes(key) ? prev.filter((s) => s !== key) : [...prev, key]
+        );
+    };
+
+    const toggleExpandRow = (key: string) => {
+        setExpandedRows((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
     };
 
     const toggleExcludeChip = (symbol: string) => {
@@ -195,7 +535,7 @@ export default function RebalancerPage() {
         setExcludeSymbols(Array.from(next).join(', '));
     };
 
-    const plan = useMemo(() => {
+    const tickerPlan = useMemo(() => {
         return computeRebalancePlan(rebalanceData || [], {
             mode: rebalanceMode,
             newCash: rebalanceMode === 'BUY_ONLY' ? newCash : 0,
@@ -204,7 +544,27 @@ export default function RebalancerPage() {
         });
     }, [rebalanceData, rebalanceMode, newCash, tolerancePercent, wholeShares]);
 
-    const { rows, summary } = plan;
+    const categoryPlan = useMemo(() => {
+        return computeCategoryRebalancePlan(rebalanceData || [], categoryTargets, {
+            mode: rebalanceMode,
+            newCash: rebalanceMode === 'BUY_ONLY' ? newCash : 0,
+            tolerancePercent,
+            wholeShares
+        });
+    }, [rebalanceData, categoryTargets, rebalanceMode, newCash, tolerancePercent, wholeShares]);
+
+    const rows = dimension === 'CATEGORY' ? categoryPlan.rows : tickerPlan.rows;
+    const summary = dimension === 'CATEGORY' ? categoryPlan.summary : tickerPlan.summary;
+
+    const itemBySymbol = useMemo(() => {
+        return new Map((rebalanceData || []).map((item) => [item.symbol, item]));
+    }, [rebalanceData]);
+
+    const categoryRowByType = useMemo(() => {
+        return new Map<string, PlannedCategoryRow>(
+            categoryPlan.rows.map((r) => [r.investmentType, r])
+        );
+    }, [categoryPlan.rows]);
 
     const portfolioSymbols = useMemo(() => {
         const set = new Set<string>(knownSymbols);
@@ -248,14 +608,30 @@ export default function RebalancerPage() {
                 <div className={styles.headerLeft}>
                     <h1 className={styles.title}>Portfolio Rebalancer</h1>
                     <p className={styles.subtitle}>
-                        Monitor drift against target allocations, simulate buy-only cash inflows, and track trade execution.
+                        Monitor drift against target allocations, route trades tax-efficiently across accounts, and simulate buy-only cash inflows.
                     </p>
                 </div>
 
                 <div className={styles.headerControls}>
+                    {profiles.length > 0 && (
+                        <select
+                            aria-label="Active rebalance profile"
+                            className={styles.headerProfileSelect}
+                            value={activeProfileId}
+                            onChange={(e) => handleSelectProfile(e.target.value)}
+                        >
+                            {profiles.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                    {p.name}
+                                </option>
+                            ))}
+                        </select>
+                    )}
+
                     {isFiltersLoaded && (
                         <ReportFilters onChange={setGlobalFilters} initialFilters={globalFilters || undefined} />
                     )}
+
                     <button
                         type="button"
                         className={`${styles.secondaryBtn} ${isConfigOpen ? styles.secondaryBtnActive : ''}`}
@@ -297,15 +673,32 @@ export default function RebalancerPage() {
             )}
 
             <div className={styles.pageGrid}>
-                {/* Expandable Target & Glide Path Studio */}
+                {/* Expandable Target, Profile & Glide Path Studio */}
                 <RebalancerConfigPanel
                     isOpen={isConfigOpen}
+                    dimension={dimension}
+                    onChangeDimension={setDimension}
                     targets={targets}
+                    categoryTargets={categoryTargets}
                     portfolioSymbols={portfolioSymbols}
+                    availableInvestmentTypes={availableInvestmentTypes}
+                    profiles={profiles}
+                    activeProfileId={activeProfileId}
+                    bindFiltersToProfile={bindFiltersToProfile}
+                    onToggleBindFilters={setBindFiltersToProfile}
+                    onSelectProfile={handleSelectProfile}
+                    onSaveAsNewProfile={handleSaveAsNewProfile}
+                    onDeleteProfile={handleDeleteProfile}
                     isSaving={isSaving}
+                    isApplyingGlide={isApplyingGlide}
                     onChangeTargets={setTargets}
+                    onChangeCategoryTargets={setCategoryTargets}
                     onSeedFromHoldings={handleSeedFromHoldings}
+                    onEqualWeight={handleEqualWeight}
+                    onApplyCategoryTemplate={handleApplyCategoryTemplate}
                     onNormalizeTargets={handleNormalizeTargets}
+                    onSimulateGlideStep={handleSimulateGlideStep}
+                    onApplyGlideStepNow={handleApplyGlideStepNow}
                     onSaveTargets={saveTargets}
                 />
 
@@ -338,7 +731,9 @@ export default function RebalancerPage() {
                                     </span>
                                 </div>
                                 <div className={styles.heroFooter}>
-                                    <span>Assets: <strong>{rows.length}</strong></span>
+                                    <span>
+                                        {dimension === 'CATEGORY' ? 'Classes:' : 'Assets:'} <strong>{rows.length}</strong>
+                                    </span>
                                     <span>Excluded: <strong>{excludedSet.size}</strong></span>
                                     {rebalanceMode === 'BUY_ONLY' && newCash > 0 && (
                                         <span>Post-Cash: <strong>{format(summary.postTradeTotalValue, { maximumFractionDigits: 0 })}</strong></span>
@@ -374,7 +769,7 @@ export default function RebalancerPage() {
                                         </span>
                                     </div>
                                     <span className={styles.kpiSubtext}>
-                                        <strong>{summary.outOfBandCount}</strong> asset{summary.outOfBandCount === 1 ? '' : 's'} outside &plusmn;{tolerancePercent}% band
+                                        <strong>{summary.outOfBandCount}</strong> {dimension === 'CATEGORY' ? 'class' : 'asset'}{summary.outOfBandCount === 1 ? '' : dimension === 'CATEGORY' ? 'es' : 's'} outside &plusmn;{tolerancePercent}% band
                                     </span>
                                 </div>
                             </article>
@@ -425,7 +820,10 @@ export default function RebalancerPage() {
                                 </div>
                                 <div className={styles.kpiFooter}>
                                     <span className={styles.kpiSubtext}>
-                                        <strong>{summary.untargetedCount}</strong> untargeted &bull; <strong>{summary.glideActiveCount}</strong> glide path
+                                        <strong>{summary.untargetedCount}</strong> untargeted
+                                        {dimension === 'TICKER' && (
+                                            <> &bull; <strong>{summary.glideActiveCount}</strong> glide path</>
+                                        )}
                                     </span>
                                     {summary.unallocatedCash > 0.01 && (
                                         <span className={styles.kpiSubtext}>
@@ -461,11 +859,33 @@ export default function RebalancerPage() {
                                         <div>
                                             <h2 className={styles.panelHeading}>Rebalance Strategy</h2>
                                             <p className={styles.panelSubheading}>
-                                                Simulate trades, cash inflows, and drift bands without saving changes.
+                                                Switch dimension, simulate cash inflows, and set drift tolerance bands.
                                             </p>
                                         </div>
 
                                         <form className={styles.paramForm} onSubmit={(e) => e.preventDefault()}>
+                                            <fieldset className={styles.fieldset}>
+                                                <legend className={styles.legend}>Analysis Dimension</legend>
+                                                <div className={styles.modeToggle} role="group" aria-label="Rebalance dimension">
+                                                    <button
+                                                        type="button"
+                                                        className={styles.modeBtn}
+                                                        aria-pressed={dimension === 'TICKER'}
+                                                        onClick={() => setDimension('TICKER')}
+                                                    >
+                                                        By Ticker
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={styles.modeBtn}
+                                                        aria-pressed={dimension === 'CATEGORY'}
+                                                        onClick={() => setDimension('CATEGORY')}
+                                                    >
+                                                        By Asset Type
+                                                    </button>
+                                                </div>
+                                            </fieldset>
+
                                             <fieldset className={styles.fieldset}>
                                                 <legend className={styles.legend}>Execution Mode</legend>
 
@@ -610,6 +1030,7 @@ export default function RebalancerPage() {
                                         rows={rows}
                                         targets={targets}
                                         tolerancePercent={tolerancePercent}
+                                        dimension={dimension}
                                         formatCurrency={format}
                                     />
                                 </section>
@@ -618,9 +1039,11 @@ export default function RebalancerPage() {
                                 <section className={styles.panelCard} aria-label="Trade execution checklist">
                                     <div className={styles.checklistHeader}>
                                         <div>
-                                            <h2 className={styles.panelHeading}>Execution Checklist</h2>
+                                            <h2 className={styles.panelHeading}>
+                                                {dimension === 'CATEGORY' ? 'Asset Class Execution Checklist' : 'Execution Checklist'}
+                                            </h2>
                                             <p className={styles.panelSubheading}>
-                                                {completedActionableCount} of {actionableCount} recommended trades marked complete
+                                                {completedActionableCount} of {actionableCount} recommended {dimension === 'CATEGORY' ? 'allocations' : 'trades'} marked complete
                                             </p>
                                         </div>
 
@@ -659,7 +1082,7 @@ export default function RebalancerPage() {
                                         </div>
                                     </div>
 
-                                    {!isTargetSumValid && targets.length > 0 && (
+                                    {!isTargetSumValid && (dimension === 'CATEGORY' ? categoryTargets.length > 0 : targets.length > 0) && (
                                         <div className={styles.warningBanner}>
                                             <span>
                                                 Target allocations sum to <strong>{summary.targetSumPercent.toFixed(1)}%</strong>. Open <strong>Configure Targets</strong> to normalize to 100% for balanced Buy/Sell totals.
@@ -679,7 +1102,7 @@ export default function RebalancerPage() {
                                             <thead>
                                                 <tr>
                                                     <th style={{ width: '48px' }}>Done</th>
-                                                    <th>Asset</th>
+                                                    <th>{dimension === 'CATEGORY' ? 'Asset Type' : 'Asset'}</th>
                                                     <th className={styles.numericCol}>Current</th>
                                                     <th className={styles.numericCol}>Target</th>
                                                     <th className={styles.numericCol}>Drift</th>
@@ -691,89 +1114,257 @@ export default function RebalancerPage() {
                                                 {filteredRows.length === 0 ? (
                                                     <tr>
                                                         <td colSpan={7} style={{ textAlign: 'center', padding: '1.75rem 1rem', color: 'var(--text-secondary)' }}>
-                                                            No assets match the selected checklist filter.
+                                                            No items match the selected checklist filter.
                                                         </td>
                                                     </tr>
                                                 ) : (
                                                     filteredRows.map((d) => {
                                                         const isChecked = checkedTrades.has(d.symbol);
                                                         const driftBarWidth = Math.min(100, (Math.abs(d.driftPercent) / maxRowAbsDrift) * 100);
+                                                        const isExpanded = expandedRows.has(d.symbol);
+
+                                                        const sourceItem = dimension === 'TICKER' ? itemBySymbol.get(d.symbol) : undefined;
+                                                        const categoryRow = dimension === 'CATEGORY' ? categoryRowByType.get(d.symbol) : undefined;
+
+                                                        const accountGuidance = dimension === 'TICKER'
+                                                            ? allocateTradeAcrossAccounts(
+                                                                sourceItem?.accounts,
+                                                                d.effectiveAction,
+                                                                d.tradeValue,
+                                                                d.tradeShares,
+                                                                wholeShares
+                                                            )
+                                                            : null;
+
+                                                        const canExpand = dimension === 'CATEGORY'
+                                                            ? Boolean(categoryRow && categoryRow.constituents.length > 0)
+                                                            : Boolean(sourceItem?.accounts && sourceItem.accounts.length > 0);
+
                                                         return (
-                                                            <tr key={d.symbol} className={isChecked ? styles.checkedRow : ''}>
-                                                                <td>
-                                                                    <label className={styles.checkboxLabel}>
-                                                                        <input
-                                                                            type="checkbox"
-                                                                            className={styles.checkboxInput}
-                                                                            checked={isChecked}
-                                                                            aria-label={`Mark ${d.symbol} trade done`}
-                                                                            onChange={() => toggleTradeCheck(d.symbol)}
-                                                                        />
-                                                                    </label>
-                                                                </td>
-                                                                <td>
-                                                                    <Link href={`/analysis/${encodeURIComponent(d.symbol)}`} className={styles.symbolLink}>
-                                                                        <span>{d.symbol}</span>
-                                                                        {d.isUntargeted && (
-                                                                            <span className={styles.untargetedBadge}>No Target</span>
-                                                                        )}
-                                                                    </Link>
-                                                                    {d.assetPrice > 0 && (
-                                                                        <span className={styles.subValue}>
-                                                                            {d.assetCurrency} {d.assetPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                                        </span>
-                                                                    )}
-                                                                </td>
-                                                                <td className={styles.numericCol}>
-                                                                    <strong>{d.currentPercent.toFixed(2)}%</strong>
-                                                                    <span className={styles.subValue}>{format(d.currentValue)}</span>
-                                                                </td>
-                                                                <td className={styles.numericCol}>
-                                                                    <strong>{d.targetPercent.toFixed(2)}%</strong>
-                                                                    <span className={styles.subValue}>
-                                                                        {format(d.targetValue)}
-                                                                        {d.glidePathPercent !== null && d.glidePathPercent !== 0 && (
-                                                                            <> &bull; {d.glidePathPercent > 0 ? '+' : ''}{d.glidePathPercent}%/yr</>
-                                                                        )}
-                                                                    </span>
-                                                                </td>
-                                                                <td className={styles.numericCol}>
-                                                                    <div className={styles.driftCell}>
-                                                                        <span
-                                                                            className={`${styles.driftTag} ${
-                                                                                d.driftPercent > tolerancePercent + 1e-9
-                                                                                    ? styles.driftOver
-                                                                                    : d.driftPercent < -(tolerancePercent + 1e-9)
-                                                                                        ? styles.driftUnder
-                                                                                        : styles.driftNeutral
-                                                                            }`}
-                                                                        >
-                                                                            {d.driftPercent > 0 ? '+' : ''}{d.driftPercent.toFixed(2)}%
-                                                                        </span>
-                                                                        <div className={styles.driftMicroTrack} aria-hidden="true">
-                                                                            <div
-                                                                                className={d.driftPercent >= 0 ? styles.driftMicroFillOver : styles.driftMicroFillUnder}
-                                                                                style={{ width: `${driftBarWidth}%` }}
+                                                            <React.Fragment key={d.symbol}>
+                                                                <tr className={isChecked ? styles.checkedRow : ''}>
+                                                                    <td>
+                                                                        <label className={styles.checkboxLabel}>
+                                                                            <input
+                                                                                type="checkbox"
+                                                                                className={styles.checkboxInput}
+                                                                                checked={isChecked}
+                                                                                aria-label={`Mark ${d.symbol} trade done`}
+                                                                                onChange={() => toggleTradeCheck(d.symbol)}
                                                                             />
+                                                                        </label>
+                                                                    </td>
+                                                                    <td>
+                                                                        <div className={styles.assetCellInner}>
+                                                                            {canExpand && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    className={styles.expandBtn}
+                                                                                    onClick={() => toggleExpandRow(d.symbol)}
+                                                                                    aria-expanded={isExpanded}
+                                                                                    aria-label={isExpanded ? `Collapse ${d.symbol} breakdown` : `Expand ${d.symbol} breakdown`}
+                                                                                >
+                                                                                    {isExpanded
+                                                                                        ? <MdExpandLess size={18} aria-hidden="true" />
+                                                                                        : <MdExpandMore size={18} aria-hidden="true" />}
+                                                                                </button>
+                                                                            )}
+                                                                            <div>
+                                                                                {dimension === 'CATEGORY' ? (
+                                                                                    <span className={styles.symbolLink} style={{ cursor: 'default', textDecoration: 'none' }}>
+                                                                                        <span>{d.symbol}</span>
+                                                                                        {d.isUntargeted && (
+                                                                                            <span className={styles.untargetedBadge}>No Target</span>
+                                                                                        )}
+                                                                                    </span>
+                                                                                ) : (
+                                                                                    <Link href={`/analysis/${encodeURIComponent(d.symbol)}`} className={styles.symbolLink}>
+                                                                                        <span>{d.symbol}</span>
+                                                                                        {d.isUntargeted && (
+                                                                                            <span className={styles.untargetedBadge}>No Target</span>
+                                                                                        )}
+                                                                                    </Link>
+                                                                                )}
+
+                                                                                {dimension === 'CATEGORY' && categoryRow && (
+                                                                                    <span className={styles.subValue}>
+                                                                                        {categoryRow.constituents.length} holding{categoryRow.constituents.length === 1 ? '' : 's'}
+                                                                                    </span>
+                                                                                )}
+
+                                                                                {dimension === 'TICKER' && d.assetPrice > 0 && (
+                                                                                    <span className={styles.subValue}>
+                                                                                        {d.assetCurrency} {d.assetPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                                                        {sourceItem?.investmentType ? ` • ${sourceItem.investmentType}` : ''}
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
                                                                         </div>
-                                                                    </div>
-                                                                </td>
-                                                                <td>
-                                                                    {d.effectiveAction === 'HOLD' ? (
-                                                                        <span className={`${styles.actionTag} ${styles.actionHOLD}`}>HOLD</span>
-                                                                    ) : (
-                                                                        <span className={`${styles.actionTag} ${styles[`action${d.effectiveAction}`]}`}>
-                                                                            {d.effectiveAction} {formatShareCount(d.tradeShares, wholeShares)} sh ({format(d.tradeValue)})
+                                                                    </td>
+                                                                    <td className={styles.numericCol}>
+                                                                        <strong>{d.currentPercent.toFixed(2)}%</strong>
+                                                                        <span className={styles.subValue}>{format(d.currentValue)}</span>
+                                                                    </td>
+                                                                    <td className={styles.numericCol}>
+                                                                        <strong>{d.targetPercent.toFixed(2)}%</strong>
+                                                                        <span className={styles.subValue}>
+                                                                            {format(d.targetValue)}
+                                                                            {d.glidePathPercent !== null && d.glidePathPercent !== 0 && (
+                                                                                <> &bull; {d.glidePathPercent > 0 ? '+' : ''}{d.glidePathPercent}%/yr</>
+                                                                            )}
                                                                         </span>
-                                                                    )}
-                                                                </td>
-                                                                <td className={styles.numericCol}>
-                                                                    <strong>{d.postTradePercent.toFixed(2)}%</strong>
-                                                                    <span className={styles.subValue}>
-                                                                        {d.postTradeDriftPercent > 0 ? '+' : ''}{d.postTradeDriftPercent.toFixed(2)}% drift
-                                                                    </span>
-                                                                </td>
-                                                            </tr>
+                                                                    </td>
+                                                                    <td className={styles.numericCol}>
+                                                                        <div className={styles.driftCell}>
+                                                                            <span
+                                                                                className={`${styles.driftTag} ${
+                                                                                    d.driftPercent > tolerancePercent + 1e-9
+                                                                                        ? styles.driftOver
+                                                                                        : d.driftPercent < -(tolerancePercent + 1e-9)
+                                                                                            ? styles.driftUnder
+                                                                                            : styles.driftNeutral
+                                                                                }`}
+                                                                            >
+                                                                                {d.driftPercent > 0 ? '+' : ''}{d.driftPercent.toFixed(2)}%
+                                                                            </span>
+                                                                            <div className={styles.driftMicroTrack} aria-hidden="true">
+                                                                                <div
+                                                                                    className={d.driftPercent >= 0 ? styles.driftMicroFillOver : styles.driftMicroFillUnder}
+                                                                                    style={{ width: `${driftBarWidth}%` }}
+                                                                                />
+                                                                            </div>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td>
+                                                                        <div className={styles.actionCellStack}>
+                                                                            {d.effectiveAction === 'HOLD' ? (
+                                                                                <span className={`${styles.actionTag} ${styles.actionHOLD}`}>HOLD</span>
+                                                                            ) : dimension === 'CATEGORY' ? (
+                                                                                <span className={`${styles.actionTag} ${styles[`action${d.effectiveAction}`]}`}>
+                                                                                    {d.effectiveAction} {format(d.tradeValue)}
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className={`${styles.actionTag} ${styles[`action${d.effectiveAction}`]}`}>
+                                                                                    {d.effectiveAction} {formatShareCount(d.tradeShares, wholeShares)} sh ({format(d.tradeValue)})
+                                                                                </span>
+                                                                            )}
+
+                                                                            {dimension === 'TICKER' && accountGuidance?.primaryVenueLabel && (
+                                                                                <span className={styles.venueTag}>
+                                                                                    {accountGuidance.primaryVenueLabel}
+                                                                                </span>
+                                                                            )}
+
+                                                                            {dimension === 'TICKER' && accountGuidance?.hasTaxableSellWarning && (
+                                                                                <span className={styles.taxWarningTag}>
+                                                                                    <MdWarningAmber size={13} aria-hidden="true" />
+                                                                                    Taxable Sale — Capital Gains May Apply
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className={styles.numericCol}>
+                                                                        <strong>{d.postTradePercent.toFixed(2)}%</strong>
+                                                                        <span className={styles.subValue}>
+                                                                            {d.postTradeDriftPercent > 0 ? '+' : ''}{d.postTradeDriftPercent.toFixed(2)}% drift
+                                                                        </span>
+                                                                    </td>
+                                                                </tr>
+
+                                                                {isExpanded && dimension === 'TICKER' && accountGuidance && accountGuidance.allocations.length > 0 && (
+                                                                    <tr className={styles.detailRow}>
+                                                                        <td colSpan={7}>
+                                                                            <div className={styles.detailBox}>
+                                                                                <div className={styles.detailHeader}>
+                                                                                    Account-Aware Execution Breakdown ({d.symbol})
+                                                                                </div>
+                                                                                <table className={styles.detailTable}>
+                                                                                    <thead>
+                                                                                        <tr>
+                                                                                            <th>Account</th>
+                                                                                            <th>Platform</th>
+                                                                                            <th>Account Type</th>
+                                                                                            <th>Tax Tier</th>
+                                                                                            <th className={styles.numericCol}>Held</th>
+                                                                                            <th>Suggested Route</th>
+                                                                                        </tr>
+                                                                                    </thead>
+                                                                                    <tbody>
+                                                                                        {accountGuidance.allocations.map((alloc, idx) => (
+                                                                                            <tr key={`${alloc.accountName}-${alloc.platformName}-${idx}`}>
+                                                                                                <td><strong>{alloc.accountName}</strong></td>
+                                                                                                <td>{alloc.platformName}</td>
+                                                                                                <td>{alloc.accountType}</td>
+                                                                                                <td>
+                                                                                                    <span className={`${styles.taxTierBadge} ${getTaxTierClassName(alloc.taxStatus)}`}>
+                                                                                                        {getTaxStatusLabel(alloc.taxStatus)}
+                                                                                                    </span>
+                                                                                                </td>
+                                                                                                <td className={styles.numericCol}>
+                                                                                                    {formatShareCount(alloc.heldShares, false)} sh ({format(alloc.heldValue)})
+                                                                                                </td>
+                                                                                                <td>
+                                                                                                    {alloc.suggestedAction === 'HOLD' ? (
+                                                                                                        <span className={styles.subValue} style={{ marginTop: 0 }}>Hold</span>
+                                                                                                    ) : (
+                                                                                                        <strong className={alloc.suggestedAction === 'BUY' ? styles.positiveText : styles.negativeText}>
+                                                                                                            {alloc.suggestedAction} {formatShareCount(alloc.suggestedShares, wholeShares)} sh ({format(alloc.suggestedValue)})
+                                                                                                        </strong>
+                                                                                                    )}
+                                                                                                </td>
+                                                                                            </tr>
+                                                                                        ))}
+                                                                                    </tbody>
+                                                                                </table>
+                                                                            </div>
+                                                                        </td>
+                                                                    </tr>
+                                                                )}
+
+                                                                {isExpanded && dimension === 'CATEGORY' && categoryRow && categoryRow.constituents.length > 0 && (
+                                                                    <tr className={styles.detailRow}>
+                                                                        <td colSpan={7}>
+                                                                            <div className={styles.detailBox}>
+                                                                                <div className={styles.detailHeader}>
+                                                                                    Pro-Rata Constituent Allocation ({categoryRow.investmentType})
+                                                                                </div>
+                                                                                <table className={styles.detailTable}>
+                                                                                    <thead>
+                                                                                        <tr>
+                                                                                            <th>Symbol</th>
+                                                                                            <th className={styles.numericCol}>Share of Class</th>
+                                                                                            <th className={styles.numericCol}>Current Value</th>
+                                                                                            <th>Pro-Rata Suggested Trade</th>
+                                                                                        </tr>
+                                                                                    </thead>
+                                                                                    <tbody>
+                                                                                        {categoryRow.constituents.map((c) => (
+                                                                                            <tr key={c.symbol}>
+                                                                                                <td>
+                                                                                                    <Link href={`/analysis/${encodeURIComponent(c.symbol)}`} className={styles.symbolLink}>
+                                                                                                        {c.symbol}
+                                                                                                    </Link>
+                                                                                                </td>
+                                                                                                <td className={styles.numericCol}>{c.currentPercentInCategory.toFixed(1)}%</td>
+                                                                                                <td className={styles.numericCol}>{format(c.currentValue)}</td>
+                                                                                                <td>
+                                                                                                    {d.effectiveAction === 'HOLD' ? (
+                                                                                                        <span className={styles.subValue} style={{ marginTop: 0 }}>Hold</span>
+                                                                                                    ) : (
+                                                                                                        <strong className={d.effectiveAction === 'BUY' ? styles.positiveText : styles.negativeText}>
+                                                                                                            {d.effectiveAction} {formatShareCount(c.suggestedShares, wholeShares)} sh ({format(c.suggestedValue)})
+                                                                                                        </strong>
+                                                                                                    )}
+                                                                                                </td>
+                                                                                            </tr>
+                                                                                        ))}
+                                                                                    </tbody>
+                                                                                </table>
+                                                                            </div>
+                                                                        </td>
+                                                                    </tr>
+                                                                )}
+                                                            </React.Fragment>
                                                         );
                                                     })
                                                 )}

@@ -1304,6 +1304,280 @@
     100% { background-position: -200% 0; }
 }
 
+/* Profile Management Bar & Header Selector */
+.headerProfileSelect {
+    min-height: 44px;
+    padding: 0.45rem 0.75rem;
+    border-radius: 0.625rem;
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.headerProfileSelect:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.profileBar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem 1.25rem;
+    flex-wrap: wrap;
+    padding: 0.85rem 1rem;
+    border-radius: 0.875rem;
+    background: var(--background);
+    border: 1px solid var(--card-border);
+}
+
+.profileBarLeft {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.profileLabel {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.profileSelect {
+    min-height: 36px;
+    padding: 0.35rem 0.65rem;
+    border-radius: 0.5rem;
+    border: 1px solid #94a3b8;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 600;
+}
+
+:global([data-theme='dark']) .profileSelect {
+    border-color: #64748b;
+    color-scheme: dark;
+}
+
+.newProfileForm {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.compactInput {
+    min-height: 36px;
+    padding: 0.35rem 0.65rem;
+    border-radius: 0.5rem;
+    border: 1px solid #94a3b8;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.84rem;
+    min-width: 165px;
+}
+
+:global([data-theme='dark']) .compactInput {
+    border-color: #64748b;
+}
+
+.bindFilterCheck {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.bindFilterCheck input {
+    accent-color: var(--primary);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+/* Glide Path Status Strip */
+.glideStatusStrip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem 1rem;
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    border-radius: 0.875rem;
+    background: var(--hover-bg);
+    border: 1px solid var(--card-border);
+}
+
+.glideStatusMeta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    flex-wrap: wrap;
+}
+
+.glideMetaItem {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.glideMetaItem strong {
+    color: var(--text-primary);
+}
+
+.glideStatusActions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+/* Account-Aware Action Venues & Expandable Sub-rows */
+.assetCellInner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.45rem;
+}
+
+.expandBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin-top: -2px;
+    border-radius: 0.45rem;
+    border: 1px solid var(--card-border);
+    background: var(--background);
+    color: var(--text-secondary);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.expandBtn:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+.actionCellStack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+}
+
+.venueTag {
+    font-size: 0.73rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    line-height: 1.3;
+}
+
+.taxWarningTag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.14rem 0.5rem;
+    border-radius: 0.375rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    background: rgba(245, 158, 11, 0.15);
+    color: #92400e;
+    border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+:global([data-theme='dark']) .taxWarningTag {
+    color: #fbbf24;
+}
+
+.detailRow td {
+    padding: 0 !important;
+    background: var(--background);
+}
+
+.detailBox {
+    padding: 0.85rem 1.25rem 1rem 3.4rem;
+    border-top: 1px dashed var(--card-border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.detailHeader {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.detailTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.detailTable th,
+.detailTable td {
+    padding: 0.45rem 0.65rem !important;
+    border-bottom: 1px solid var(--card-border);
+}
+
+.detailTable tr:last-child td {
+    border-bottom: none;
+}
+
+.taxTierBadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.12rem 0.48rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.taxTierFree {
+    background: rgba(16, 185, 129, 0.14);
+    color: #047857;
+}
+
+:global([data-theme='dark']) .taxTierFree {
+    color: #34d399;
+}
+
+.taxTierDeferred {
+    background: rgba(37, 99, 235, 0.14);
+    color: #1d4ed8;
+}
+
+:global([data-theme='dark']) .taxTierDeferred {
+    color: #60a5fa;
+}
+
+.taxTierTaxable {
+    background: rgba(245, 158, 11, 0.14);
+    color: #92400e;
+}
+
+:global([data-theme='dark']) .taxTierTaxable {
+    color: #fbbf24;
+}
+
 /* Responsive Breakpoints (consistent with Allocation, Evolution, Comparison & FIRE) */
 @media (max-width: 1279px) {
     .kpiStrip {
@@ -1338,6 +1612,10 @@
         justify-content: space-between;
     }
 
+    .headerProfileSelect {
+        width: 100%;
+    }
+
     .kpiStrip {
         grid-template-columns: 1fr;
         gap: 1rem;
@@ -1356,5 +1634,9 @@
     .table td {
         padding: 0.7rem 0.55rem;
         font-size: 0.8rem;
+    }
+
+    .detailBox {
+        padding: 0.75rem 0.75rem 0.85rem 1rem;
     }
 }

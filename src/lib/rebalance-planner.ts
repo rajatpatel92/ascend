@@ -1,8 +1,20 @@
+export interface AccountHoldingBreakdown {
+    accountId: string | null;
+    accountName: string;
+    accountType: string;
+    platformName: string;
+    quantity: number;
+    value: number;
+}
+
 export interface RebalanceItem {
     symbol: string;
+    investmentType?: string;
     currentPercent: number;
     targetPercent: number;
     glidePathPercent: number | null;
+    lastAdjustmentDate?: string | null;
+    createdAt?: string | null;
     driftPercent: number;
     currentValue: number;
     targetValue: number;
@@ -11,12 +23,15 @@ export interface RebalanceItem {
     actionShares: number;
     assetPrice: number;
     assetCurrency: string;
+    accounts?: AccountHoldingBreakdown[];
 }
 
 export interface TargetConfig {
     symbol: string;
     targetPercentage: number;
     yearlyDriftAdjustment: number | null;
+    lastAdjustmentDate?: string | null;
+    createdAt?: string | null;
 }
 
 export type RebalanceMode = 'FULL' | 'BUY_ONLY';

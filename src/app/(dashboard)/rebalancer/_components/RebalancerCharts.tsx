@@ -20,6 +20,7 @@ import {
     type PlannedRebalanceRow,
     type TargetConfig
 } from '@/lib/rebalance-planner';
+import { validateGlidePathSchedule, type RebalanceDimension } from '@/lib/rebalance-extensions';
 
 type ChartTab = 'allocation' | 'drift' | 'glidePath';
 
@@ -44,6 +45,7 @@ interface RebalancerChartsProps {
     rows: PlannedRebalanceRow[];
     targets: TargetConfig[];
     tolerancePercent: number;
+    dimension?: RebalanceDimension;
     formatCurrency: (val: number, options?: Intl.NumberFormatOptions) => string;
 }
 
@@ -51,10 +53,12 @@ export default function RebalancerCharts({
     rows,
     targets,
     tolerancePercent,
+    dimension = 'TICKER',
     formatCurrency
 }: RebalancerChartsProps) {
     const [activeTab, setActiveTab] = useState<ChartTab>('allocation');
     const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    const glideSchedule = useMemo(() => validateGlidePathSchedule(targets), [targets]);
 
     const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
         const currentIndex = CHART_TABS.findIndex((t) => t.id === activeTab);
@@ -212,9 +216,21 @@ export default function RebalancerCharts({
                     </>
                 )}
                 {activeTab === 'glidePath' && (
-                    <span className={styles.legendItem}>
-                        Projected target shifts from configured annual glide path rules (Today &rarr; +5 Years)
-                    </span>
+                    <>
+                        <span className={styles.legendItem}>
+                            Projected target shifts from configured annual glide path rules (Today &rarr; +5 Years)
+                        </span>
+                        {glideSchedule.activeCount > 0 && (
+                            <span className={styles.legendItem}>
+                                Next Shift: <strong>{glideSchedule.nextAdjustmentDate ?? 'Pending Save'}</strong>
+                            </span>
+                        )}
+                        {glideSchedule.hasNetDriftWarning && (
+                            <span className={`${styles.statusPill} ${styles.statusWarning}`}>
+                                Net Shift: {glideSchedule.netAnnualDrift > 0 ? '+' : ''}{glideSchedule.netAnnualDrift}%/yr
+                            </span>
+                        )}
+                    </>
                 )}
             </div>
 
@@ -417,7 +433,11 @@ export default function RebalancerCharts({
             {stripSegments.length > 0 && (
                 <div className={styles.heatmapBlock}>
                     <div className={styles.heatmapHeader}>
-                        <span>Portfolio Drift Allocation Strip (Width = Target / Current Weight)</span>
+                        <span>
+                            {dimension === 'CATEGORY'
+                                ? 'Asset Class Drift Allocation Strip (Width = Target / Current Weight)'
+                                : 'Portfolio Drift Allocation Strip (Width = Target / Current Weight)'}
+                        </span>
                         <span>Hover segments for exact drift</span>
                     </div>
                     <div className={styles.heatmapContainer}>

@@ -77,8 +77,14 @@ const prismaMock = {
     targetAllocation: {
         findMany: async () => [] as any[]
     },
+    accountType: {
+        findMany: async (_args?: any) => [] as any[]
+    },
+    investment: {
+        findMany: async (_args?: any) => [] as any[]
+    },
     activity: {
-        findMany: async () => [] as any[]
+        findMany: async (_args?: any) => [] as any[]
     }
 };
 
@@ -101,6 +107,8 @@ const { GET, dynamic } = await import('./route.ts');
 test('GET /api/rebalancer route handler integration and unit test', async (t) => {
     t.beforeEach(() => {
         prismaMock.targetAllocation.findMany = async () => [];
+        prismaMock.accountType.findMany = async () => [];
+        prismaMock.investment.findMany = async () => [];
         prismaMock.activity.findMany = async () => [];
         marketDataServiceMock.getPrice = async (symbol: string) => ({ symbol, price: 100, currency: 'USD' });
         marketDataServiceMock.getExchangeRate = async (from: string, to: string) => 1.0;
@@ -303,5 +311,69 @@ test('GET /api/rebalancer route handler integration and unit test', async (t) =>
 
         const symbols = body.data.map((d: any) => d.symbol);
         assert.deepStrictEqual(symbols, ['VFV.TO']);
+    });
+
+    await t.test('Orders activities chronologically, preserves unassigned activities when all account types are selected, and returns per-account breakdown', async () => {
+        let capturedFindManyArgs: any = null;
+        let passedActivities: any[] = [];
+
+        prismaMock.accountType.findMany = async () => [
+            { name: 'TFSA' },
+            { name: 'Non-Registered' }
+        ];
+
+        prismaMock.activity.findMany = async (args: any) => {
+            capturedFindManyArgs = args;
+            return [
+                {
+                    type: 'BUY',
+                    quantity: 10,
+                    date: new Date('2025-01-01'),
+                    accountId: 'acc-tfsa',
+                    investment: { symbol: 'VFV.TO', type: 'ETF' },
+                    account: { id: 'acc-tfsa', name: 'My TFSA', type: 'TFSA', isActive: true },
+                    platform: { name: 'Wealthsimple' }
+                },
+                {
+                    type: 'BUY',
+                    quantity: 5,
+                    date: new Date('2025-02-01'),
+                    accountId: null,
+                    investment: { symbol: 'LEGACY', type: 'Stock' },
+                    account: null,
+                    platform: null
+                }
+            ];
+        };
+
+        portfolioAnalyticsMock.computeHoldingsState = (activities: any[]) => {
+            passedActivities = activities;
+            const map: Record<string, number> = {};
+            activities.forEach(a => {
+                map[a.investment.symbol] = (map[a.investment.symbol] || 0) + a.quantity;
+            });
+            return map;
+        };
+
+        const { NextRequest } = await import('next/server' as any);
+        // 1. All configured account types selected -> unassigned retained
+        const allReq = new NextRequest('http://localhost/api/rebalancer?accountTypes=TFSA,Non-Registered');
+        const allRes = await GET(allReq as any);
+        const allBody = await allRes.json();
+
+        assert.deepStrictEqual(capturedFindManyArgs?.orderBy, { date: 'asc' });
+        assert.strictEqual(passedActivities.length, 2);
+
+        const vfv = allBody.data.find((d: any) => d.symbol === 'VFV.TO');
+        assert.strictEqual(vfv.investmentType, 'ETF');
+        assert.strictEqual(vfv.accounts.length, 1);
+        assert.strictEqual(vfv.accounts[0].accountName, 'My TFSA');
+        assert.strictEqual(vfv.accounts[0].quantity, 10);
+
+        // 2. Narrow subset -> unassigned excluded
+        const subsetReq = new NextRequest('http://localhost/api/rebalancer?accountTypes=TFSA');
+        await GET(subsetReq as any);
+        assert.strictEqual(passedActivities.length, 1);
+        assert.strictEqual(passedActivities[0].investment.symbol, 'VFV.TO');
     });
 });
