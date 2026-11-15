@@ -1,5 +1,5 @@
 .container {
-  padding: 2rem;
+  padding: 1.5rem 2rem 2rem;
   max-width: 1600px;
   margin: 0 auto;
   width: 100%;
@@ -25,6 +25,7 @@
 }
 
 .greeting {
+  font-family: var(--font-display), var(--font-sans), sans-serif;
   font-size: 1.875rem;
   font-weight: 700;
   color: var(--text-primary);
@@ -76,7 +77,7 @@
 .executiveGrid {
   display: grid;
   grid-template-columns: 1.55fr repeat(3, minmax(0, 1fr));
-  gap: 1.25rem;
+  gap: 1.15rem;
   width: 100%;
   min-width: 0;
 }
@@ -89,12 +90,12 @@
 .heroCard {
   background: linear-gradient(135deg, #1d4ed8, #1e3a8a);
   color: #ffffff;
-  padding: 1.5rem 1.75rem;
+  padding: 1.35rem 1.5rem;
   border-radius: 1.125rem;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 1.125rem;
+  gap: 1rem;
   box-shadow: 0 10px 20px -5px rgba(37, 99, 235, 0.3);
   border: 1px solid rgba(255, 255, 255, 0.16);
   min-width: 0;
@@ -116,6 +117,7 @@
 }
 
 .heroValue {
+  font-family: var(--font-display), var(--font-sans), sans-serif;
   font-size: 2.35rem;
   font-weight: 800;
   letter-spacing: -0.04em;
@@ -144,18 +146,12 @@
 }
 
 .heroMetaGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.6rem 0.85rem;
   padding-top: 0.875rem;
   border-top: 1px solid rgba(255, 255, 255, 0.22);
-}
-
-@container (width < 420px) {
-  .heroMetaGrid {
-    grid-template-columns: 1fr;
-    gap: 0.5rem;
-  }
 }
 
 .heroMetaItem {
@@ -163,22 +159,19 @@
   flex-direction: column;
   gap: 0.15rem;
   min-width: 0;
+  max-width: 100%;
 }
 
 .heroMetaLabel {
   font-size: 0.75rem;
   color: #eff6ff;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .heroMetaValue {
   font-size: 0.8125rem;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
 }
 
@@ -250,6 +243,7 @@
 }
 
 .kpiValue {
+  font-family: var(--font-display), var(--font-sans), sans-serif;
   font-size: 1.85rem;
   font-weight: 800;
   color: var(--text-primary);
@@ -627,7 +621,7 @@
 }
 
 /* Breakpoints */
-@media (max-width: 1279px) {
+@media (max-width: 1340px) {
   .executiveGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

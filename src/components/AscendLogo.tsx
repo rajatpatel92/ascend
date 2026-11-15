@@ -76,6 +76,7 @@ export default function AscendLogo({
                 >
                     <span
                         style={{
+                            fontFamily: 'var(--font-display), var(--font-sans), sans-serif',
                             fontSize: size === 'lg' ? '1.5rem' : '1.08rem',
                             fontWeight: 700,
                             letterSpacing: '-0.025em',

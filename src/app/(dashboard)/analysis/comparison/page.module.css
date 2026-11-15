@@ -155,6 +155,7 @@
 }
 
 .heroValue {
+    font-family: var(--font-display), var(--font-sans), sans-serif;
     font-size: 2.15rem;
     font-weight: 800;
     letter-spacing: -0.03em;
@@ -263,6 +264,7 @@
 }
 
 .kpiValue {
+    font-family: var(--font-display), var(--font-sans), sans-serif;
     font-size: 1.85rem;
     font-weight: 800;
     letter-spacing: -0.03em;

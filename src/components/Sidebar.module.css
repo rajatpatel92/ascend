@@ -1,5 +1,5 @@
 .sidebar {
-    width: 252px;
+    width: 232px;
     height: 100vh;
     height: 100dvh;
     background-color: #ffffff;
@@ -14,23 +14,17 @@
 }
 
 :global([data-theme='dark']) .sidebar {
-    background-color: #1e293b;
+    background-color: #0b1120;
     color: #f8fafc;
-    border-right-color: #334155;
+    border-right-color: #1e293b;
 }
 
 .brandHeader {
-    min-height: 68px;
-    padding: 0.85rem 1rem;
-    border-bottom: 1px solid #e2e8f0;
+    padding: 1.15rem 0.95rem 0.65rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-}
-
-:global([data-theme='dark']) .brandHeader {
-    border-bottom-color: #334155;
 }
 
 .brandLink {
@@ -50,58 +44,58 @@
     width: 28px;
     height: 28px;
     border-radius: 0.45rem;
-    border: 1px solid #e2e8f0;
+    border: none;
     background: transparent;
     color: #64748b;
+    opacity: 0.7;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     flex-shrink: 0;
-    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 
 .collapseBtn:hover {
     background-color: #f1f5f9;
     color: #0f172a;
-    border-color: #cbd5e1;
+    opacity: 1;
 }
 
 .collapseBtn:focus-visible {
     outline: 2px solid var(--primary);
     outline-offset: 1px;
+    opacity: 1;
 }
 
 :global([data-theme='dark']) .collapseBtn {
-    border-color: #334155;
     color: #94a3b8;
 }
 
 :global([data-theme='dark']) .collapseBtn:hover {
-    background-color: #334155;
+    background-color: #1e293b;
     color: #f8fafc;
-    border-color: #475569;
 }
 
 .nav {
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    padding: 1rem 0.75rem;
+    padding: 0.75rem 0.65rem 1rem;
     display: flex;
     flex-direction: column;
-    gap: 1.15rem;
+    gap: 1.05rem;
 }
 
 .navSection {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.2rem;
 }
 
 .sectionTitle {
     padding: 0 0.75rem;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.22rem;
     font-size: 0.6875rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -111,20 +105,21 @@
 }
 
 :global([data-theme='dark']) .sectionTitle {
-    color: #94a3b8;
+    color: #64748b;
 }
 
 .link {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.6rem 0.75rem;
+    gap: 0.7rem;
+    padding: 0.55rem 0.75rem;
     border-radius: 0.55rem;
     color: #475569;
     text-decoration: none;
     font-size: 0.875rem;
     font-weight: 500;
-    transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    transition: background-color 0.15s ease, color 0.15s ease;
     white-space: nowrap;
 }
 
@@ -142,7 +137,19 @@
     background-color: #eff6ff;
     color: #1d4ed8;
     font-weight: 600;
-    box-shadow: inset 3px 0 0 #2563eb;
+    padding-left: 0.9rem;
+}
+
+.link.active::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 18px;
+    border-radius: 9999px;
+    background-color: #2563eb;
 }
 
 :global([data-theme='dark']) .link {
@@ -150,14 +157,17 @@
 }
 
 :global([data-theme='dark']) .link:hover {
-    background-color: #334155;
+    background-color: #162033;
     color: #f8fafc;
 }
 
 :global([data-theme='dark']) .link.active {
-    background-color: rgba(59, 130, 246, 0.16);
+    background-color: rgba(59, 130, 246, 0.14);
     color: #60a5fa;
-    box-shadow: inset 3px 0 0 #60a5fa;
+}
+
+:global([data-theme='dark']) .link.active::before {
+    background-color: #60a5fa;
 }
 
 .iconWrapper {
@@ -175,34 +185,34 @@
 }
 
 .footer {
-    padding: 0.85rem 0.75rem;
+    padding: 0.75rem 0.65rem;
     border-top: 1px solid #e2e8f0;
     display: flex;
     flex-direction: column;
-    gap: 0.65rem;
+    gap: 0.5rem;
 }
 
 :global([data-theme='dark']) .footer {
-    border-top-color: #334155;
+    border-top-color: #1e293b;
 }
 
 .controls {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
 }
 
 .currencySelect {
     flex: 1;
     min-width: 0;
-    min-height: 36px;
-    padding: 0.35rem 0.55rem;
+    min-height: 34px;
+    padding: 0.3rem 0.5rem;
     border-radius: 0.5rem;
     background-color: #f8fafc;
     border: 1px solid #e2e8f0;
     color: #0f172a;
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: 0.8rem;
     font-weight: 600;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease;
@@ -219,20 +229,20 @@
 }
 
 :global([data-theme='dark']) .currencySelect {
-    background-color: #0f172a;
-    border-color: #334155;
+    background-color: #111827;
+    border-color: #1f2937;
     color: #f8fafc;
     color-scheme: dark;
 }
 
 :global([data-theme='dark']) .currencySelect:hover {
-    background-color: #334155;
-    border-color: #475569;
+    background-color: #1e293b;
+    border-color: #334155;
 }
 
 .themeToggle {
-    width: 36px;
-    height: 36px;
+    width: 34px;
+    height: 34px;
     border-radius: 0.5rem;
     background-color: #f8fafc;
     border: 1px solid #e2e8f0;
@@ -257,15 +267,15 @@
 }
 
 :global([data-theme='dark']) .themeToggle {
-    background-color: #0f172a;
-    border-color: #334155;
+    background-color: #111827;
+    border-color: #1f2937;
     color: #cbd5e1;
 }
 
 :global([data-theme='dark']) .themeToggle:hover {
-    background-color: #334155;
+    background-color: #1e293b;
     color: #f8fafc;
-    border-color: #475569;
+    border-color: #334155;
 }
 
 .userCard {
@@ -273,16 +283,18 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    padding: 0.45rem 0.55rem;
-    border-radius: 0.6rem;
-    background-color: #f8fafc;
-    border: 1px solid #e2e8f0;
+    padding: 0.35rem 0.45rem;
+    border-radius: 0.55rem;
     min-width: 0;
+    transition: background-color 0.15s ease;
 }
 
-:global([data-theme='dark']) .userCard {
-    background-color: #0f172a;
-    border-color: #334155;
+.userCard:hover {
+    background-color: #f8fafc;
+}
+
+:global([data-theme='dark']) .userCard:hover {
+    background-color: #111827;
 }
 
 .userIdentity {
@@ -294,12 +306,12 @@
 }
 
 .avatar {
-    width: 30px;
-    height: 30px;
+    width: 28px;
+    height: 28px;
     border-radius: 9999px;
     background: linear-gradient(135deg, #2563eb, #10b981);
     color: #ffffff;
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     font-weight: 700;
     display: inline-flex;
     align-items: center;
@@ -341,8 +353,8 @@
 }
 
 .logoutButton {
-    width: 30px;
-    height: 30px;
+    width: 28px;
+    height: 28px;
     border-radius: 0.45rem;
     background: transparent;
     border: none;
@@ -376,19 +388,19 @@
 
 @media (min-width: 769px) {
     .sidebar.collapsed {
-        width: 72px;
+        width: 68px;
     }
 
     .sidebar.collapsed .brandHeader {
         flex-direction: column;
         justify-content: center;
-        padding: 0.75rem 0.5rem;
-        gap: 0.45rem;
+        padding: 0.85rem 0.5rem 0.5rem;
+        gap: 0.4rem;
     }
 
     .sidebar.collapsed .nav {
-        padding: 0.85rem 0.5rem;
-        gap: 0.65rem;
+        padding: 0.65rem 0.5rem;
+        gap: 0.6rem;
     }
 
     .sidebar.collapsed .sectionTitle {
@@ -396,17 +408,25 @@
     }
 
     .sidebar.collapsed .navSection + .navSection {
-        padding-top: 0.6rem;
+        padding-top: 0.55rem;
         border-top: 1px solid #e2e8f0;
     }
 
     :global([data-theme='dark']) .sidebar.collapsed .navSection + .navSection {
-        border-top-color: #334155;
+        border-top-color: #1e293b;
     }
 
     .sidebar.collapsed .link {
         justify-content: center;
-        padding: 0.62rem 0.5rem;
+        padding: 0.6rem 0.5rem;
+    }
+
+    .sidebar.collapsed .link.active {
+        padding-left: 0.5rem;
+    }
+
+    .sidebar.collapsed .link.active::before {
+        display: none;
     }
 
     .sidebar.collapsed .linkLabel {
@@ -414,17 +434,17 @@
     }
 
     .sidebar.collapsed .footer {
-        padding: 0.75rem 0.5rem;
+        padding: 0.65rem 0.45rem;
     }
 
     .sidebar.collapsed .controls {
         flex-direction: column;
-        gap: 0.45rem;
+        gap: 0.4rem;
     }
 
     .sidebar.collapsed .currencySelect {
         width: 100%;
-        padding: 0.3rem 0.25rem;
+        padding: 0.28rem 0.2rem;
         text-align: center;
         font-size: 0.72rem;
     }
@@ -435,8 +455,8 @@
 
     .sidebar.collapsed .userCard {
         flex-direction: column;
-        padding: 0.45rem 0.25rem;
-        gap: 0.35rem;
+        padding: 0.35rem 0.2rem;
+        gap: 0.3rem;
     }
 
     .sidebar.collapsed .userMeta {
@@ -506,9 +526,9 @@
     }
 
     :global([data-theme='dark']) .mobileToggle {
-        background-color: #1e293b;
+        background-color: #0b1120;
         color: #f8fafc;
-        border-color: #334155;
+        border-color: #1e293b;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
     }
 
@@ -535,7 +555,7 @@
     }
 
     :global([data-theme='dark']) .closeButton:hover {
-        background-color: #334155;
+        background-color: #1e293b;
         color: #f8fafc;
     }
 }
