@@ -184,6 +184,53 @@
     text-overflow: ellipsis;
 }
 
+.linkTrailingIcon {
+    margin-left: auto;
+    opacity: 0.65;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.backToAppBtn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.5rem 0.7rem;
+    border-radius: 0.55rem;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    color: #0f172a;
+    font: inherit;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.backToAppBtn:hover {
+    background-color: #f1f5f9;
+    border-color: #cbd5e1;
+}
+
+.backToAppBtn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+}
+
+:global([data-theme='dark']) .backToAppBtn {
+    background-color: #121215;
+    border-color: #27272a;
+    color: #fafafa;
+}
+
+:global([data-theme='dark']) .backToAppBtn:hover {
+    background-color: #18181b;
+    border-color: #3f3f46;
+}
+
 .footer {
     padding: 0.75rem 0.65rem;
     border-top: 1px solid #e2e8f0;
@@ -429,8 +476,15 @@
         display: none;
     }
 
-    .sidebar.collapsed .linkLabel {
+    .sidebar.collapsed .linkLabel,
+    .sidebar.collapsed .linkTrailingIcon,
+    .sidebar.collapsed .backToAppLabel {
         display: none;
+    }
+
+    .sidebar.collapsed .backToAppBtn {
+        justify-content: center;
+        padding: 0.55rem 0.5rem;
     }
 
     .sidebar.collapsed .footer {

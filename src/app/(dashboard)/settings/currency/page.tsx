@@ -5,7 +5,7 @@ import styles from '../page.module.css';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
 import { useEffect, useState } from 'react';
 import { getExchangeRate } from '@/lib/currencyCache';
-import { MdCurrencyExchange, MdTableChart } from 'react-icons/md';
+import { MdTableChart } from 'react-icons/md';
 
 const QUICK_CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD'];
 
@@ -36,48 +36,42 @@ function ExchangeRateCell({ from, to }: { from: string; to: string }) {
 
 export default function CurrencySettingsPage() {
     const { currency, setCurrency, format } = useCurrency();
-    const activeMeta = SUPPORTED_CURRENCIES.find((c) => c.code === currency);
 
     return (
         <div className={styles.stack}>
-            <section className={styles.card} aria-label="Default reporting currency">
-                <div className={styles.cardHeader}>
-                    <div className={styles.cardTitleGroup}>
-                        <h2 className={styles.cardTitle}>
-                            <MdCurrencyExchange size={20} aria-hidden="true" />
-                            Base Display Currency
-                        </h2>
-                        <p className={styles.cardSubheading}>
-                            All portfolio totals, analytics charts, and rebalance recommendations normalize into this currency.
-                        </p>
-                    </div>
-                    <span className={`${styles.statusPill} ${styles.statusInfo}`}>
-                        {currency} {activeMeta ? `(${activeMeta.symbol})` : ''}
-                    </span>
-                </div>
-
-                <div className={styles.grid}>
-                    <div className={styles.field}>
-                        <label htmlFor="defaultCurrency" className={styles.label}>
-                            <span>Select Currency</span>
-                            <span className={styles.labelMeta}>Sample: {format(10000)}</span>
+            <section className={styles.rowListCard} aria-label="Default reporting currency">
+                <div className={styles.rowItem}>
+                    <div className={styles.rowLabelCol}>
+                        <label htmlFor="defaultCurrency" className={styles.rowTitle}>
+                            Reporting Currency
                         </label>
+                        <span className={styles.rowHint}>
+                            Portfolio totals &amp; charts normalize into this currency · Sample:{' '}
+                            <span className={styles.rowPreviewValue}>{format(10000)}</span>
+                        </span>
+                    </div>
+                    <div className={styles.rowControl}>
                         <select
                             id="defaultCurrency"
                             value={currency}
                             onChange={(e) => setCurrency(e.target.value)}
-                            className={styles.select}
+                            className={styles.rowSelect}
                         >
                             {SUPPORTED_CURRENCIES.map((c) => (
                                 <option key={c.code} value={c.code}>
-                                    {c.name} - {c.code} ({c.symbol})
+                                    {c.code} ({c.symbol}) · {c.name}
                                 </option>
                             ))}
                         </select>
                     </div>
+                </div>
 
-                    <div className={styles.field}>
-                        <span className={styles.label}>Quick Switch</span>
+                <div className={styles.rowItem}>
+                    <div className={styles.rowLabelCol}>
+                        <span className={styles.rowTitle}>Quick Switch</span>
+                        <span className={styles.rowHint}>One-tap toggle for common reporting currencies</span>
+                    </div>
+                    <div className={styles.rowControl}>
                         <div className={styles.chipRow} role="group" aria-label="Quick currency switcher">
                             {QUICK_CURRENCIES.filter((code) => SUPPORTED_CURRENCIES.some((c) => c.code === code)).map((code) => (
                                 <button

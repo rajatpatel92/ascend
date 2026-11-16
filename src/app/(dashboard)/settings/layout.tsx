@@ -1,59 +1,24 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
     MdAccountBalance,
+    MdCheck,
     MdCurrencyExchange,
+    MdExpandMore,
     MdGroup,
     MdStorage,
-    MdTune
+    MdTune,
 } from 'react-icons/md';
+import {
+    getActiveSettingsSection,
+    getVisibleSettingsSections,
+    type SettingsSectionId,
+} from '@/lib/settings-nav';
 import styles from './layout.module.css';
-
-interface NavItem {
-    name: string;
-    description: string;
-    href: string;
-    icon: React.ReactNode;
-    minRole?: 'EDITOR' | 'ADMIN';
-}
-
-const navItems: NavItem[] = [
-    {
-        name: 'General',
-        description: 'Theme, dates, AI & benchmarks',
-        href: '/settings',
-        icon: <MdTune size={18} aria-hidden="true" />
-    },
-    {
-        name: 'Currency & FX',
-        description: 'Base currency & live rate matrix',
-        href: '/settings/currency',
-        icon: <MdCurrencyExchange size={18} aria-hidden="true" />
-    },
-    {
-        name: 'Accounts',
-        description: 'Platforms & investment accounts',
-        href: '/settings/accounts',
-        icon: <MdAccountBalance size={18} aria-hidden="true" />,
-        minRole: 'EDITOR'
-    },
-    {
-        name: 'Users',
-        description: 'Members, roles & AI permissions',
-        href: '/settings/users',
-        icon: <MdGroup size={18} aria-hidden="true" />
-    },
-    {
-        name: 'Master Data',
-        description: 'Types, mappings & market sync',
-        href: '/settings/data',
-        icon: <MdStorage size={18} aria-hidden="true" />,
-        minRole: 'ADMIN'
-    }
-];
 
 interface SessionUser {
     name?: string | null;
@@ -61,62 +26,122 @@ interface SessionUser {
     role?: string;
 }
 
+const SECTION_ICONS: Record<SettingsSectionId, React.ReactNode> = {
+    general: <MdTune size={17} aria-hidden="true" />,
+    currency: <MdCurrencyExchange size={17} aria-hidden="true" />,
+    accounts: <MdAccountBalance size={17} aria-hidden="true" />,
+    users: <MdGroup size={17} aria-hidden="true" />,
+    data: <MdStorage size={17} aria-hidden="true" />,
+};
+
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
     const { data: session } = useSession();
+    const [sheetOpen, setSheetOpen] = useState(false);
+
     const user = session?.user as SessionUser | undefined;
     const role = user?.role || 'VIEWER';
     const displayName = user?.name || user?.username;
 
-    const visibleNavItems = navItems.filter((item) => {
-        if (!item.minRole) return true;
-        if (item.minRole === 'EDITOR') return role === 'ADMIN' || role === 'EDITOR';
-        if (item.minRole === 'ADMIN') return role === 'ADMIN';
-        return true;
-    });
+    const visibleSections = getVisibleSettingsSections(role);
+    const activeSection = getActiveSettingsSection(pathname);
+
+    useEffect(() => {
+        if (!sheetOpen) return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setSheetOpen(false);
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [sheetOpen]);
 
     return (
         <div className={styles.container}>
             <header className={styles.header}>
                 <div className={styles.headerLeft}>
-                    <h1 className={styles.title}>Settings</h1>
-                    <p className={styles.subtitle}>
-                        Configure workspace preferences, reporting currency, investment accounts, users, and system data.
-                    </p>
+                    <span className={styles.eyebrow}>Settings</span>
+                    <h1 className={styles.title}>{activeSection.name}</h1>
+                    <p className={styles.subtitle}>{activeSection.description}</p>
                 </div>
 
-                {session?.user && (
-                    <div className={styles.headerMeta}>
+                <div className={styles.headerRight}>
+                    {session?.user && (
                         <div className={styles.userBadge}>
                             {displayName && <span>{displayName}</span>}
                             <span className={styles.rolePill}>{role}</span>
                         </div>
-                    </div>
-                )}
+                    )}
+
+                    <button
+                        type="button"
+                        className={styles.mobileSectionsBtn}
+                        onClick={() => setSheetOpen(true)}
+                        aria-haspopup="dialog"
+                        aria-expanded={sheetOpen}
+                    >
+                        <span>Sections</span>
+                        <MdExpandMore size={18} aria-hidden="true" />
+                    </button>
+                </div>
             </header>
 
-            <div className={styles.settingsGrid}>
-                <nav className={styles.sidebar} aria-label="Settings sections">
-                    {visibleNavItems.map((item) => {
-                        const isActive = pathname === item.href;
-                        return (
-                            <Link
-                                key={item.href}
-                                href={item.href}
-                                aria-current={isActive ? 'page' : undefined}
-                                className={`${styles.link} ${isActive ? styles.active : ''}`}
+            <div className={styles.content}>{children}</div>
+
+            {sheetOpen && (
+                <div
+                    className={styles.sheetBackdrop}
+                    onClick={() => setSheetOpen(false)}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Settings sections"
+                >
+                    <div
+                        className={styles.sheetPanel}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className={styles.sheetHeader}>
+                            <span className={styles.sheetTitle}>Settings Sections</span>
+                            <button
+                                type="button"
+                                className={styles.sheetCloseBtn}
+                                onClick={() => setSheetOpen(false)}
                             >
-                                <span className={styles.linkIcon}>{item.icon}</span>
-                                <span className={styles.linkText}>
-                                    <span className={styles.linkLabel}>{item.name}</span>
-                                    <span className={styles.linkDesc}>{item.description}</span>
-                                </span>
-                            </Link>
-                        );
-                    })}
-                </nav>
-                <div className={styles.content}>{children}</div>
-            </div>
+                                Done
+                            </button>
+                        </div>
+
+                        <nav className={styles.sheetList} aria-label="Settings section picker">
+                            {visibleSections.map((section) => {
+                                const isActive = section.id === activeSection.id;
+                                return (
+                                    <Link
+                                        key={section.href}
+                                        href={section.href}
+                                        className={`${styles.sheetItem} ${isActive ? styles.sheetItemActive : ''}`}
+                                        aria-current={isActive ? 'page' : undefined}
+                                        onClick={() => setSheetOpen(false)}
+                                    >
+                                        <div className={styles.sheetItemLeft}>
+                                            <span className={styles.sheetItemIcon}>
+                                                {SECTION_ICONS[section.id]}
+                                            </span>
+                                            <span className={styles.sheetItemText}>
+                                                <span className={styles.sheetItemName}>{section.name}</span>
+                                                <span className={styles.sheetItemDesc}>{section.description}</span>
+                                            </span>
+                                        </div>
+                                        {isActive && <MdCheck size={18} className={styles.sheetCheck} aria-hidden="true" />}
+                                    </Link>
+                                );
+                            })}
+                        </nav>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

@@ -11,6 +11,11 @@ import { useCurrency } from '@/context/CurrencyContext';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
 import { useTheme } from '@/context/ThemeContext';
 import {
+    getVisibleSettingsSections,
+    isSettingsPath,
+    type SettingsSectionId,
+} from '@/lib/settings-nav';
+import {
     MdDashboard,
     MdFormatListBulleted,
     MdSettings,
@@ -26,6 +31,12 @@ import {
     MdBalance,
     MdChevronLeft,
     MdChevronRight,
+    MdArrowBack,
+    MdTune,
+    MdCurrencyExchange,
+    MdAccountBalance,
+    MdGroup,
+    MdStorage,
 } from 'react-icons/md';
 
 interface NavItem {
@@ -51,6 +62,14 @@ interface SessionUser {
 const SIDEBAR_COLLAPSE_KEY = 'ascend_sidebar_collapsed';
 const emptySubscribe = () => () => {};
 
+const SETTINGS_ICON_MAP: Record<SettingsSectionId, React.ReactNode> = {
+    general: <MdTune size={19} />,
+    currency: <MdCurrencyExchange size={19} />,
+    accounts: <MdAccountBalance size={19} />,
+    users: <MdGroup size={19} />,
+    data: <MdStorage size={19} />,
+};
+
 function getInitials(displayName: string): string {
     const parts = displayName.trim().split(/\s+/).filter(Boolean);
     if (parts.length === 0) return 'U';
@@ -64,6 +83,7 @@ export default function Sidebar() {
     const { theme, toggleTheme } = useTheme();
     const [isOpen, setIsOpen] = useState(false);
     const [isCollapsed, setIsCollapsed] = useState(false);
+    const [browsingAppNav, setBrowsingAppNav] = useState(false);
     const mounted = useSyncExternalStore(emptySubscribe, () => true, () => false);
 
     useEffect(() => {
@@ -96,6 +116,10 @@ export default function Sidebar() {
     const displayName = user?.name || user?.username || user?.email || 'Account';
     const initials = getInitials(displayName);
     const roleLabel = role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+
+    const inSettingsRoute = isSettingsPath(pathname);
+    const showSettingsNav = inSettingsRoute && !browsingAppNav;
+    const settingsSections = getVisibleSettingsSections(role);
 
     const sections: NavSection[] = [
         {
@@ -181,7 +205,10 @@ export default function Sidebar() {
                     <Link
                         href="/"
                         className={styles.brandLink}
-                        onClick={() => setIsOpen(false)}
+                        onClick={() => {
+                            setBrowsingAppNav(false);
+                            setIsOpen(false);
+                        }}
                         aria-label="Ascend Dashboard"
                         title="Ascend Portfolio Manager"
                     >
@@ -208,32 +235,93 @@ export default function Sidebar() {
                     </button>
                 </div>
 
-                <nav className={styles.nav} aria-label="Main navigation">
-                    {sections.map((section) => (
-                        <div key={section.title} className={styles.navSection}>
-                            <div className={styles.sectionTitle}>{section.title}</div>
-                            {section.items.map((item) => {
-                                const isActive = item.exact
-                                    ? pathname === item.href
-                                    : pathname === item.href || Boolean(pathname?.startsWith(`${item.href}/`));
+                {showSettingsNav ? (
+                    <nav className={styles.nav} aria-label="Settings navigation">
+                        <div className={styles.navSection}>
+                            <button
+                                type="button"
+                                className={styles.backToAppBtn}
+                                onClick={() => setBrowsingAppNav(true)}
+                                title={collapsedDesktop ? 'Back to App navigation' : undefined}
+                                aria-label="Back to App navigation"
+                            >
+                                <span className={styles.iconWrapper}>
+                                    <MdArrowBack size={17} aria-hidden="true" />
+                                </span>
+                                <span className={styles.backToAppLabel}>Back to App</span>
+                            </button>
+                        </div>
+
+                        <div className={styles.navSection}>
+                            <div className={styles.sectionTitle}>Settings</div>
+                            {settingsSections.map((item) => {
+                                const isActive =
+                                    pathname === item.href ||
+                                    (item.href !== '/settings' && Boolean(pathname?.startsWith(`${item.href}/`)));
 
                                 return (
                                     <Link
                                         key={item.href}
                                         href={item.href}
                                         className={`${styles.link} ${isActive ? styles.active : ''}`}
-                                        onClick={() => setIsOpen(false)}
+                                        onClick={() => {
+                                            setBrowsingAppNav(false);
+                                            setIsOpen(false);
+                                        }}
                                         title={collapsedDesktop ? item.name : undefined}
                                         aria-current={isActive ? 'page' : undefined}
                                     >
-                                        <span className={styles.iconWrapper}>{item.icon}</span>
+                                        <span className={styles.iconWrapper}>{SETTINGS_ICON_MAP[item.id]}</span>
                                         <span className={styles.linkLabel}>{item.name}</span>
                                     </Link>
                                 );
                             })}
                         </div>
-                    ))}
-                </nav>
+                    </nav>
+                ) : (
+                    <nav className={styles.nav} aria-label="Main navigation">
+                        {sections.map((section) => (
+                            <div key={section.title} className={styles.navSection}>
+                                <div className={styles.sectionTitle}>{section.title}</div>
+                                {section.items.map((item) => {
+                                    const isActive = item.exact
+                                        ? pathname === item.href
+                                        : pathname === item.href || Boolean(pathname?.startsWith(`${item.href}/`));
+                                    const isSettingsItem = item.href === '/settings';
+
+                                    return (
+                                        <Link
+                                            key={item.href}
+                                            href={item.href}
+                                            className={`${styles.link} ${isActive ? styles.active : ''}`}
+                                            onClick={(e) => {
+                                                if (isSettingsItem && inSettingsRoute) {
+                                                    e.preventDefault();
+                                                    setBrowsingAppNav(false);
+                                                    return;
+                                                }
+                                                setBrowsingAppNav(false);
+                                                setIsOpen(false);
+                                            }}
+                                            title={collapsedDesktop ? item.name : undefined}
+                                            aria-current={isActive ? 'page' : undefined}
+                                        >
+                                            <span className={styles.iconWrapper}>{item.icon}</span>
+                                            <span className={styles.linkLabel}>{item.name}</span>
+                                            {isSettingsItem && (
+                                                <MdChevronRight
+                                                    size={16}
+                                                    className={styles.linkTrailingIcon}
+                                                    aria-hidden="true"
+                                                />
+                                            )}
+                                        </Link>
+                                    );
+                                })}
+                            </div>
+                        ))}
+                    </nav>
+                )}
 
                 <SidebarOwnerSnapshot collapsed={collapsedDesktop} />
 
