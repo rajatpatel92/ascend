@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
 import { ACTIVE_QUANTITY_EPSILON } from '@/lib/activity-helpers';
+import { getCacheVersions } from '@/lib/cache-invalidation';
 import { MarketDataService } from '@/lib/market-data';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
 import {
@@ -80,7 +81,8 @@ export async function GET(request: Request) {
             return t > max ? t : max;
         }, 0);
 
-        const cacheKey = `${range}_${targetCurrency}_${allActivities.length}_${latestActTs}`;
+        const { marketDataVersion, portfolioMutationVersion } = getCacheVersions();
+        const cacheKey = `${range}_${targetCurrency}_${allActivities.length}_${latestActTs}_v${marketDataVersion}_${portfolioMutationVersion}`;
         const cache = getSnapshotCache();
         const cached = cache.get(cacheKey);
         if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {

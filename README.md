@@ -34,6 +34,10 @@ A comprehensive, self-hosted, multi-currency portfolio management platform desig
 - **Modern UI, Obsidian Carbon & Contextual Settings**:
   - Adaptive collapsible sidebar with **Contextual Settings Navigation**, mobile vertical section picker, and **Obsidian Carbon** (`#09090b`) dark theme alongside crisp light mode.
   - Role-Based Access Control (`ADMIN`, `EDITOR`, `VIEWER`) and timing-safe programmatic API access.
+- **Coalesced Market Sync & Live UI Convergence**:
+  - **Zero Duplicate Yahoo Queries**: Server-side singleflight deduplication and debounced batching (`20` symbols/batch) coalesce simultaneous mobile + laptop refreshes into one upstream lookup while excluding exited positions from 2-minute ticks.
+  - **Market-Hours-Aware SWR**: Instant non-blocking reads backed by PostgreSQL `MarketDataCache` (`2m` regular hours / `30m` off-hours quotes, `12h` metadata, `24h` history) plus automatic cross-tab `BroadcastChannel`, visibility/focus revalidation, and convergence polling (with `/api/*` configured `NetworkOnly` in the PWA Service Worker).
+  - **Honest Status & RBAC Controls**: Distinguishes local sync freshness (`Synced ...`) from exchange quote timestamps (`Market data ...`), exposes throttler telemetry in **Settings > Master Data**, and gates manual refresh actions to `ADMIN`/`EDITOR` roles.
 - **MCP Integration (`ascend-mcp`)**:
   - Connect external AI agents and assistants (Claude Desktop, Antigravity, Cursor) over the Model Context Protocol using `MCP_API_KEY`.
 
@@ -72,9 +76,20 @@ The fastest way to get started using the official pre-built image (supports `amd
    # Seeding
    ADMIN_PASSWORD="your_secure_password_here"
 
-   # Optional: Programmatic API / MCP & Cron Webhooks
+   # Optional: Programmatic API / MCP & External Cron Webhooks
+   # Built-in in-process scheduler runs automatically; CRON_SECRET is only needed
+   # if you trigger /api/cron/* from an external scheduler/webhook.
    # MCP_API_KEY="your_secure_mcp_api_key"
    # CRON_SECRET="your_secure_cron_secret"
+
+   # Optional: Market Data Caching & Sync Tuning
+   # MARKET_HOURS_AWARE="true"
+   # PRICE_CACHE_TTL_MS=120000
+   # OFF_HOURS_PRICE_CACHE_TTL_MS=1800000
+   # METADATA_CACHE_TTL_MS=43200000
+   # HISTORY_CACHE_TTL_MS=86400000
+   # MANUAL_REFRESH_COOLDOWN_MS=15000
+   # INCREMENTAL_SYNC_BATCH_SIZE=20
    ```
 
 3. **Create `docker-compose.yml`**:
@@ -95,6 +110,13 @@ The fastest way to get started using the official pre-built image (supports `amd
          - ADMIN_PASSWORD=${ADMIN_PASSWORD}
          - MCP_API_KEY=${MCP_API_KEY:-}
          - CRON_SECRET=${CRON_SECRET:-}
+         - MARKET_HOURS_AWARE=${MARKET_HOURS_AWARE:-true}
+         - PRICE_CACHE_TTL_MS=${PRICE_CACHE_TTL_MS:-120000}
+         - OFF_HOURS_PRICE_CACHE_TTL_MS=${OFF_HOURS_PRICE_CACHE_TTL_MS:-1800000}
+         - METADATA_CACHE_TTL_MS=${METADATA_CACHE_TTL_MS:-43200000}
+         - HISTORY_CACHE_TTL_MS=${HISTORY_CACHE_TTL_MS:-86400000}
+         - MANUAL_REFRESH_COOLDOWN_MS=${MANUAL_REFRESH_COOLDOWN_MS:-15000}
+         - INCREMENTAL_SYNC_BATCH_SIZE=${INCREMENTAL_SYNC_BATCH_SIZE:-20}
        depends_on:
          - db
        networks:

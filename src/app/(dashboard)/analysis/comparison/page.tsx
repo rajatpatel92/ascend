@@ -16,6 +16,7 @@ import { ClientCache } from '@/lib/client-cache';
 import { parseLocalDate } from '@/lib/date-utils';
 import ReportFilters, { FilterOptions } from '@/components/ReportFilters';
 import usePersistentState from '@/hooks/usePersistentState';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
 import styles from './page.module.css';
@@ -58,6 +59,7 @@ type ChartMode = 'cumulative' | 'growth10k' | 'spread';
 type AttributionTab = 'top' | 'bottom';
 
 const RANGES = ['1M', '6M', 'YTD', '1Y', '2Y', '3Y', '5Y', 'ALL'];
+const ANALYTICS_CACHE_TTL_MS = 60 * 60 * 1000;
 
 const CHART_TABS: { id: ChartMode; label: string }[] = [
     { id: 'cumulative', label: 'Cumulative Return (%)' },
@@ -105,6 +107,8 @@ export default function ComparePage() {
     const [timeRange, setTimeRange] = usePersistentState('comparison_range', '1Y');
     const [benchmark, setBenchmark] = usePersistentState('comparison_benchmark', '^GSPC');
     const [filters, setFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('comparison_filters', null);
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedViewKeyRef = useRef<string | null>(null);
 
     const [chartMode, setChartMode] = useState<ChartMode>('cumulative');
     const [attributionTab, setAttributionTab] = useState<AttributionTab>('top');
@@ -114,12 +118,17 @@ export default function ComparePage() {
     const { currency, format } = useCurrency();
     const { formatDate } = useDate();
 
+    useLiveSync({
+        enabled: isFiltersLoaded,
+        onSync: () => setSyncTick((t) => t + 1),
+    });
+
     useEffect(() => {
         const controller = new AbortController();
-        fetch('/api/benchmarks', { signal: controller.signal })
+        fetch('/api/benchmarks', { signal: controller.signal, cache: 'no-store' })
             .then(res => (res.ok ? res.json() : []))
             .then(data => {
-                if (Array.isArray(data)) {
+                if (!controller.signal.aborted && Array.isArray(data)) {
                     setAvailableBenchmarks(data);
                 }
             })
@@ -128,7 +137,7 @@ export default function ComparePage() {
                 console.error('Failed to load benchmarks', err);
             });
         return () => controller.abort();
-    }, []);
+    }, [syncTick]);
 
     useEffect(() => {
         if (!isFiltersLoaded) return;
@@ -142,8 +151,9 @@ export default function ComparePage() {
                 investmentTypes: [...(safeFilters.investmentTypes || [])].sort()
             });
             const cacheKey = `comparison-${timeRange}-${benchmark}-${currency}-${filterHash}-v3`;
+            const isBackground = loadedViewKeyRef.current === cacheKey;
 
-            const cached = ClientCache.get<ComparisonApiResponse>(cacheKey);
+            const cached = ClientCache.get<ComparisonApiResponse>(cacheKey, { ttlMs: ANALYTICS_CACHE_TTL_MS });
             if (cached && cached.portfolio) {
                 setPortfolioData(cached.portfolio);
                 setBenchmarkData(cached.benchmark || []);
@@ -151,7 +161,9 @@ export default function ComparePage() {
                 if (cached.performers) setPerformers(cached.performers);
             }
 
-            setIsLoading(true);
+            if (!isBackground) {
+                setIsLoading(true);
+            }
             setFetchError(null);
             try {
                 const res = await fetch('/api/analytics/benchmark', {
@@ -163,7 +175,8 @@ export default function ComparePage() {
                         currency,
                         filters: safeFilters
                     }),
-                    signal: controller.signal
+                    signal: controller.signal,
+                    cache: 'no-store',
                 });
 
                 if (!res.ok) {
@@ -174,6 +187,7 @@ export default function ComparePage() {
                 if (controller.signal.aborted) return;
 
                 if (data.portfolio) {
+                    loadedViewKeyRef.current = cacheKey;
                     setPortfolioData(data.portfolio);
                     setBenchmarkData(data.benchmark || []);
                     if (data.summary) setSummary(data.summary);
@@ -183,7 +197,9 @@ export default function ComparePage() {
             } catch (err) {
                 if (err instanceof DOMException && err.name === 'AbortError') return;
                 console.error('Failed to fetch comparison analytics:', err);
-                setFetchError('Unable to load comparison data for the selected criteria.');
+                if (!isBackground) {
+                    setFetchError('Unable to load comparison data for the selected criteria.');
+                }
             } finally {
                 if (!controller.signal.aborted) {
                     setIsLoading(false);
@@ -191,9 +207,9 @@ export default function ComparePage() {
             }
         };
 
-        fetchData();
+        void fetchData();
         return () => controller.abort();
-    }, [timeRange, benchmark, currency, filters, isFiltersLoaded]);
+    }, [timeRange, benchmark, currency, filters, isFiltersLoaded, syncTick]);
 
     const benchmarkName = useMemo(() => {
         return availableBenchmarks.find(b => b.symbol === benchmark)?.name || benchmark;

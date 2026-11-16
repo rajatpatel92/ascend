@@ -3,10 +3,14 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import Link from 'next/link';
 import { MdArrowBack, MdRefresh } from 'react-icons/md';
 import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { ClientCache } from '@/lib/client-cache';
+import { emitLiveSyncEvent } from '@/lib/live-sync';
 import StockChart from '@/components/StockChart';
 import SymbolSkeleton from '@/components/SymbolSkeleton';
 import { formatQuantity } from '@/lib/format';
@@ -67,8 +71,13 @@ const ALLOCATION_PALETTE = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#06b6d4
 
 function AnalysisContent() {
     const { symbol } = useParams();
+    const symbolStr = Array.isArray(symbol) ? symbol[0] : symbol;
     const searchParams = useSearchParams();
     const from = searchParams.get('from');
+    const { data: session } = useSession();
+    const userRole = (session?.user as { role?: string } | undefined)?.role || 'VIEWER';
+    const canRefresh = userRole === 'ADMIN' || userRole === 'EDITOR';
+
     const [data, setData] = useState<AnalysisData | null>(null);
     const { format, convert } = useCurrency();
     const { formatDate } = useDate();
@@ -76,6 +85,10 @@ function AnalysisContent() {
     const [users, setUsers] = useState<User[]>([]);
     const [navContext, setNavContext] = useState<string | null>(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
+    const [refreshError, setRefreshError] = useState<string | null>(null);
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedSymbolRef = useRef<string | null>(null);
+    const suppressSelfSyncRef = useRef(false);
 
     // Activities tab filters
     const [filterType, setFilterType] = useState('');
@@ -84,6 +97,14 @@ function AnalysisContent() {
     const [filterPlatform, setFilterPlatform] = useState('');
 
     const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+    useLiveSync({
+        enabled: Boolean(symbolStr),
+        onSync: () => {
+            if (suppressSelfSyncRef.current) return;
+            setSyncTick((t) => t + 1);
+        },
+    });
 
     useEffect(() => {
         if (from) {
@@ -100,35 +121,65 @@ function AnalysisContent() {
     };
 
     useEffect(() => {
-        fetch('/api/users')
-            .then(res => res.json())
+        const controller = new AbortController();
+        fetch('/api/users', { signal: controller.signal })
+            .then(res => (res.ok ? res.json() : []))
             .then(resData => {
-                if (Array.isArray(resData)) setUsers(resData);
+                if (!controller.signal.aborted && Array.isArray(resData)) {
+                    setUsers(resData);
+                }
             })
-            .catch(err => console.error('Failed to fetch users', err));
+            .catch(err => {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to fetch users', err);
+            });
+        return () => controller.abort();
     }, []);
 
     useEffect(() => {
-        if (symbol) {
-            const cacheKey = `analysis_${symbol}`;
-            const cached = localStorage.getItem(cacheKey);
-            if (cached) {
-                try {
-                    setData(JSON.parse(cached));
-                } catch (e) {
-                    console.error('Failed to parse cached analysis', e);
-                }
-            }
+        if (!symbolStr) return;
 
-            fetch(`/api/analysis/${symbol}`)
-                .then(res => res.json())
-                .then(newData => {
-                    setData(newData);
-                    localStorage.setItem(cacheKey, JSON.stringify(newData));
-                })
-                .catch(err => console.error('Failed to fetch analysis', err));
+        const controller = new AbortController();
+        const cacheKey = ClientCache.generateKey('analysis', { symbol: symbolStr });
+        const cached = ClientCache.get<AnalysisData>(cacheKey);
+        if (cached && typeof cached === 'object' && !('error' in cached) && cached.stats) {
+            setData(cached);
         }
-    }, [symbol]);
+
+        const fetchAnalysis = async () => {
+            try {
+                const res = await fetch(`/api/analysis/${encodeURIComponent(symbolStr)}`, {
+                    signal: controller.signal,
+                    cache: 'no-store',
+                });
+                const newData = await res.json().catch(() => ({}));
+                if (controller.signal.aborted) return;
+
+                if (!res.ok || !newData || typeof newData !== 'object' || 'error' in newData || !newData.stats) {
+                    if (loadedSymbolRef.current === symbolStr) {
+                        return;
+                    }
+                    setData(
+                        newData && typeof newData === 'object' && 'error' in newData
+                            ? (newData as any)
+                            : ({ error: `HTTP ${res.status}` } as any)
+                    );
+                    return;
+                }
+
+                loadedSymbolRef.current = symbolStr;
+                setData(newData);
+                setRefreshError(null);
+                ClientCache.set(cacheKey, newData);
+            } catch (err) {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to fetch analysis', err);
+            }
+        };
+
+        void fetchAnalysis();
+        return () => controller.abort();
+    }, [symbolStr, syncTick]);
 
     const sortedActivities = useMemo(() => {
         if (!data?.activities) return [];
@@ -189,21 +240,45 @@ function AnalysisContent() {
         .sort((a, b) => b.value - a.value);
 
     const handleRefresh = async () => {
-        if (!data || isRefreshing) return;
+        if (!canRefresh || !data || isRefreshing) return;
         setIsRefreshing(true);
+        setRefreshError(null);
 
         try {
-            await fetch('/api/market-data/refresh', {
+            const refreshRes = await fetch('/api/market-data/refresh', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ symbol: data.symbol }),
             });
-            const res = await fetch(`/api/analysis/${data.symbol}`);
-            const newData = await res.json();
+            const refreshPayload = await refreshRes.json().catch(() => ({}));
+            if (!refreshRes.ok) {
+                setRefreshError(refreshPayload?.error || `Refresh failed (HTTP ${refreshRes.status})`);
+                return;
+            }
+
+            const res = await fetch(`/api/analysis/${encodeURIComponent(data.symbol)}`, {
+                cache: 'no-store',
+            });
+            const newData = await res.json().catch(() => ({}));
+            if (!res.ok || !newData || typeof newData !== 'object' || 'error' in newData || !newData.stats) {
+                setRefreshError(newData?.error || `Failed to reload analysis (HTTP ${res.status})`);
+                return;
+            }
+
+            loadedSymbolRef.current = symbolStr || data.symbol;
             setData(newData);
-            localStorage.setItem(`analysis_${data.symbol}`, JSON.stringify(newData));
+            // Emit before ClientCache.set so MARKET_SYNCED clears stale caches without wiping the fresh result
+            try {
+                suppressSelfSyncRef.current = true;
+                emitLiveSyncEvent('MARKET_SYNCED', { reason: 'manual-symbol-refresh' });
+            } finally {
+                suppressSelfSyncRef.current = false;
+            }
+            const cacheKey = ClientCache.generateKey('analysis', { symbol: symbolStr || data.symbol });
+            ClientCache.set(cacheKey, newData);
         } catch (error) {
             console.error('Refresh failed', error);
+            setRefreshError('Network error while refreshing quote.');
         } finally {
             setIsRefreshing(false);
         }
@@ -292,19 +367,26 @@ function AnalysisContent() {
                     </div>
                 </div>
 
-                <div className={styles.headerActions}>
-                    <button
-                        type="button"
-                        id="refresh-btn"
-                        className={styles.refreshButton}
-                        onClick={handleRefresh}
-                        disabled={isRefreshing}
-                        title="Refresh Market Data"
-                    >
-                        <MdRefresh size={18} className={isRefreshing ? styles.spinning : undefined} />
-                        <span>{isRefreshing ? 'Refreshing...' : 'Refresh Quote'}</span>
-                    </button>
-                </div>
+                {canRefresh && (
+                    <div className={styles.headerActions}>
+                        {refreshError && (
+                            <span className={styles.refreshError} role="status">
+                                {refreshError}
+                            </span>
+                        )}
+                        <button
+                            type="button"
+                            id="refresh-btn"
+                            className={styles.refreshButton}
+                            onClick={handleRefresh}
+                            disabled={isRefreshing}
+                            title="Refresh Market Data"
+                        >
+                            <MdRefresh size={18} className={isRefreshing ? styles.spinning : undefined} />
+                            <span>{isRefreshing ? 'Refreshing...' : 'Refresh Quote'}</span>
+                        </button>
+                    </div>
+                )}
             </header>
 
             <div className={styles.tablistBar}>

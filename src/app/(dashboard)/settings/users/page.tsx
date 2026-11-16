@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import styles from './page.module.css';
 import { useSession } from 'next-auth/react';
 import { useDate } from '@/context/DateContext';
+import { emitLiveSyncEvent } from '@/lib/live-sync';
 import { MdGroup, MdPersonAdd } from 'react-icons/md';
 
 interface UserRecord {
@@ -51,7 +52,7 @@ export default function UserManagementPage() {
 
     const fetchUsers = useCallback(async (signal?: AbortSignal) => {
         try {
-            const res = await fetch('/api/users', { signal });
+            const res = await fetch('/api/users', { signal, cache: 'no-store' });
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) setUsers(data);
@@ -84,6 +85,7 @@ export default function UserManagementPage() {
         setError('');
 
         try {
+            const isEdit = Boolean(editingId);
             const url = editingId ? `/api/users/${editingId}` : '/api/users';
             const method = editingId ? 'PUT' : 'POST';
 
@@ -111,6 +113,9 @@ export default function UserManagementPage() {
 
             resetForm();
             await fetchUsers();
+            if (isEdit) {
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'user-updated' });
+            }
         } catch (err: unknown) {
             setError(err instanceof Error ? err.message : 'Failed to save user.');
         } finally {
@@ -139,6 +144,7 @@ export default function UserManagementPage() {
             const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
             if (res.ok) {
                 await fetchUsers();
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'user-deleted' });
             } else {
                 const msg = await res.text();
                 setError(msg || 'Failed to delete user.');

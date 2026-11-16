@@ -51,9 +51,15 @@
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  flex-wrap: wrap;
   font-size: 0.78rem;
   font-weight: 500;
   color: var(--text-secondary);
+}
+
+.marketAsOf {
+  color: var(--text-tertiary, var(--text-secondary));
+  font-weight: 400;
 }
 
 .statusDot {
@@ -63,6 +69,104 @@
   background: #10b981;
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16);
   flex-shrink: 0;
+}
+
+.statusDotRefreshing {
+  background: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22);
+  animation: pulseDot 1.3s ease-in-out infinite;
+}
+
+.statusDotWarning {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
+}
+
+.throttlePill {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  padding: 0.12rem 0.5rem;
+  border-radius: 9999px;
+}
+
+:global([data-theme='dark']) .throttlePill {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.refreshFeedback {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #b91c1c;
+}
+
+:global([data-theme='dark']) .refreshFeedback {
+  color: #f87171;
+}
+
+.headerControls {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.refreshBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 0.55rem;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.refreshBtn:hover:not(:disabled) {
+  background: var(--hover-bg);
+  border-color: var(--primary, #3b82f6);
+}
+
+.refreshBtn:focus-visible {
+  outline: 2px solid var(--primary, #3b82f6);
+  outline-offset: 2px;
+}
+
+.refreshBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.spinIcon {
+  animation: spinRefresh 0.9s linear infinite;
+}
+
+@keyframes pulseDot {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 0.7;
+  }
+}
+
+@keyframes spinRefresh {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .dashboardGrid {

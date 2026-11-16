@@ -111,7 +111,18 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
+    flex-wrap: wrap;
     flex-shrink: 0;
+}
+
+.refreshError {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #b91c1c;
+}
+
+:global([data-theme='dark']) .refreshError {
+    color: #f87171;
 }
 
 .refreshButton {

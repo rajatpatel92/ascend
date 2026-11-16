@@ -1,11 +1,12 @@
 export interface CacheStore {
-    get<T>(key: string): T | null;
+    get<T>(key: string, ttlOrOptions?: number | { ttlMs?: number }): T | null;
     set<T>(key: string, data: T): void;
 }
 
 export interface StaleWhileRevalidateOptions<T> {
     cache: CacheStore;
     cacheKey: string;
+    ttlMs?: number;
     isValid: (value: unknown) => value is T;
     fetcher: (signal?: AbortSignal) => Promise<T>;
     signal?: AbortSignal;
@@ -23,6 +24,7 @@ export interface StaleWhileRevalidateOptions<T> {
 export async function fetchWithStaleWhileRevalidate<T>({
     cache,
     cacheKey,
+    ttlMs,
     isValid,
     fetcher,
     signal,
@@ -31,7 +33,7 @@ export async function fetchWithStaleWhileRevalidate<T>({
     onLoadingChange,
     onError,
 }: StaleWhileRevalidateOptions<T>): Promise<void> {
-    const cached = cache.get<T>(cacheKey);
+    const cached = ttlMs !== undefined ? cache.get<T>(cacheKey, ttlMs) : cache.get<T>(cacheKey);
     const hasCached = isValid(cached);
 
     if (hasCached) {

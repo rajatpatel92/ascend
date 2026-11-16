@@ -87,6 +87,8 @@ model MarketDataCache {
   exDividendDate DateTime?
   estNextDividendAmount Float?
   marketTime    DateTime? // Actual market timestamp of the data
+  metadataUpdatedAt DateTime? // Last time profile/sector/dividend metadata was refreshed
+  historyUpdatedAt  DateTime? // Last time historical price series was refreshed
   lastUpdated   DateTime @default(now())
 }
 

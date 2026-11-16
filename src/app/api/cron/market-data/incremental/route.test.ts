@@ -44,7 +44,7 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier === "@/auth") {
     return {
       shortCircuit: true,
-      url: "data:text/javascript," + encodeURIComponent("export const auth = () => Promise.resolve(null);")
+      url: "data:text/javascript," + encodeURIComponent("export const auth = (...args) => globalThis.__mockIncrAuth(...args);")
     };
   }
   if (specifier.startsWith("@/")) {
@@ -58,25 +58,45 @@ export async function resolve(specifier, context, nextResolve) {
 }
 `));
 
-(globalThis as any).__mockPrisma = {
+type IncrMocks = {
+    __mockIncrAuth: () => Promise<{ user: { id: string; role: string } } | null>;
+    __mockPrisma: {
+        investment: { findMany: () => Promise<Array<{ symbol: string }>> };
+        benchmark: { findMany: () => Promise<Array<{ symbol: string }>> };
+    };
+    __mockMarketDataService: {
+        refreshPriceOnly: (symbols: string | string[]) => Promise<number>;
+    };
+};
+
+const mockIncrG = globalThis as unknown as IncrMocks;
+mockIncrG.__mockIncrAuth = async () => null;
+mockIncrG.__mockPrisma = {
     investment: { findMany: async () => [] },
     benchmark: { findMany: async () => [] }
 };
-(globalThis as any).__mockMarketDataService = {
+mockIncrG.__mockMarketDataService = {
     refreshPriceOnly: async () => 0
 };
 
 const { GET, dynamic } = await import('./route.ts');
+const { resetSyncStateForTests } = await import('@/lib/sync-state');
 
 test('GET /api/cron/market-data/incremental endpoint', async (t) => {
     const originalConsoleLog = console.log;
     const originalConsoleError = console.error;
     const originalSecret = process.env.CRON_SECRET;
 
+    t.beforeEach(() => {
+        resetSyncStateForTests();
+        mockIncrG.__mockIncrAuth = async () => null;
+    });
+
     t.afterEach(() => {
         console.log = originalConsoleLog;
         console.error = originalConsoleError;
         process.env.CRON_SECRET = originalSecret;
+        resetSyncStateForTests();
     });
 
     await t.test('exports dynamic configuration set to force-dynamic', () => {
@@ -91,6 +111,33 @@ test('GET /api/cron/market-data/incremental endpoint', async (t) => {
         assert.strictEqual(response.status, 401);
         const body = await response.json();
         assert.deepStrictEqual(body, { error: 'Unauthorized' });
+    });
+
+    await t.test('allows ADMIN session and rejects VIEWER/EDITOR sessions when secret is absent', async () => {
+        delete process.env.CRON_SECRET;
+
+        mockIncrG.__mockIncrAuth = async () => ({ user: { id: 'u1', role: 'VIEWER' } });
+        const viewerRes = await GET(new Request('http://localhost/api/cron/market-data/incremental'));
+        assert.strictEqual(viewerRes.status, 401);
+
+        mockIncrG.__mockIncrAuth = async () => ({ user: { id: 'u2', role: 'EDITOR' } });
+        const editorRes = await GET(new Request('http://localhost/api/cron/market-data/incremental'));
+        assert.strictEqual(editorRes.status, 401);
+
+        console.log = () => {};
+        mockIncrG.__mockPrisma = {
+            investment: { findMany: async () => [{ symbol: 'AAPL' }] },
+            benchmark: { findMany: async () => [] }
+        };
+        mockIncrG.__mockMarketDataService = {
+            refreshPriceOnly: async (symbols: string | string[]) => Array.isArray(symbols) ? symbols.length : 1
+        };
+
+        mockIncrG.__mockIncrAuth = async () => ({ user: { id: 'admin-1', role: 'ADMIN' } });
+        const adminRes = await GET(new Request('http://localhost/api/cron/market-data/incremental'));
+        assert.strictEqual(adminRes.status, 200);
+        const body = await adminRes.json();
+        assert.strictEqual(body.message, 'Incremental Refresh Done');
     });
 
     await t.test('executes bulk refresh and returns stats on success', async () => {

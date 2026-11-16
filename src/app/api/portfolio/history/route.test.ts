@@ -179,5 +179,72 @@ test('GET /api/portfolio/history', async (t) => {
     assert.strictEqual(body[0].priorNav, 100);
     assert.strictEqual(body[0].priorUnreinvestedDividend, 0);
   });
+
+  await t.test('invalidateMarketCaches and invalidatePortfolioMutationCaches bust 1D cache and recompute intraday history', async () => {
+    const {
+      invalidateMarketCaches,
+      invalidatePortfolioMutationCaches,
+      resetCacheVersionsForTests,
+    } = await import('@/lib/cache-invalidation');
+
+    const mockG = globalThis as unknown as {
+      _portfolio1DCache: unknown;
+      __mockAuth: () => Promise<{ user: { id: string } } | null>;
+      __mockPrismaActivityFindMany: () => Promise<unknown[]>;
+      __mockCalculateIntradayHistory: () => Promise<Array<{ date: string; marketValue: number }>>;
+    };
+
+    resetCacheVersionsForTests();
+    mockG._portfolio1DCache = null;
+    mockG.__mockAuth = async () => ({ user: { id: 'user-1' } });
+    mockG.__mockPrismaActivityFindMany = async () => ([
+      {
+        id: 'act-1',
+        type: 'BUY',
+        quantity: 10,
+        price: 100,
+        date: new Date('2026-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        investment: { symbol: 'AAPL', type: 'EQUITY', currencyCode: 'USD' },
+        account: { type: 'TFSA' }
+      }
+    ]);
+
+    let intradayCalls = 0;
+    mockG.__mockCalculateIntradayHistory = async () => {
+      intradayCalls++;
+      return [
+        { date: '2026-01-02T14:30:00.000Z', marketValue: 1000 },
+        { date: '2026-01-02T15:00:00.000Z', marketValue: 1000 + intradayCalls * 10 }
+      ];
+    };
+
+    const req = () => new Request('http://localhost/api/portfolio/history?range=1D&currency=USD');
+
+    // First request populates cache
+    const res1 = await GET(req());
+    assert.strictEqual(res1.status, 200);
+    assert.strictEqual(intradayCalls, 1);
+
+    // Second request reuses cache
+    const res2 = await GET(req());
+    assert.strictEqual(res2.status, 200);
+    assert.strictEqual(intradayCalls, 1);
+
+    // Market data invalidation forces recompute
+    invalidateMarketCaches({ symbols: ['AAPL'] });
+    const res3 = await GET(req());
+    assert.strictEqual(res3.status, 200);
+    assert.strictEqual(intradayCalls, 2);
+
+    // Mutation invalidation forces recompute
+    invalidatePortfolioMutationCaches();
+    const res4 = await GET(req());
+    assert.strictEqual(res4.status, 200);
+    assert.strictEqual(intradayCalls, 3);
+
+    resetCacheVersionsForTests();
+    mockG._portfolio1DCache = null;
+  });
 });
 

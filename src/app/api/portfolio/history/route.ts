@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
 import { PortfolioAnalytics } from '@/lib/portfolio-analytics';
+import { getCacheVersions } from '@/lib/cache-invalidation';
 
 export const dynamic = 'force-dynamic';
 
@@ -101,8 +102,9 @@ export async function GET(request: Request) {
                     );
                     return t > max ? t : max;
                 }, 0);
-                const CACHE_KEY = `1D_HISTORY_${targetCurrency}_${filterKey}_${activities.length}_${latestActTs}`;
-                const cached = (global as any)._portfolio1DCache;
+                const { marketDataVersion, portfolioMutationVersion } = getCacheVersions();
+                const CACHE_KEY = `1D_HISTORY_${targetCurrency}_${filterKey}_${activities.length}_${latestActTs}_v${marketDataVersion}_${portfolioMutationVersion}`;
+                const cached = (globalThis as any)._portfolio1DCache;
                 const CACHE_TTL = 5 * 60 * 1000; // 5 Minutes
 
                 if (cached && cached.key === CACHE_KEY && (Date.now() - cached.timestamp < CACHE_TTL)) {
@@ -122,7 +124,7 @@ export async function GET(request: Request) {
                         unreinvestedDividend: 0
                     }));
 
-                    (global as any)._portfolio1DCache = {
+                    (globalThis as any)._portfolio1DCache = {
                         key: CACHE_KEY,
                         data: normalized,
                         timestamp: Date.now()

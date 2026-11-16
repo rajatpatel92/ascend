@@ -10,6 +10,9 @@ import SectorBreakdownCard from '@/components/SectorBreakdownCard';
 import AnalysisSkeleton from '@/components/AnalysisSkeleton';
 import ReportFilters, { FilterOptions } from '@/components/ReportFilters';
 import usePersistentState from '@/hooks/usePersistentState';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { ClientCache } from '@/lib/client-cache';
+import { ensureMarketSyncConvergence } from '@/lib/live-sync';
 import {
     calculateLookThrough,
     constituentHasSectorExposure,
@@ -18,6 +21,15 @@ import {
     CountryBreakdown
 } from '@/lib/look-through';
 import { PieChart, Globe, Layers, Landmark, Wallet } from 'lucide-react';
+
+interface SyncStatusInfo {
+    syncedAt: string | null;
+    marketTime: string | null;
+    isRefreshing: boolean;
+    staleCount: number;
+    marketDataVersion: number;
+    throttledUntil: string | null;
+}
 
 interface PortfolioSummary {
     allocationByType: { name: string; value: number }[];
@@ -29,6 +41,7 @@ interface PortfolioSummary {
     sectorLookThrough?: SectorBreakdown[];
     countryLookThrough?: CountryBreakdown[];
     constituents: any[];
+    syncStatus?: SyncStatusInfo;
 }
 
 type ActiveDimension = 'sector' | 'country' | 'type' | 'accountType' | 'account';
@@ -116,7 +129,10 @@ const FILTER_BADGE_LABELS: ReadonlyArray<{ key: keyof InteractiveFilters; label:
 export default function AnalysisPage() {
     const { currency, format } = useCurrency();
     const [summaryState, setSummaryState] = useState<{ currency: string; data: PortfolioSummary } | null>(null);
+    const [fetchError, setFetchError] = useState<string | null>(null);
     const [activeDimension, setActiveDimension] = useState<ActiveDimension>('sector');
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedCurrencyRef = useRef<string | null>(null);
     const tabRefs = useRef<Partial<Record<ActiveDimension, HTMLButtonElement | null>>>({});
 
     // Global Filters (Layer 1)
@@ -125,46 +141,69 @@ export default function AnalysisPage() {
     // Interactive Chart Filters (Layer 2)
     const [interactiveFilters, setInteractiveFilters] = useState<InteractiveFilters>(EMPTY_INTERACTIVE_FILTERS);
 
+    useLiveSync({
+        onSync: () => setSyncTick((t) => t + 1),
+    });
+
     useEffect(() => {
         const controller = new AbortController();
-        const cacheKey = `portfolio_summary_${currency}`;
+        const cacheKey = ClientCache.generateKey('portfolio_summary', {
+            currency,
+            investmentTypes: [],
+            accountTypes: [],
+        });
 
         const fetchData = async () => {
+            let hasCachedForCurrency = loadedCurrencyRef.current === currency;
             try {
-                try {
-                    const cached = localStorage.getItem(cacheKey);
-                    if (cached) {
-                        const parsed = JSON.parse(cached);
-                        if (parsed && typeof parsed === 'object' && !('error' in parsed) && Array.isArray(parsed.constituents)) {
-                            setSummaryState({ currency, data: parsed });
-                        }
-                    }
-                } catch {
-                    // Ignore malformed cache or storage access failure
+                const cached = ClientCache.get<PortfolioSummary>(cacheKey);
+                if (cached && typeof cached === 'object' && !('error' in cached) && Array.isArray(cached.constituents)) {
+                    hasCachedForCurrency = true;
+                    loadedCurrencyRef.current = currency;
+                    setSummaryState({ currency, data: cached });
+                    setFetchError(null);
                 }
 
-                const res = await fetch(`/api/portfolio?currency=${currency}`, { signal: controller.signal });
-                const data = await res.json();
+                const res = await fetch(`/api/portfolio?currency=${encodeURIComponent(currency)}`, {
+                    signal: controller.signal,
+                    cache: 'no-store',
+                });
+                const data = await res.json().catch(() => ({}));
                 if (controller.signal.aborted) return;
                 if (!res.ok || !data || typeof data !== 'object' || 'error' in data || !Array.isArray(data.constituents)) {
+                    if (!hasCachedForCurrency) {
+                        setFetchError(
+                            typeof data?.error === 'string' ? data.error : `Failed to load portfolio data (HTTP ${res.status})`
+                        );
+                    }
                     return;
                 }
 
+                loadedCurrencyRef.current = currency;
                 setSummaryState({ currency, data });
-                try {
-                    localStorage.setItem(cacheKey, JSON.stringify(data));
-                } catch {
-                    // Ignore storage quota errors
+                setFetchError(null);
+                ClientCache.set(cacheKey, data);
+
+                if (data.syncStatus) {
+                    ensureMarketSyncConvergence({
+                        currentVersion: data.syncStatus.marketDataVersion,
+                        isRefreshing: data.syncStatus.isRefreshing,
+                        staleCount: data.syncStatus.staleCount,
+                        throttledUntil: data.syncStatus.throttledUntil,
+                    });
                 }
             } catch (err) {
                 if (err instanceof DOMException && err.name === 'AbortError') return;
                 console.error('Failed to fetch portfolio', err);
+                if (!hasCachedForCurrency) {
+                    setFetchError('Network error while loading portfolio allocation.');
+                }
             }
         };
 
-        fetchData();
+        void fetchData();
         return () => controller.abort();
-    }, [currency]);
+    }, [currency, syncTick]);
 
     const summary = summaryState?.currency === currency ? summaryState.data : null;
 
@@ -485,7 +524,30 @@ export default function AnalysisPage() {
             .filter(Boolean);
     }, [globalConstituents, interactiveFilters]);
 
-    if (!summary) return <AnalysisSkeleton />;
+    if (!summary) {
+        if (fetchError) {
+            return (
+                <div className={styles.container}>
+                    <header className={styles.header}>
+                        <div className={styles.headerTop}>
+                            <div>
+                                <h1 className={styles.title}>Portfolio Analysis</h1>
+                                <p className={styles.subtitle}>{fetchError}</p>
+                            </div>
+                            <button
+                                type="button"
+                                className={styles.clearBtn}
+                                onClick={() => setSyncTick(t => t + 1)}
+                            >
+                                Retry
+                            </button>
+                        </div>
+                    </header>
+                </div>
+            );
+        }
+        return <AnalysisSkeleton />;
+    }
 
     const dimensionDataMap: Record<ActiveDimension, { name: string; value: number }[]> = {
         sector: chartAllocations.allocationBySector,

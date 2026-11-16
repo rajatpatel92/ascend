@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from "@/auth";
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function PUT(
     request: Request,
@@ -31,9 +32,10 @@ export async function PUT(
             where: { id },
             data: { name, behavior }
         });
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json(updated);
-    } catch (error) {
+    } catch {
         return NextResponse.json({ error: 'Failed to update activity type' }, { status: 500 });
     }
 }
@@ -63,8 +65,9 @@ export async function DELETE(
         await prisma.activityType.delete({
             where: { id }
         });
+        invalidatePortfolioMutationCaches();
         return NextResponse.json({ success: true });
-    } catch (error) {
+    } catch {
         return NextResponse.json({ error: 'Failed to delete activity type' }, { status: 500 });
     }
 }

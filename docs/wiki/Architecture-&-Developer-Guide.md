@@ -67,7 +67,7 @@ erDiagram
 | `Currency` | `code` (String) | Currency registry (`rateToBase` multiplier relative to USD). |
 | `Investment` | `id` (UUID) | Security record (unique `symbol`, `name`, `type`, `currencyCode`). |
 | `Activity` | `id` (UUID) | Immutable ledger entry (`investmentId`, `type` including `DRIP`, `date`, `quantity`, `price`, `fee`, `currency`, `platformId`, `accountId`). Indexed on `investmentId`, `accountId`, `date`. |
-| `MarketDataCache` | `symbol` (String) | Cached market feeds (`price`, `change`, `changePercent`, `currency`, `history` JSON, `sectorAllocations` JSON, `countryAllocations` JSON, dividend metadata, `marketTime`, `lastUpdated`). |
+| `MarketDataCache` | `symbol` (String) | Cached market feeds (`price`, `change`, `changePercent`, `currency`, `history` JSON, `sectorAllocations` JSON, `countryAllocations` JSON, dividend metadata, `marketTime`, `lastUpdated`, `metadataUpdatedAt`, `historyUpdatedAt`). |
 | `TargetAllocation` | `id` (UUID) | Rebalancing targets (`symbol`, `targetPercentage`, `yearlyDriftAdjustment`, `lastAdjustmentDate`). |
 | `User` | `id` (UUID) | User accounts (unique `username`, `name`, salted `password`, `role`: `ADMIN` \| `EDITOR` \| `VIEWER`). |
 | `Benchmark` | `id` (UUID) | Comparison indices (unique `symbol`, `name`, `isSystem`). |
@@ -115,11 +115,13 @@ Detects corporate stock splits from Yahoo Finance chart events while ignoring `[
 
 ## ⚡ 4. Market Data Engine, Caching & Cron Scheduling
 
-* **Adaptive Throttler (`src/lib/market-data.ts`)**: Caps concurrent Yahoo Finance fetches (max 5 concurrent, 300ms spacing) with an automatic 60-second circuit breaker on HTTP `429`.
-* **Multi-Tier Cache**: Client `localStorage` TTL cache (`ClientCache`), in-memory FX cache (`currencyCache.ts`), and PostgreSQL `MarketDataCache`.
-* **Background Scheduler (`src/instrumentation.ts`)**:
-  * **Every 2 minutes** (`*/2 * * * *`): `/api/cron/market-data/incremental`
-  * **Every hour** (`0 * * * *`): `/api/cron/market-data`
+* **Adaptive Throttler & Singleflight Coalescing (`src/lib/market-data.ts`, `src/lib/market-sync.ts`)**: Caps concurrent Yahoo Finance fetches (max 5 concurrent, 300ms spacing) with an automatic 60-second circuit breaker on HTTP `429`. Per-symbol singleflight maps and debounced bulk batching (`20` symbols/batch) coalesce simultaneous mobile/desktop requests into one upstream call, while interactive reads serve cached DB prices via non-blocking SWR.
+* **Market-Hours-Aware Freshness & Multi-Tier Coherency (`src/lib/market-hours.ts`, `src/lib/cache-invalidation.ts`, `src/lib/live-sync.ts`)**:
+  * **Server**: Postgres `MarketDataCache` (`2m` regular market / `30m` off-hours quotes, `12h` metadata, `24h` history) plus global monotonic cache versioning (`marketDataVersion`, `portfolioMutationVersion`) invalidating `_portfolio1DCache` and `_ownerSnapshotCache` on market writes or ledger/account mutations.
+  * **Client & PWA**: `ClientCache` (`15m` default TTL, `30–60m` analytics overrides), `currencyCache.ts` (`10m` TTL + in-flight dedup), `useLiveSync` (`BroadcastChannel` cross-tab sync, visibility/focus/reconnect revalidation, and convergence polling against `/api/market-data/status`), and Workbox `NetworkOnly` routing for `/api/*` (`next.config.ts`).
+* **In-Process Background Scheduler (`src/instrumentation.ts`)**: Invokes coordinator functions directly (no localhost HTTP loopback or `CRON_SECRET` needed for internal runs; startup warmups at `+5s` fast price & `+25s` stale metadata/history):
+  * **Every 2 minutes** (`*/2 * * * *`): `runIncrementalSync({ respectMarketHours: true })` (also exposed via `/api/cron/market-data/incremental` for external webhooks / `ADMIN`)
+  * **Every 6 hours** (`0 */6 * * *`): `runFullMarketSync({ force: false })` (also exposed via `/api/cron/market-data` for external webhooks / `ADMIN`)
   * **Daily / On-Demand**: `/api/cron/glide-path-adjust`
 
 ---
@@ -130,10 +132,12 @@ All routes live under `src/app/api/` and enforce RBAC via `requireAuth(request, 
 
 | Endpoint | Methods | Allowed Roles | Description |
 | :--- | :---: | :---: | :--- |
-| `/api/portfolio` | `GET` | All | Consolidates Net Worth, Day Change, XIRR, constituents, movers, look-through breakdowns, dividends. |
+| `/api/portfolio` | `GET` | All | Consolidates Net Worth, Day Change, XIRR, constituents, movers, look-through breakdowns, dividends, and live `syncStatus`. |
 | `/api/portfolio/history` | `GET` | All | Historical portfolio NAV and valuation series. |
 | `/api/portfolio/owner-snapshot` | `GET` | All | Per-owner net worth, change %, and sparkline series for `1D`/`1W`/`1M`/`YTD`/`1Y`/`ALL`. |
 | `/api/holdings` | `GET` | All | Current share quantities and market valuations. |
+| `/api/market-data/status` | `GET` | All | Lightweight sync state, market session TTL, active/stale counts, cache version, and throttler telemetry. |
+| `/api/market-data/refresh` | `POST` | `ADMIN`, `EDITOR` | Coalesced single-symbol, batch, or portfolio price/full refresh with global 15s manual cooldown. |
 | `/api/activities` | `GET`, `POST` | All (`GET`) / `ADMIN`, `EDITOR` (`POST`) | Filtered/paginated activity ledger and transaction creation. |
 | `/api/activities/[id]` | `PUT`, `DELETE` | `ADMIN`, `EDITOR` | Update or delete an individual activity. |
 | `/api/activities/batch-update` | `POST` | `ADMIN`, `EDITOR` | Bulk update account, platform, date, or type. |
@@ -157,8 +161,8 @@ All routes live under `src/app/api/` and enforce RBAC via `requireAuth(request, 
 | `/api/benchmarks`, `/api/benchmarks/[id]` | `GET`, `POST`, `DELETE` | All (`GET`) / `ADMIN`, `EDITOR` | Manage custom comparison benchmarks. |
 | `/api/users`, `/api/users/[id]` | `GET`, `POST`, `PUT`, `DELETE` | `ADMIN` *(list/write)* | User provisioning, roles, and password updates. |
 | `/api/settings/*` | `GET`, `POST`, `PUT`, `DELETE` | All (`GET`) / `ADMIN` | Master taxonomy (`account-types`, `activity-types`, `investment-types`, `yahoo-types`). |
-| `/api/cron/market-data` | `GET` | Cron / `ADMIN` | Full hourly market data & metadata sync webhook. |
-| `/api/cron/market-data/incremental` | `GET` | Cron / `ADMIN` | 2-minute incremental price refresh webhook. |
+| `/api/cron/market-data` | `GET` | Cron / `ADMIN` | Full 6-hour market data & metadata sync webhook (supports `?stream=true`). |
+| `/api/cron/market-data/incremental` | `GET` | Cron / `ADMIN` | 2-minute incremental price & FX refresh webhook. |
 | `/api/cron/glide-path-adjust` | `GET`, `POST` | Cron / `ADMIN` | Annual lifecycle glide-path target adjustment webhook. |
 
 ---
@@ -180,11 +184,11 @@ npm run dev
 ```
 
 ### Running Tests
-Ascend runs `267` unit and integration tests using Node's native test runner with `--experimental-strip-types`:
+Ascend runs its unit test suite (`310` tests in `src/**/*.test.ts`, plus deeper `src/app/api/**` integration specs) using Node's native test runner with `--experimental-strip-types`:
 ```bash
 npm test
 ```
-Tests are co-located using `*.test.ts` (e.g., `src/lib/drip-migration.test.ts`, `src/lib/owner-snapshot.test.ts`, `src/lib/rebalance-planner.test.ts`, `src/lib/settings-nav.test.ts`).
+Tests are co-located using `*.test.ts` (e.g., `src/lib/market-sync.test.ts`, `src/lib/market-hours.test.ts`, `src/lib/cache-invalidation.test.ts`, `src/lib/live-sync.test.ts`, `src/lib/drip-migration.test.ts`, `src/lib/rebalance-planner.test.ts`).
 
 ### Extension Guidelines
 1. **New Activity Types**: Register in `ActivityType` seed data and `buildBehaviorMap` (`src/lib/activity-helpers.ts`) so `computeHoldingsState` handles `ADD`/`REMOVE`/`NEUTRAL`/`SPLIT` accurately.

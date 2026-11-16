@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 import { scanDripCandidates } from '@/lib/drip-migration';
 
 export async function GET(req: NextRequest) {
@@ -75,6 +76,10 @@ export async function POST(req: NextRequest) {
 
             return res.count;
         });
+
+        if (updatedCount > 0) {
+            invalidatePortfolioMutationCaches();
+        }
 
         return NextResponse.json({
             success: true,

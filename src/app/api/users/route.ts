@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { invalidatePortfolioMutationCaches } from "@/lib/cache-invalidation";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 
@@ -70,6 +71,7 @@ export async function POST(req: Request) {
                 name,
             }
         });
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json({
             id: user.id,

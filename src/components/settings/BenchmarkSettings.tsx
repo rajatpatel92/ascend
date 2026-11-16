@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import styles from './BenchmarkSettings.module.css';
 import { MdAdd, MdDeleteOutline, MdShowChart } from 'react-icons/md';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { emitLiveSyncEvent } from '@/lib/live-sync';
 import SymbolSearchInput from '@/components/SymbolSearchInput';
 
 interface Benchmark {
@@ -19,10 +21,11 @@ export default function BenchmarkSettings() {
     const [newName, setNewName] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const suppressSelfSyncRef = useRef(false);
 
-    const loadBenchmarks = async (signal?: AbortSignal) => {
+    const loadBenchmarks = useCallback(async (signal?: AbortSignal) => {
         try {
-            const res = await fetch('/api/benchmarks', { signal });
+            const res = await fetch('/api/benchmarks', { signal, cache: 'no-store' });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             if (Array.isArray(data)) setBenchmarks(data);
@@ -33,13 +36,30 @@ export default function BenchmarkSettings() {
         } finally {
             setIsLoading(false);
         }
-    };
+    }, []);
+
+    useLiveSync({
+        events: ['PORTFOLIO_UPDATED'],
+        onSync: () => {
+            if (suppressSelfSyncRef.current) return;
+            void loadBenchmarks();
+        },
+    });
 
     useEffect(() => {
         const controller = new AbortController();
-        loadBenchmarks(controller.signal);
+        void loadBenchmarks(controller.signal);
         return () => controller.abort();
-    }, []);
+    }, [loadBenchmarks]);
+
+    const notifyBenchmarksUpdated = (reason: string) => {
+        try {
+            suppressSelfSyncRef.current = true;
+            emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason });
+        } finally {
+            suppressSelfSyncRef.current = false;
+        }
+    };
 
     const handleAdd = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -58,6 +78,7 @@ export default function BenchmarkSettings() {
                 setNewSymbol('');
                 setNewName('');
                 await loadBenchmarks();
+                notifyBenchmarksUpdated('benchmark-added');
             } else {
                 const body = await res.json().catch(() => ({}));
                 setErrorMessage(body.error || 'Failed to add benchmark.');
@@ -81,6 +102,7 @@ export default function BenchmarkSettings() {
 
             if (res.ok) {
                 await loadBenchmarks();
+                notifyBenchmarksUpdated('benchmark-deleted');
             } else {
                 setErrorMessage('Failed to delete benchmark.');
             }

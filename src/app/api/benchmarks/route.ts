@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function GET() {
     const session = await auth();
@@ -41,6 +42,8 @@ export async function POST(req: Request) {
                 isSystem: false
             }
         });
+
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json(benchmark);
     } catch (error) {

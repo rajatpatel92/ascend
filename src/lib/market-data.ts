@@ -2,6 +2,14 @@
 import YahooFinance from 'yahoo-finance2';
 import { prisma } from './prisma.ts';
 import { analyzeDividendHistory, type DividendEventPoint } from './dividend-estimator.ts';
+import { getEffectivePriceTtlMs, getMarketConfig } from './market-hours.ts';
+import { invalidateMarketCaches } from './cache-invalidation.ts';
+import {
+    enqueueBackgroundPriceSync,
+    registerBackgroundPriceRunner,
+    setThrottlerSnapshot,
+    type ThrottlerStatusSnapshot,
+} from './sync-state.ts';
 
 export const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey', 'ripHistorical'],
@@ -15,10 +23,27 @@ export class Throttler {
     private resetTime: Date | null = null;
     private maxConcurrent: number;
     private delayMs: number;
+    private publishGlobal: boolean;
 
-    constructor(maxConcurrent: number, delayMs: number) {
+    constructor(maxConcurrent: number, delayMs: number, publishGlobal = false) {
         this.maxConcurrent = maxConcurrent;
         this.delayMs = delayMs;
+        this.publishGlobal = publishGlobal;
+    }
+
+    getStatus(): ThrottlerStatusSnapshot {
+        return {
+            isRateLimited: this.isRateLimited,
+            resetTime: this.resetTime ? this.resetTime.toISOString() : null,
+            queueLength: this.queue.length,
+            activeCount: this.activeCount,
+        };
+    }
+
+    private publishStatus() {
+        if (this.publishGlobal) {
+            setThrottlerSnapshot(this.getStatus());
+        }
     }
 
     reset() {
@@ -26,16 +51,19 @@ export class Throttler {
         this.activeCount = 0;
         this.isRateLimited = false;
         this.resetTime = null;
+        this.publishStatus();
     }
 
     add<T>(fn: () => Promise<T>): Promise<T> {
         if (this.isRateLimited) {
             const remaining = this.resetTime ? Math.ceil((this.resetTime.getTime() - Date.now()) / 1000) : 60;
+            this.publishStatus();
             return Promise.reject(new Error(`Rate limit exceeded. Cooling down for ${remaining}s.`));
         }
 
         return new Promise((resolve, reject) => {
             this.queue.push({ fn, resolve, reject });
+            this.publishStatus();
             this.process();
         });
     }
@@ -44,11 +72,16 @@ export class Throttler {
         if (this.isRateLimited || this.activeCount >= this.maxConcurrent) return;
 
         const item = this.queue.shift();
-        if (!item) return;
+        if (!item) {
+            this.publishStatus();
+            return;
+        }
 
         this.activeCount++;
+        this.publishStatus();
 
-        item.fn()
+        Promise.resolve()
+            .then(() => item.fn())
             .then(item.resolve)
             .catch((error: any) => {
                 // Check for 429
@@ -68,10 +101,14 @@ export class Throttler {
                 item.reject(error);
             })
             .finally(() => {
-                setTimeout(() => {
-                    this.activeCount--;
+                const timer = setTimeout(() => {
+                    this.activeCount = Math.max(0, this.activeCount - 1);
+                    this.publishStatus();
                     this.process();
                 }, this.delayMs);
+                if (typeof timer.unref === 'function') {
+                    timer.unref();
+                }
             });
     }
 
@@ -82,30 +119,45 @@ export class Throttler {
         this.isRateLimited = true;
         this.resetTime = new Date(Date.now() + 60000); // 1 minute
 
-        // Clear queue or let them fail? 
         // Better to reject all pending to give immediate feedback to UI
         while (this.queue.length > 0) {
             const item = this.queue.shift();
             item?.reject(new Error('Circuit Breaker: Rate limit exceeded. Request cancelled.'));
         }
+        this.publishStatus();
 
         const timer = setTimeout(() => {
             console.log(' [THROTTLER] Circuit Breaker Reset. Resuming requests.');
             this.isRateLimited = false;
             this.resetTime = null;
+            this.publishStatus();
             this.process();
         }, 60000);
         if (timer.unref) timer.unref();
     }
 }
 
-// Global instance: 2 concurrent requests, 300ms delay between completions
-export const apiThrottler = new Throttler(5, 300); // Adjust concurrency
+// Global instance: 5 concurrent requests, 300ms delay between completions
+export const apiThrottler = new Throttler(5, 300, true);
 
 export interface DividendEstimateDetails {
     nextDate?: Date;
     nextAmount?: number;
     trailingAnnualRate?: number;
+}
+
+export interface GetPriceOptions {
+    forceRefresh?: boolean;
+    mode?: 'swr' | 'blocking';
+    includeMetadata?: boolean;
+}
+
+function getInFlightMap<T>(key: string): Map<string, Promise<T>> {
+    const g = globalThis as Record<string, unknown>;
+    if (!(g[key] instanceof Map)) {
+        g[key] = new Map<string, Promise<T>>();
+    }
+    return g[key] as Map<string, Promise<T>>;
 }
 
 function firstPositive(...values: unknown[]): number | undefined {
@@ -123,6 +175,58 @@ function shouldEstimateDividends(symbol: string, quoteType?: string): boolean {
         return false;
     }
     return true;
+}
+
+function parseOptionalMarketDate(raw: unknown): Date | undefined {
+    if (raw === null || raw === undefined || raw === '') return undefined;
+    if (raw instanceof Date) {
+        return Number.isNaN(raw.getTime()) ? undefined : raw;
+    }
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+        // # Reason: With validateResult: false, Yahoo Finance returns epoch seconds (~1e9-1e10);
+        // values >= 1e12 are already milliseconds.
+        const ms = raw < 1e12 ? raw * 1000 : raw;
+        const parsed = new Date(ms);
+        return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        if (!trimmed) return undefined;
+        if (/^\d+(\.\d+)?$/.test(trimmed)) {
+            const numeric = Number(trimmed);
+            if (Number.isFinite(numeric) && numeric > 0) {
+                const ms = numeric < 1e12 ? numeric * 1000 : numeric;
+                const parsed = new Date(ms);
+                return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+            }
+        }
+        const parsed = new Date(trimmed);
+        return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+    return undefined;
+}
+
+function parseMarketTime(raw: unknown, fallback: Date): Date {
+    return parseOptionalMarketDate(raw) ?? fallback;
+}
+
+function mapCachedRowToMarketData(cached: any): MarketData {
+    return {
+        symbol: cached.symbol,
+        price: cached.price,
+        currency: cached.currency,
+        regularMarketTime: cached.marketTime || cached.lastUpdated,
+        regularMarketChange: cached.change,
+        regularMarketChangePercent: cached.changePercent,
+        sector: cached.sector || undefined,
+        country: cached.country || undefined,
+        sectorAllocations: cached.sectorAllocations as any[],
+        countryAllocations: cached.countryAllocations as any[],
+        dividendRate: cached.dividendRate || undefined,
+        dividendYield: cached.dividendYield || undefined,
+        exDividendDate: cached.exDividendDate || undefined,
+        estNextDividendAmount: cached.estNextDividendAmount || undefined,
+    };
 }
 
 // Helper to analyze trailing 12M dividend history and estimate next payout
@@ -260,295 +364,384 @@ export class MarketDataService {
     }
 
     /**
-     * Get current price for a symbol with caching (15 min)
-     * @param forceRefresh If true, forces a fresh fetch from Yahoo API (bypassing cache checks)
+     * Get current price for a symbol with market-hours aware SWR caching and singleflight deduplication.
+     *
+     * @param symbol - Ticker symbol (e.g., AAPL, XEQT.TO, CAD=X)
+     * @param forceRefreshOrOptions - Boolean `forceRefresh` or `{ forceRefresh, mode: 'swr' | 'blocking', includeMetadata }`
      */
-    static async getPrice(symbol: string, forceRefresh = false): Promise<MarketData | null> {
+    static async getPrice(
+        symbol: string,
+        forceRefreshOrOptions: boolean | GetPriceOptions = false
+    ): Promise<MarketData | null> {
+        const forceRefresh = typeof forceRefreshOrOptions === 'boolean'
+            ? forceRefreshOrOptions
+            : Boolean(forceRefreshOrOptions?.forceRefresh);
+        const mode: 'swr' | 'blocking' = forceRefresh
+            ? 'blocking'
+            : (typeof forceRefreshOrOptions === 'object' && forceRefreshOrOptions?.mode
+                ? forceRefreshOrOptions.mode
+                : 'swr');
+        const includeMetadata = forceRefresh || (typeof forceRefreshOrOptions === 'object' && Boolean(forceRefreshOrOptions?.includeMetadata));
+
         try {
-            // 1. Check Cache
+            // 1. Check Cache (unless forcing full synchronous refresh)
             const cached = await prisma.marketDataCache.findUnique({
                 where: { symbol }
             });
 
-            // Check Cache Age (e.g. 5 minutes)
-            const CACHE_DURATION = 5 * 60 * 1000;
-            const isStale = cached ? (new Date().getTime() - new Date(cached.lastUpdated).getTime() > CACHE_DURATION) : true;
+            const hasUsableCached = Boolean(cached && cached.price > 0);
+            const effectiveTtlMs = getEffectivePriceTtlMs().ttlMs;
+            const lastUpdatedMs = cached?.lastUpdated ? new Date(cached.lastUpdated).getTime() : Number.NaN;
+            const ageMs = Number.isFinite(lastUpdatedMs) ? (Date.now() - lastUpdatedMs) : Number.POSITIVE_INFINITY;
+            const isStale = !cached || cached.price <= 0 || ageMs > effectiveTtlMs;
 
-            if (!forceRefresh && cached && !isStale) {
-                // Return valid cache
-                return {
-                    symbol: cached.symbol,
-                    price: cached.price,
-                    currency: cached.currency,
-                    regularMarketTime: cached.marketTime || cached.lastUpdated,
-                    regularMarketChange: cached.change,
-                    regularMarketChangePercent: cached.changePercent,
-                    sector: cached.sector || undefined,
-                    country: cached.country || undefined,
-                    sectorAllocations: cached.sectorAllocations as any[],
-                    countryAllocations: cached.countryAllocations as any[],
-                    dividendRate: cached.dividendRate || undefined,
-                    dividendYield: cached.dividendYield || undefined,
-                    exDividendDate: cached.exDividendDate || undefined,
-                    estNextDividendAmount: cached.estNextDividendAmount || undefined,
-                };
+            if (!forceRefresh && hasUsableCached) {
+                if (!isStale) {
+                    return mapCachedRowToMarketData(cached);
+                }
+
+                // # Reason: Stale-While-Revalidate serves cached quotes instantaneously to interactive
+                // browsers and coalesces a background quote batch across concurrent mobile/desktop loads.
+                if (mode === 'swr') {
+                    enqueueBackgroundPriceSync([symbol]);
+                    return mapCachedRowToMarketData(cached);
+                }
             }
 
-            // 2. Fetch from API (Only if forceRefresh is true OR cache is missing)
-            // Fetch both Quote (for realtime price) and Summary (for metadata)
-            const now = new Date();
-            const startOfToday = new Date(now);
-            startOfToday.setUTCHours(0, 0, 0, 0);
+            // 2. Singleflight Fetch from API (cold miss, blocking read, or forceRefresh)
+            const inFlightMap = getInFlightMap<MarketData | null>('_marketPriceInFlight');
+            const forcedFullKey = `forced-full:${symbol}`;
+            const fullKey = `full:${symbol}`;
+            const quoteKey = `quote:${symbol}`;
+            const targetKey = forceRefresh ? forcedFullKey : (includeMetadata ? fullKey : quoteKey);
 
-            // Execute sequentially to reduce rate-limiting (429) risk compared to Promise.all
-            let quoteRealtime = null;
-            let lastError: any = null;
-            try {
-                quoteRealtime = await apiThrottler.add(() => yahooFinance.quote(symbol, {}, { validateResult: false })) as any;
-            } catch (e: any) {
-                lastError = e;
+            // Never downgrade a forceRefresh caller onto a non-forced flight that swallows errors.
+            if (forceRefresh) {
+                if (inFlightMap.has(forcedFullKey)) {
+                    return await inFlightMap.get(forcedFullKey)!;
+                }
+            } else {
+                if (inFlightMap.has(forcedFullKey)) {
+                    return await inFlightMap.get(forcedFullKey)!;
+                }
+                if (!includeMetadata && inFlightMap.has(fullKey)) {
+                    return await inFlightMap.get(fullKey)!;
+                }
+                if (inFlightMap.has(targetKey)) {
+                    return await inFlightMap.get(targetKey)!;
+                }
             }
 
-            let quoteSummary = null;
-            try {
-                quoteSummary = await apiThrottler.add(() => yahooFinance.quoteSummary(symbol, { modules: ['summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] }, { validateResult: false })) as any;
-            } catch (e: any) {
-                if (!lastError) lastError = e;
-            }
+            const execPromise = (async (): Promise<MarketData | null> => {
+                try {
+                    const now = new Date();
+                    const startOfToday = new Date(now);
+                    startOfToday.setUTCHours(0, 0, 0, 0);
 
-            // If both failed, throw error to trigger cache fallback or cron retry
-            if ((!quoteRealtime || !quoteRealtime.regularMarketPrice) && (!quoteSummary || !quoteSummary.price?.regularMarketPrice)) {
-                if (forceRefresh && lastError) throw lastError; // Propagate Rate Limit or other specific errors
+                    let quoteRealtime: any = null;
+                    let lastError: any = null;
+                    try {
+                        quoteRealtime = await apiThrottler.add(() => yahooFinance.quote(symbol, {}, { validateResult: false })) as any;
+                    } catch (e: any) {
+                        lastError = e;
+                    }
 
-                const msg = 'Failed to fetch market data from API';
-                if (forceRefresh) throw new Error(msg);
-                throw new Error(msg);
-            }
-
-            // Prefer Realtime Quote for Price/Change
-            const priceVal = quoteRealtime?.regularMarketPrice || quoteSummary?.price?.regularMarketPrice || 0;
-            const changeVal = quoteRealtime?.regularMarketChange || quoteSummary?.price?.regularMarketChange || 0;
-            const changePercentVal = quoteRealtime?.regularMarketChangePercent || quoteSummary?.price?.regularMarketChangePercent || 0;
-            const currencyVal = quoteRealtime?.currency || quoteSummary?.price?.currency || 'USD';
-            const nameVal = quoteRealtime?.longName || quoteRealtime?.shortName || quoteSummary?.price?.longName || quoteSummary?.price?.shortName;
-            const quoteType = quoteRealtime?.quoteType || quoteSummary?.price?.quoteType;
-
-            // Extract Market Time
-            let marketTime = now;
-            if (quoteRealtime?.regularMarketTime) {
-                marketTime = new Date(quoteRealtime.regularMarketTime);
-            } else if (quoteSummary?.price?.regularMarketTime) {
-                marketTime = new Date(quoteSummary.price.regularMarketTime);
-            }
-
-            // Use Summary for Metadata
-            const profile: any = quoteSummary?.summaryProfile || {};
-            const detail: any = quoteSummary?.summaryDetail || {};
-            const holdings: any = quoteSummary?.topHoldings || {};
-            const calendar: any = quoteSummary?.calendarEvents || {};
-            const keyStats: any = quoteSummary?.defaultKeyStatistics || {};
-
-            let dividendRate = firstPositive(
-                detail.dividendRate,
-                quoteRealtime?.dividendRate,
-                detail.trailingAnnualDividendRate,
-                quoteRealtime?.trailingAnnualDividendRate
-            );
-            let dividendYield = firstPositive(
-                detail.dividendYield,
-                detail.yield,
-                detail.trailingAnnualDividendYield,
-                quoteRealtime?.trailingAnnualDividendYield,
-                keyStats.yield
-            );
-
-            // Calculate Rate if missing but Yield exists
-            if (!dividendRate && dividendYield && priceVal) {
-                dividendRate = priceVal * dividendYield;
-            }
-
-            // Calculate Yield if missing but Rate exists
-            if (!dividendYield && dividendRate && priceVal) {
-                dividendYield = dividendRate / priceVal;
-            }
-
-            const data: MarketData = {
-                symbol: symbol,
-                price: priceVal,
-                currency: currencyVal,
-                regularMarketTime: marketTime,
-                regularMarketChange: changeVal,
-                regularMarketChangePercent: changePercentVal,
-                sector: profile.sector,
-                country: profile.country,
-                fiftyTwoWeekHigh: detail.fiftyTwoWeekHigh,
-                fiftyTwoWeekLow: detail.fiftyTwoWeekLow,
-                sectorAllocations: holdings.sectorWeightings || [],
-                countryAllocations: [],
-
-                dividendRate: dividendRate,
-                dividendYield: dividendYield,
-                exDividendDate: calendar.exDividendDate ? new Date(calendar.exDividendDate) : (quoteRealtime?.exDividendDate ? new Date(quoteRealtime.exDividendDate) : undefined),
-                name: nameVal
-            };
-
-            // Smart Projection & Trailing-12M ETF Fallback:
-            // Only do this on forceRefresh (Background Job) to avoid slowing down interactive user requests.
-            if (
-                forceRefresh &&
-                shouldEstimateDividends(symbol, quoteType) &&
-                (!data.dividendRate || !data.exDividendDate || data.exDividendDate < startOfToday || !data.estNextDividendAmount)
-            ) {
-                const details = await estimateDividendDetails(symbol, { rollForwardTo: startOfToday });
-                if (details) {
-                    if (!data.dividendRate && details.trailingAnnualRate) {
-                        data.dividendRate = details.trailingAnnualRate;
-                        if (!data.dividendYield && data.price > 0) {
-                            data.dividendYield = details.trailingAnnualRate / data.price;
+                    // Fetch heavy quoteSummary when explicitly requested for metadata-bearing symbols OR if fast quote omitted price.
+                    const supportsMetadata = !symbol.endsWith('=X') && !symbol.startsWith('^');
+                    let quoteSummary: any = null;
+                    let quoteSummaryError: unknown = null;
+                    const needsSummaryFallback = !quoteRealtime || !(typeof quoteRealtime.regularMarketPrice === 'number' && Number.isFinite(quoteRealtime.regularMarketPrice) && quoteRealtime.regularMarketPrice > 0);
+                    if ((includeMetadata && supportsMetadata) || needsSummaryFallback) {
+                        try {
+                            quoteSummary = await apiThrottler.add(() => yahooFinance.quoteSummary(
+                                symbol,
+                                { modules: ['summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] },
+                                { validateResult: false }
+                            )) as any;
+                        } catch (e: any) {
+                            quoteSummaryError = e;
+                            if (!lastError) lastError = e;
                         }
                     }
-                    if (details.nextDate && (!data.exDividendDate || data.exDividendDate < startOfToday)) {
-                        data.exDividendDate = details.nextDate;
-                    }
-                    if (details.nextAmount) {
-                        data.estNextDividendAmount = details.nextAmount;
-                    }
-                }
-            } else if (!forceRefresh && cached) {
-                // # Reason: Interactive reads after the 5-minute TTL skip the historical dividend check;
-                // preserve previously resolved ETF dividend metadata when quote/summary omits it.
-                if (!data.dividendRate && !data.dividendYield && cached.dividendRate) {
-                    data.dividendRate = cached.dividendRate;
-                    data.dividendYield = cached.dividendYield || (data.price > 0 ? cached.dividendRate / data.price : undefined);
-                }
-                if ((!data.exDividendDate || data.exDividendDate < startOfToday) && cached.exDividendDate && new Date(cached.exDividendDate) >= startOfToday) {
-                    data.exDividendDate = cached.exDividendDate;
-                }
-                if (!data.estNextDividendAmount && cached.estNextDividendAmount) {
-                    data.estNextDividendAmount = cached.estNextDividendAmount;
-                }
-            }
 
-            // 3. Update Cache
-            await prisma.marketDataCache.upsert({
-                where: { symbol },
-                update: {
-                    price: data.price,
-                    change: data.regularMarketChange,
-                    changePercent: data.regularMarketChangePercent,
-                    currency: data.currency,
-                    sector: data.sector,
-                    country: data.country,
-                    sectorAllocations: data.sectorAllocations,
-                    countryAllocations: data.countryAllocations,
-                    dividendRate: data.dividendRate,
-                    dividendYield: data.dividendYield,
-                    exDividendDate: data.exDividendDate,
-                    estNextDividendAmount: data.estNextDividendAmount,
-                    marketTime: data.regularMarketTime, // Store valid market time
-                    lastUpdated: now
-                },
-                create: {
-                    symbol: data.symbol,
-                    price: data.price,
-                    change: data.regularMarketChange,
-                    changePercent: data.regularMarketChangePercent,
-                    currency: data.currency,
-                    sector: data.sector,
-                    country: data.country,
-                    sectorAllocations: data.sectorAllocations,
-                    countryAllocations: data.countryAllocations,
-                    dividendRate: data.dividendRate,
-                    dividendYield: data.dividendYield,
-                    exDividendDate: data.exDividendDate,
-                    estNextDividendAmount: data.estNextDividendAmount,
-                    marketTime: data.regularMarketTime,
-                    lastUpdated: now
-                }
-            });
+                    const rtPrice = typeof quoteRealtime?.regularMarketPrice === 'number' && Number.isFinite(quoteRealtime.regularMarketPrice) && quoteRealtime.regularMarketPrice > 0
+                        ? quoteRealtime.regularMarketPrice
+                        : 0;
+                    const summaryPrice = typeof quoteSummary?.price?.regularMarketPrice === 'number' && Number.isFinite(quoteSummary.price.regularMarketPrice) && quoteSummary.price.regularMarketPrice > 0
+                        ? quoteSummary.price.regularMarketPrice
+                        : 0;
+                    const priceVal = rtPrice || summaryPrice;
 
-            return data;
+                    if (priceVal <= 0) {
+                        if (forceRefresh && lastError) throw lastError;
+                        throw new Error('Failed to fetch market data from API');
+                    }
+
+                    const changeVal = quoteRealtime?.regularMarketChange ?? quoteSummary?.price?.regularMarketChange ?? 0;
+                    const changePercentVal = quoteRealtime?.regularMarketChangePercent ?? quoteSummary?.price?.regularMarketChangePercent ?? 0;
+                    const currencyVal = quoteRealtime?.currency || quoteSummary?.price?.currency || cached?.currency || 'USD';
+                    const nameVal = quoteRealtime?.longName || quoteRealtime?.shortName || quoteSummary?.price?.longName || quoteSummary?.price?.shortName;
+                    const quoteType = quoteRealtime?.quoteType || quoteSummary?.price?.quoteType;
+
+                    const marketTime = parseMarketTime(
+                        quoteRealtime?.regularMarketTime ?? quoteSummary?.price?.regularMarketTime,
+                        now
+                    );
+
+                    const profile: any = quoteSummary?.summaryProfile || {};
+                    const detail: any = quoteSummary?.summaryDetail || {};
+                    const holdings: any = quoteSummary?.topHoldings || {};
+                    const calendar: any = quoteSummary?.calendarEvents || {};
+                    const keyStats: any = quoteSummary?.defaultKeyStatistics || {};
+
+                    let dividendRate = firstPositive(
+                        detail.dividendRate,
+                        quoteRealtime?.dividendRate,
+                        detail.trailingAnnualDividendRate,
+                        quoteRealtime?.trailingAnnualDividendRate
+                    );
+                    let dividendYield = firstPositive(
+                        detail.dividendYield,
+                        detail.yield,
+                        detail.trailingAnnualDividendYield,
+                        quoteRealtime?.trailingAnnualDividendYield,
+                        keyStats.yield
+                    );
+
+                    if (!dividendRate && dividendYield && priceVal) {
+                        dividendRate = priceVal * dividendYield;
+                    }
+                    if (!dividendYield && dividendRate && priceVal) {
+                        dividendYield = dividendRate / priceVal;
+                    }
+
+                    const data: MarketData = {
+                        symbol,
+                        price: priceVal,
+                        currency: currencyVal,
+                        regularMarketTime: marketTime,
+                        regularMarketChange: typeof changeVal === 'number' && Number.isFinite(changeVal) ? changeVal : 0,
+                        regularMarketChangePercent: typeof changePercentVal === 'number' && Number.isFinite(changePercentVal) ? changePercentVal : 0,
+                        sector: profile.sector ?? cached?.sector ?? undefined,
+                        country: profile.country ?? cached?.country ?? undefined,
+                        fiftyTwoWeekHigh: detail.fiftyTwoWeekHigh,
+                        fiftyTwoWeekLow: detail.fiftyTwoWeekLow,
+                        sectorAllocations: quoteSummary ? (holdings.sectorWeightings || []) : (cached?.sectorAllocations as any[] | undefined),
+                        countryAllocations: quoteSummary ? [] : (cached?.countryAllocations as any[] | undefined),
+                        dividendRate,
+                        dividendYield,
+                        exDividendDate: parseOptionalMarketDate(calendar.exDividendDate) ?? parseOptionalMarketDate(quoteRealtime?.exDividendDate),
+                        name: nameVal,
+                    };
+
+                    if (
+                        forceRefresh &&
+                        shouldEstimateDividends(symbol, quoteType) &&
+                        (!data.dividendRate || !data.exDividendDate || data.exDividendDate < startOfToday || !data.estNextDividendAmount)
+                    ) {
+                        const details = await estimateDividendDetails(symbol, { rollForwardTo: startOfToday });
+                        if (details) {
+                            if (!data.dividendRate && details.trailingAnnualRate) {
+                                data.dividendRate = details.trailingAnnualRate;
+                                if (!data.dividendYield && data.price > 0) {
+                                    data.dividendYield = details.trailingAnnualRate / data.price;
+                                }
+                            }
+                            if (details.nextDate && (!data.exDividendDate || data.exDividendDate < startOfToday)) {
+                                data.exDividendDate = details.nextDate;
+                            }
+                            if (details.nextAmount) {
+                                data.estNextDividendAmount = details.nextAmount;
+                            }
+                        }
+                    } else if (!forceRefresh && cached) {
+                        // # Reason: Non-forced interactive/blocking reads skip the historical dividend check;
+                        // preserve previously resolved ETF dividend metadata when quote/summary omits it.
+                        if (!data.dividendRate && !data.dividendYield && cached.dividendRate) {
+                            data.dividendRate = cached.dividendRate;
+                            data.dividendYield = cached.dividendYield || (data.price > 0 ? cached.dividendRate / data.price : undefined);
+                        }
+                        if ((!data.exDividendDate || data.exDividendDate < startOfToday) && cached.exDividendDate && new Date(cached.exDividendDate) >= startOfToday) {
+                            data.exDividendDate = cached.exDividendDate;
+                        }
+                        if (!data.estNextDividendAmount && cached.estNextDividendAmount) {
+                            data.estNextDividendAmount = cached.estNextDividendAmount;
+                        }
+                    }
+
+                    const metadataResolved = Boolean(quoteSummary) || (
+                        includeMetadata &&
+                        !quoteSummaryError &&
+                        (!supportsMetadata || !shouldEstimateDividends(symbol, quoteType))
+                    );
+
+                    const updatePayload: Record<string, any> = {
+                        price: data.price,
+                        change: data.regularMarketChange,
+                        changePercent: data.regularMarketChangePercent,
+                        currency: data.currency,
+                        dividendRate: data.dividendRate,
+                        dividendYield: data.dividendYield,
+                        exDividendDate: data.exDividendDate,
+                        estNextDividendAmount: data.estNextDividendAmount,
+                        marketTime: data.regularMarketTime,
+                        lastUpdated: now,
+                    };
+
+                    if (quoteSummary) {
+                        updatePayload.sector = data.sector;
+                        updatePayload.country = data.country;
+                        updatePayload.sectorAllocations = data.sectorAllocations;
+                        updatePayload.countryAllocations = data.countryAllocations;
+                    }
+                    if (metadataResolved) {
+                        updatePayload.metadataUpdatedAt = now;
+                    }
+
+                    const createPayload: Record<string, any> = {
+                        symbol: data.symbol,
+                        price: data.price,
+                        change: data.regularMarketChange,
+                        changePercent: data.regularMarketChangePercent,
+                        currency: data.currency,
+                        sector: data.sector,
+                        country: data.country,
+                        sectorAllocations: data.sectorAllocations ?? [],
+                        countryAllocations: data.countryAllocations ?? [],
+                        dividendRate: data.dividendRate,
+                        dividendYield: data.dividendYield,
+                        exDividendDate: data.exDividendDate,
+                        estNextDividendAmount: data.estNextDividendAmount,
+                        marketTime: data.regularMarketTime,
+                        lastUpdated: now,
+                    };
+
+                    if (metadataResolved) {
+                        createPayload.metadataUpdatedAt = now;
+                    }
+
+                    await prisma.marketDataCache.upsert({
+                        where: { symbol },
+                        update: updatePayload as any,
+                        create: createPayload as any,
+                    });
+
+                    invalidateMarketCaches({ symbols: [symbol] });
+                    return data;
+                } catch (error: any) {
+                    const msg = error?.message || '';
+                    if (msg.includes('Failed to fetch') || msg.includes('429') || msg.includes('crumb')) {
+                        console.warn(`[MarketData] API Error for ${symbol} (${msg}). Using cache.`);
+                    } else {
+                        console.error(`Error fetching price for ${symbol}:`, error);
+                    }
+
+                    if (forceRefresh) throw error;
+
+                    const fallbackCached = cached || await prisma.marketDataCache.findUnique({ where: { symbol } });
+                    if (fallbackCached) {
+                        return mapCachedRowToMarketData(fallbackCached);
+                    }
+                    return null;
+                } finally {
+                    inFlightMap.delete(targetKey);
+                }
+            })();
+
+            inFlightMap.set(targetKey, execPromise);
+            return await execPromise;
         } catch (error: any) {
-            const msg = error.message || '';
-            if (msg.includes('Failed to fetch') || msg.includes('429') || msg.includes('crumb')) {
-                console.warn(`[MarketData] API Error for ${symbol} (${msg}). Using cache.`);
-            } else {
-                console.error(`Error fetching price for ${symbol}:`, error);
-            }
-
-            // Async Architecture: Re-throw if forcing refresh
             if (forceRefresh) throw error;
 
-            // Fallback to cache if API fails, even if stale
             const cached = await prisma.marketDataCache.findUnique({ where: { symbol } });
             if (cached) {
-                return {
-                    symbol: cached.symbol,
-                    price: cached.price,
-                    currency: cached.currency,
-                    regularMarketTime: cached.marketTime || cached.lastUpdated, // Use authentic time if possible
-                    regularMarketChange: cached.change,
-                    regularMarketChangePercent: cached.changePercent,
-                    sector: cached.sector || undefined,
-                    country: cached.country || undefined,
-                    sectorAllocations: cached.sectorAllocations as any[],
-                    countryAllocations: cached.countryAllocations as any[],
-                    dividendRate: cached.dividendRate || undefined,
-                    dividendYield: cached.dividendYield || undefined,
-                    exDividendDate: cached.exDividendDate || undefined,
-                    estNextDividendAmount: cached.estNextDividendAmount || undefined
-                };
-            };
+                return mapCachedRowToMarketData(cached);
+            }
+            return null;
         }
-        return null;
     }
 
-
     /**
-     * Get exchange rate between two currencies
-     * Uses Yahoo Finance tickers like "USDINR=X"
-     * Refactored to use standard getPrice() for consistent caching/async architecture.
+     * Get exchange rate between two currencies with singleflight coalescing and canonical USD-pair resolution.
      */
     static async getExchangeRate(from: string, to: string, forceRefresh = false): Promise<number | null> {
         if (from === to) return 1;
 
-        // Try direct pair first
-        // User requested logic: USD -> Any = Any=X (e.g. USD -> INR = INR=X)
-        let symbol = `${from}${to}=X`;
-        if (from === 'USD') {
-            symbol = `${to}=X`;
+        const fxInFlight = getInFlightMap<number | null>('_marketFxInFlight');
+        const key = `${from}->${to}:${Boolean(forceRefresh)}`;
+        if (fxInFlight.has(key)) {
+            return await fxInFlight.get(key)!;
         }
 
-        // Use getPrice to handle caching/fetching unified logic
-        const data = await this.getPrice(symbol, forceRefresh);
-        if (data?.price) return data.price;
+        const promise = (async (): Promise<number | null> => {
+            try {
+                const candidates: Array<{ symbol: string; invert: boolean }> = [];
 
-        // Fallback: Try reverse pair (e.g., INRUSD=X) and invert
-        let reverseSymbol = `${to}${from}=X`;
-        if (to === 'USD') {
-            reverseSymbol = `${from}=X`;
-        }
+                if (from === 'USD') {
+                    // Canonical Yahoo ticker USD->X is X=X (e.g., CAD=X)
+                    candidates.push({ symbol: `${to}=X`, invert: false });
+                    candidates.push({ symbol: `USD${to}=X`, invert: false });
+                    candidates.push({ symbol: `${to}USD=X`, invert: true });
+                } else if (to === 'USD') {
+                    // Prefer cron-warmed X=X shorthand (inverted) before XUSD=X to avoid uncached misses
+                    candidates.push({ symbol: `${from}=X`, invert: true });
+                    candidates.push({ symbol: `${from}USD=X`, invert: false });
+                } else {
+                    candidates.push({ symbol: `${from}${to}=X`, invert: false });
+                    candidates.push({ symbol: `${to}${from}=X`, invert: true });
+                }
 
-        const reverseData = await this.getPrice(reverseSymbol, forceRefresh);
-        if (reverseData?.price) return 1 / reverseData.price;
+                for (const candidate of candidates) {
+                    try {
+                        const data = await this.getPrice(candidate.symbol, forceRefresh);
+                        if (data?.price && data.price > 0) {
+                            return candidate.invert ? 1 / data.price : data.price;
+                        }
+                    } catch {
+                        // Candidate may fail under forceRefresh; continue trying fallback candidates
+                    }
+                }
 
-        return null;
+                // Cross-currency triangulation fallback via USD (e.g. EUR -> USD -> CAD)
+                if (from !== 'USD' && to !== 'USD') {
+                    const [fromUsd, usdTo] = await Promise.all([
+                        this.getExchangeRate(from, 'USD', forceRefresh),
+                        this.getExchangeRate('USD', to, forceRefresh),
+                    ]);
+                    if (fromUsd && fromUsd > 0 && usdTo && usdTo > 0) {
+                        return fromUsd * usdTo;
+                    }
+                }
+
+                return null;
+            } finally {
+                fxInFlight.delete(key);
+            }
+        })();
+
+        fxInFlight.set(key, promise);
+        return await promise;
     }
 
-
     /**
-     * Get historical exchange rate for a specific date
+     * Get historical exchange rate for a specific date with singleflight coalescing.
      */
     static async getHistoricalExchangeRate(from: string, to: string, date: Date): Promise<number | null> {
         if (from === to) return 1;
 
+        const dateKey = new Date(date).toISOString().split('T')[0];
+        const histFxInFlight = getInFlightMap<number | null>('_marketHistoricalFxInFlight');
+        const key = `${from}->${to}:${dateKey}`;
+        if (histFxInFlight.has(key)) {
+            return await histFxInFlight.get(key)!;
+        }
+
         const getRateForSymbol = async (ticker: string): Promise<number | null> => {
             try {
-                // Fetch window around date to handle weekends/holidays
                 const startDate = new Date(date);
-                startDate.setDate(startDate.getDate() - 4); // Look back 4 days
+                startDate.setDate(startDate.getDate() - 4);
                 const endDate = new Date(date);
-                endDate.setDate(endDate.getDate() + 1); // Look forward 1 day
+                endDate.setDate(endDate.getDate() + 1);
 
                 const result = await apiThrottler.add(() => yahooFinance.chart(ticker, {
                     period1: startDate,
@@ -559,50 +752,58 @@ export class MarketDataService {
                 const quotes = result?.quotes || [];
                 if (quotes.length === 0) return null;
 
-                // Find the quote closest to but usually before or on the transaction date
-                // Since we sort by date, we can just grab the valid one closest to our target date
-                // Reverse iterate to find the latest valid quote on or before the target date
                 const targetTime = date.getTime();
-
-                // Sort quotes just in case
                 quotes.sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
                 let bestQuote = null;
                 for (const q of quotes) {
                     const qTime = new Date(q.date).getTime();
-                    if (qTime <= targetTime + (24 * 60 * 60 * 1000)) { // Allow same day (considering timezones)
+                    if (qTime <= targetTime + (24 * 60 * 60 * 1000)) {
                         if (q.close || q.adjClose) {
                             bestQuote = q;
                         }
                     }
                 }
 
-                // If we didn't find one before, maybe one slightly after (e.g. strict weekend boundary)?
-                // Strict logic: Closest one available.
                 if (!bestQuote && quotes.length > 0) bestQuote = quotes[quotes.length - 1];
-
                 return bestQuote ? (bestQuote.close || bestQuote.adjClose) : null;
-
             } catch {
                 return null;
             }
         };
 
-        // Try direct pair
-        let symbol = `${from}${to}=X`;
-        if (from === 'USD') symbol = `${to}=X`;
+        const promise = (async (): Promise<number | null> => {
+            try {
+                let symbol = `${from}${to}=X`;
+                if (from === 'USD') symbol = `${to}=X`;
 
-        const rate = await getRateForSymbol(symbol);
-        if (rate) return rate;
+                const rate = await getRateForSymbol(symbol);
+                if (rate && rate > 0) return rate;
 
-        // Try reverse pair
-        let reverseSymbol = `${to}${from}=X`;
-        if (to === 'USD') reverseSymbol = `${from}=X`;
+                let reverseSymbol = `${to}${from}=X`;
+                if (to === 'USD') reverseSymbol = `${from}=X`;
 
-        const reverseRate = await getRateForSymbol(reverseSymbol);
-        if (reverseRate) return 1 / reverseRate;
+                const reverseRate = await getRateForSymbol(reverseSymbol);
+                if (reverseRate && reverseRate > 0) return 1 / reverseRate;
 
-        return null; // Both failed
+                if (from !== 'USD' && to !== 'USD') {
+                    const [fromUsd, usdTo] = await Promise.all([
+                        this.getHistoricalExchangeRate(from, 'USD', date),
+                        this.getHistoricalExchangeRate('USD', to, date),
+                    ]);
+                    if (fromUsd && fromUsd > 0 && usdTo && usdTo > 0) {
+                        return fromUsd * usdTo;
+                    }
+                }
+
+                return null;
+            } finally {
+                histFxInFlight.delete(key);
+            }
+        })();
+
+        histFxInFlight.set(key, promise);
+        return await promise;
     }
 
     /**
@@ -613,7 +814,6 @@ export class MarketDataService {
 
         const prices: Record<string, number> = {};
 
-        // 1. Store daily prices
         for (const quote of quotes) {
             if (quote.date && (quote.close || quote.adjClose)) {
                 const dateStr = new Date(quote.date).toISOString().split('T')[0];
@@ -621,7 +821,6 @@ export class MarketDataService {
             }
         }
 
-        // 2. Calculate period snapshots
         const findPrice = (targetDate: Date) => {
             const targetTime = targetDate.getTime();
             let closest = quotes[0];
@@ -639,22 +838,18 @@ export class MarketDataService {
 
         const today = new Date();
 
-        // 1 Week ago
         const oneWeekAgo = new Date(today);
         oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
         prices['1W'] = findPrice(oneWeekAgo);
 
-        // 1 Month ago
         const oneMonthAgo = new Date(today);
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
         prices['1M'] = findPrice(oneMonthAgo);
 
-        // 1 Year ago
         const oneYearAgo = new Date(today);
         oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
         prices['1Y'] = findPrice(oneYearAgo);
 
-        // YTD (Jan 1st of current year)
         const ytd = new Date(today.getFullYear(), 0, 1);
         prices['YTD'] = findPrice(ytd);
 
@@ -662,103 +857,96 @@ export class MarketDataService {
     }
 
     /**
-     * Get historical prices for performance calculation with caching (24h)
-     * Returns map of period -> price
-     * UPDATED: Async Architecture - returns stale cache by default.
+     * Get historical prices for performance calculation with singleflight coalescing.
+     * Returns map of period -> price.
      */
     static async getHistoricalPrices(symbol: string, forceRefresh = false): Promise<Record<string, number>> {
-        try {
-            // 1. Check Cache
-            const cached = await prisma.marketDataCache.findUnique({
-                where: { symbol }
-            });
+        const inFlightMap = getInFlightMap<Record<string, number>>('_marketHistoryInFlight');
+        const key = `${symbol}:${Boolean(forceRefresh)}`;
+        if (inFlightMap.has(key)) {
+            return await inFlightMap.get(key)!;
+        }
 
-            // Async Architecture: Return cached history if available and NOT forcing refresh.
-            // We ignore expiry here because the background cron handles freshness.
-            if (!forceRefresh && cached?.history) {
-                // Check if history is valid JSON object
-                if (typeof cached.history === 'object' && cached.history !== null) {
-                    // Check if we have the required keys, if not, allow re-fetch
-                    // Actually, for Async, we should return whatever we have to avoid API calls.
-                    // Only re-fetch if completely empty or missing critical keys?
-                    // Let's be strict: if we have history, return it. Cron will fix quality.
-                    const h = cached.history as Record<string, number>;
-                    if (Object.keys(h).length > 0) {
-                        return h;
+        const promise = (async (): Promise<Record<string, number>> => {
+            try {
+                const cached = await prisma.marketDataCache.findUnique({
+                    where: { symbol }
+                });
+
+                if (!forceRefresh && cached?.history) {
+                    if (typeof cached.history === 'object' && cached.history !== null) {
+                        const h = cached.history as Record<string, number>;
+                        if (Object.keys(h).length > 0) {
+                            return h;
+                        }
                     }
                 }
-            }
 
-            // 2. Fetch from API (Only if forceRefresh=true OR cache is missing/empty)
-            // If we are here, it means we HAVE to fetch (Cold Start).
-            // This might trigger 429 if many symbols are new.
-            // Throttler handles it, but circuit breaker might trip.
-            const endDate = new Date();
-            const startDate = new Date();
-            startDate.setFullYear(startDate.getFullYear() - 20); // Fetch up to 20 years back
-            startDate.setDate(startDate.getDate() - 7); // Add buffer
+                const endDate = new Date();
+                const startDate = new Date();
+                startDate.setFullYear(startDate.getFullYear() - 20);
+                startDate.setDate(startDate.getDate() - 7);
 
-            const queryOptions = {
-                period1: startDate,
-                period2: endDate,
-                interval: '1d' as const,
-            };
+                const queryOptions = {
+                    period1: startDate,
+                    period2: endDate,
+                    interval: '1d' as const,
+                };
 
-            // Use chart() instead of historical() as the latter is deprecated/broken
-            const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
-            const quotes = result?.quotes || [];
+                const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
+                const quotes = result?.quotes || [];
+                const prices = this.processHistory(quotes);
+                const now = new Date();
 
-            const prices = this.processHistory(quotes);
+                await prisma.marketDataCache.upsert({
+                    where: { symbol },
+                    update: {
+                        history: prices,
+                        historyUpdatedAt: now,
+                    } as any,
+                    create: {
+                        symbol,
+                        price: 0,
+                        change: 0,
+                        changePercent: 0,
+                        currency: 'USD',
+                        history: prices,
+                        historyUpdatedAt: now,
+                        lastUpdated: new Date(0),
+                    } as any,
+                });
 
-            // 3. Update Cache (merge with existing if possible, but here we just update history)
-            // DO NOT update 'lastUpdated' here. 'lastUpdated' should represent PRICE freshness.
-            // If we update it here, 'getPrice' will think the price is fresh even if it's old.
-            await prisma.marketDataCache.upsert({
-                where: { symbol },
-                update: {
-                    history: prices,
-                    // lastUpdated: now // DISABLED to prevent cache-freshness false positive
-                },
-                create: {
-                    symbol,
-                    price: 0, // Placeholder if creating from history call first
-                    change: 0,
-                    changePercent: 0,
-                    currency: 'USD', // Default
-                    history: prices,
-                    lastUpdated: new Date(0) // Initialize as OLD so price fetch triggers immediately
+                invalidateMarketCaches({ symbols: [symbol] });
+                return prices;
+            } catch (error) {
+                console.error(`Error fetching historical for ${symbol}:`, error);
+                if (forceRefresh) throw error;
+
+                const cached = await prisma.marketDataCache.findUnique({ where: { symbol } });
+                if (cached?.history && typeof cached.history === 'object') {
+                    return cached.history as Record<string, number>;
                 }
-            });
-
-            return prices;
-
-        } catch (error) {
-            console.error(`Error fetching historical for ${symbol}:`, error);
-
-            // Async Architecture: If forcing refresh (Cron), re-throw error so we know it failed.
-            // Do NOT fallback to cache, because we want to retry or report error.
-            if (forceRefresh) throw error;
-
-            // Fallback to cache
-            const cached = await prisma.marketDataCache.findUnique({ where: { symbol } });
-            if (cached?.history && typeof cached.history === 'object') {
-                return cached.history as Record<string, number>;
+                return {};
+            } finally {
+                inFlightMap.delete(key);
             }
-            return {};
-        }
+        })();
+
+        inFlightMap.set(key, promise);
+        return await promise;
     }
 
     private static get dailyUnadjustedCache() {
-        if (!(global as any)._marketDailyUnadjustedCache) {
-            (global as any)._marketDailyUnadjustedCache = new Map<string, { data: Record<string, number>, fromTime: number, timestamp: number }>();
+        if (!(globalThis as any)._marketDailyUnadjustedCache) {
+            (globalThis as any)._marketDailyUnadjustedCache = new Map<string, { data: Record<string, number>, fromTime: number, timestamp: number }>();
         }
-        return (global as any)._marketDailyUnadjustedCache as Map<string, { data: Record<string, number>, fromTime: number, timestamp: number }>;
+        return (globalThis as any)._marketDailyUnadjustedCache as Map<string, { data: Record<string, number>, fromTime: number, timestamp: number }>;
     }
 
     private static DAILY_UNADJUSTED_TTL = 12 * 60 * 60 * 1000; // 12 Hours
 
     /**
-     * Get full unadjusted daily history for a symbol from a start date.
+     * Get full unadjusted daily history for a symbol from a start date with singleflight coalescing.
      * Essential for Portfolio Unitization so holdings split multipliers align with historical closing prices.
      */
     static async getDailyHistory(symbol: string, fromDate?: Date, forceRefresh = false): Promise<Record<string, number>> {
@@ -768,158 +956,180 @@ export class MarketDataService {
         const requestedFromTime = startDate.getTime();
         const cachedEntry = this.dailyUnadjustedCache.get(symbol);
 
-        try {
-            // 1. Check In-Memory Unadjusted Cache (isolated from split-adjusted StockChart DB cache)
-            if (
-                !forceRefresh &&
-                cachedEntry &&
-                (Date.now() - cachedEntry.timestamp < this.DAILY_UNADJUSTED_TTL) &&
-                cachedEntry.fromTime <= requestedFromTime + 24 * 60 * 60 * 1000 &&
-                Object.keys(cachedEntry.data).length > 0
-            ) {
-                return cachedEntry.data;
-            }
-
-            // 2. Fetch from API
-            const endDate = new Date();
-
-            const queryOptions = {
-                period1: startDate,
-                period2: endDate,
-                interval: '1d' as const,
-                events: 'split'
-            };
-
-            const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
-            const quotes = result?.quotes || [];
-            const splits = result?.events?.splits || {};
-
-            const splitMap: Record<string, number> = {};
-            if (splits && typeof splits === 'object') {
-                Object.values(splits).forEach((s: any) => {
-                    let ratio = 1;
-                    if (s.numerator && s.denominator) {
-                        ratio = s.numerator / s.denominator;
-                    }
-                    let dObj: Date;
-                    if (s.date instanceof Date) {
-                        dObj = s.date;
-                    } else if (typeof s.date === 'string') {
-                        dObj = new Date(s.date);
-                    } else {
-                        dObj = new Date(s.date * 1000);
-                    }
-                    const d = dObj.toISOString().split('T')[0];
-                    if (Number.isFinite(ratio) && ratio > 0) {
-                        splitMap[d] = ratio;
-                    }
-                });
-            }
-
-            const prices: Record<string, number> = {};
-            const availableDates: Date[] = [];
-
-            // Process Backwards to accumulate split factor (undo Yahoo split adjustment for share-count replay)
-            let splitFactor = 1;
-            const sortedQuotes = [...quotes].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-            for (const quote of sortedQuotes) {
-                const d = new Date(quote.date);
-                const dateStr = d.toISOString().split('T')[0];
-
-                let price = quote.close || quote.adjClose;
-
-                if (price && price > 0) {
-                    price = price * splitFactor;
-                    prices[dateStr] = price;
-                    availableDates.push(d);
-                }
-
-                if (splitMap[dateStr]) {
-                    splitFactor *= splitMap[dateStr];
-                }
-            }
-
-            availableDates.sort((a, b) => a.getTime() - b.getTime());
-
-            // Cache strictly in the unadjusted replay cache; leave prisma.marketDataCache.history split-adjusted for StockChart.
-            if (Object.keys(prices).length > 0) {
-                this.dailyUnadjustedCache.set(symbol, {
-                    data: prices,
-                    fromTime: requestedFromTime,
-                    timestamp: Date.now()
-                });
-            }
-
-            return prices;
-        } catch (error) {
-            console.error(`Error fetching daily history for ${symbol}:`, error);
-
-            if (forceRefresh) throw error;
-
-            if (cachedEntry && Object.keys(cachedEntry.data).length > 0) {
-                return cachedEntry.data;
-            }
-
-            // Fallback to DB history only if no unadjusted history exists in memory
-            try {
-                const cached = await prisma.marketDataCache.findUnique({ where: { symbol } });
-                if (cached?.history && typeof cached.history === 'object') {
-                    return cached.history as Record<string, number>;
-                }
-            } catch { }
-            return {};
+        if (
+            !forceRefresh &&
+            cachedEntry &&
+            (Date.now() - cachedEntry.timestamp < this.DAILY_UNADJUSTED_TTL) &&
+            cachedEntry.fromTime <= requestedFromTime + 24 * 60 * 60 * 1000 &&
+            Object.keys(cachedEntry.data).length > 0
+        ) {
+            return cachedEntry.data;
         }
-    }
 
+        const inFlightMap = getInFlightMap<Record<string, number>>('_marketDailyInFlight');
+        const dateBucket = startDate.toISOString().split('T')[0];
+        const key = `${symbol}:${dateBucket}:${Boolean(forceRefresh)}`;
+        if (inFlightMap.has(key)) {
+            return await inFlightMap.get(key)!;
+        }
+
+        const promise = (async (): Promise<Record<string, number>> => {
+            try {
+                const endDate = new Date();
+                const queryOptions = {
+                    period1: startDate,
+                    period2: endDate,
+                    interval: '1d' as const,
+                    events: 'split'
+                };
+
+                const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
+                const quotes = result?.quotes || [];
+                const splits = result?.events?.splits || {};
+
+                const splitMap: Record<string, number> = {};
+                if (splits && typeof splits === 'object') {
+                    Object.values(splits).forEach((s: any) => {
+                        let ratio = 1;
+                        if (s.numerator && s.denominator) {
+                            ratio = s.numerator / s.denominator;
+                        }
+                        let dObj: Date;
+                        if (s.date instanceof Date) {
+                            dObj = s.date;
+                        } else if (typeof s.date === 'string') {
+                            dObj = new Date(s.date);
+                        } else {
+                            dObj = new Date(s.date * 1000);
+                        }
+                        const d = dObj.toISOString().split('T')[0];
+                        if (Number.isFinite(ratio) && ratio > 0) {
+                            splitMap[d] = ratio;
+                        }
+                    });
+                }
+
+                const prices: Record<string, number> = {};
+                let splitFactor = 1;
+                const sortedQuotes = [...quotes].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+                for (const quote of sortedQuotes) {
+                    const d = new Date(quote.date);
+                    const dateStr = d.toISOString().split('T')[0];
+                    let price = quote.close || quote.adjClose;
+
+                    if (price && price > 0) {
+                        price = price * splitFactor;
+                        prices[dateStr] = price;
+                    }
+
+                    if (splitMap[dateStr]) {
+                        splitFactor *= splitMap[dateStr];
+                    }
+                }
+
+                if (Object.keys(prices).length > 0) {
+                    this.dailyUnadjustedCache.set(symbol, {
+                        data: prices,
+                        fromTime: requestedFromTime,
+                        timestamp: Date.now()
+                    });
+                }
+
+                return prices;
+            } catch (error) {
+                console.error(`Error fetching daily history for ${symbol}:`, error);
+                if (forceRefresh) throw error;
+
+                if (cachedEntry && Object.keys(cachedEntry.data).length > 0) {
+                    return cachedEntry.data;
+                }
+
+                try {
+                    const cached = await prisma.marketDataCache.findUnique({ where: { symbol } });
+                    if (cached?.history && typeof cached.history === 'object') {
+                        return cached.history as Record<string, number>;
+                    }
+                } catch { }
+                return {};
+            } finally {
+                inFlightMap.delete(key);
+            }
+        })();
+
+        inFlightMap.set(key, promise);
+        return await promise;
+    }
 
     /**
      * Refresh all market data for symbols (Price, Profile, History)
-     * Supports single symbol string or array of symbols to batch database operations via transaction.
-     * This is intended to be called in the background.
+     * Coalesced via singleflight and throttled through apiThrottler.
      */
     static async refreshMarketData(symbols: string | string[]): Promise<void> {
-        const symbolList = Array.isArray(symbols) ? Array.from(new Set(symbols)) : [symbols];
+        const symbolList = Array.isArray(symbols)
+            ? Array.from(new Set(symbols.map(s => s.trim()).filter(Boolean)))
+            : (symbols ? [symbols.trim()] : []);
         if (symbolList.length === 0) return;
 
-        try {
-            console.log(`Refreshing market data for ${symbolList.length} symbol(s)...`);
-            const now = new Date();
-            const startOfToday = new Date(now);
-            startOfToday.setUTCHours(0, 0, 0, 0);
+        const inFlightMap = getInFlightMap<void>('_marketFullRefreshInFlight');
+        const batchKey = symbolList.slice().sort().join(',');
+        if (inFlightMap.has(batchKey)) {
+            return await inFlightMap.get(batchKey)!;
+        }
 
-            const processSymbol = async (symbol: string) => {
-                let priceData = {
-                    price: 0,
-                    change: 0,
-                    changePercent: 0,
-                    currency: 'USD',
-                    sector: undefined as string | undefined,
-                    country: undefined as string | undefined,
-                    sectorAllocations: undefined as any,
-                    countryAllocations: undefined as any,
-                    dividendRate: undefined as number | undefined,
-                    dividendYield: undefined as number | undefined,
-                    exDividendDate: undefined as Date | undefined,
-                    estNextDividendAmount: undefined as number | undefined,
-                    marketTime: undefined as Date | undefined
+        const promise = (async () => {
+            try {
+                console.log(`Refreshing market data for ${symbolList.length} symbol(s)...`);
+                const now = new Date();
+                const startOfToday = new Date(now);
+                startOfToday.setUTCHours(0, 0, 0, 0);
+
+                type SymbolProcessSuccess = {
+                    ok: true;
+                    symbol: string;
+                    priceData: {
+                        price: number;
+                        change: number;
+                        changePercent: number;
+                        currency: string;
+                        sector: string | undefined;
+                        country: string | undefined;
+                        sectorAllocations: any;
+                        countryAllocations: any;
+                        dividendRate: number | undefined;
+                        dividendYield: number | undefined;
+                        exDividendDate: Date | undefined;
+                        estNextDividendAmount: number | undefined;
+                        marketTime: Date;
+                    };
+                    history: Record<string, number>;
+                };
+                type SymbolProcessFailure = {
+                    ok: false;
+                    symbol: string;
+                    error: unknown;
                 };
 
-                try {
-                    // 1. Fetch Quote (Price, Profile, Top Holdings for ETF)
-                    const quote = await apiThrottler.add(() => yahooFinance.quoteSummary(symbol, { modules: ['price', 'summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] })) as any;
+                const processSymbol = async (symbol: string): Promise<SymbolProcessSuccess | SymbolProcessFailure> => {
+                    try {
+                        const quote = await apiThrottler.add(() => yahooFinance.quoteSummary(
+                            symbol,
+                            { modules: ['price', 'summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] },
+                            { validateResult: false }
+                        )) as any;
 
-                    let quoteType: string | undefined;
-                    if (quote && quote.price) {
-                        const p = quote.price;
+                        const p = quote?.price;
+                        const rawPrice = p?.regularMarketPrice;
+                        if (typeof rawPrice !== 'number' || !Number.isFinite(rawPrice) || rawPrice <= 0) {
+                            throw new Error(`Invalid or missing quote price for ${symbol}`);
+                        }
+
                         const profile = quote.summaryProfile || {};
                         const holdings = quote.topHoldings || {};
                         const calendar = quote.calendarEvents || {};
                         const detail = quote.summaryDetail || {};
                         const keyStats = quote.defaultKeyStatistics || {};
-                        quoteType = p.quoteType;
-
-                        const priceVal = p.regularMarketPrice || 0;
+                        const quoteType: string | undefined = p.quoteType;
 
                         let dividendRate = firstPositive(
                             detail.dividendRate,
@@ -932,18 +1142,17 @@ export class MarketDataService {
                             keyStats.yield
                         );
 
-                        if (!dividendRate && dividendYield && priceVal) {
-                            dividendRate = priceVal * dividendYield;
+                        if (!dividendRate && dividendYield && rawPrice > 0) {
+                            dividendRate = rawPrice * dividendYield;
+                        }
+                        if (!dividendYield && dividendRate && rawPrice > 0) {
+                            dividendYield = dividendRate / rawPrice;
                         }
 
-                        if (!dividendYield && dividendRate && priceVal) {
-                            dividendYield = dividendRate / priceVal;
-                        }
-
-                        priceData = {
-                            price: priceVal,
-                            change: p.regularMarketChange || 0,
-                            changePercent: p.regularMarketChangePercent || 0,
+                        const priceData: SymbolProcessSuccess['priceData'] = {
+                            price: rawPrice,
+                            change: typeof p.regularMarketChange === 'number' && Number.isFinite(p.regularMarketChange) ? p.regularMarketChange : 0,
+                            changePercent: typeof p.regularMarketChangePercent === 'number' && Number.isFinite(p.regularMarketChangePercent) ? p.regularMarketChangePercent : 0,
                             currency: p.currency || 'USD',
                             sector: profile.sector,
                             country: profile.country,
@@ -951,168 +1160,280 @@ export class MarketDataService {
                             countryAllocations: [],
                             dividendRate,
                             dividendYield,
-                            exDividendDate: calendar.exDividendDate ? new Date(calendar.exDividendDate) : undefined,
+                            exDividendDate: parseOptionalMarketDate(calendar.exDividendDate),
                             estNextDividendAmount: undefined,
-                            marketTime: p.regularMarketTime ? new Date(p.regularMarketTime) : now
+                            marketTime: parseMarketTime(p.regularMarketTime, now),
                         };
-                    }
 
-                    if (
-                        shouldEstimateDividends(symbol, quoteType) &&
-                        (!priceData.dividendRate || !priceData.exDividendDate || priceData.exDividendDate < startOfToday || !priceData.estNextDividendAmount)
-                    ) {
-                        const details = await estimateDividendDetails(symbol, { rollForwardTo: startOfToday });
-                        if (details) {
-                            if (!priceData.dividendRate && details.trailingAnnualRate) {
-                                priceData.dividendRate = details.trailingAnnualRate;
-                                if (!priceData.dividendYield && priceData.price > 0) {
-                                    priceData.dividendYield = details.trailingAnnualRate / priceData.price;
+                        if (
+                            shouldEstimateDividends(symbol, quoteType) &&
+                            (!priceData.dividendRate || !priceData.exDividendDate || priceData.exDividendDate < startOfToday || !priceData.estNextDividendAmount)
+                        ) {
+                            const details = await estimateDividendDetails(symbol, { rollForwardTo: startOfToday });
+                            if (details) {
+                                if (!priceData.dividendRate && details.trailingAnnualRate) {
+                                    priceData.dividendRate = details.trailingAnnualRate;
+                                    if (!priceData.dividendYield && priceData.price > 0) {
+                                        priceData.dividendYield = details.trailingAnnualRate / priceData.price;
+                                    }
+                                }
+                                if (details.nextDate && (!priceData.exDividendDate || priceData.exDividendDate < startOfToday)) {
+                                    priceData.exDividendDate = details.nextDate;
+                                }
+                                if (details.nextAmount) {
+                                    priceData.estNextDividendAmount = details.nextAmount;
                                 }
                             }
-                            if (details.nextDate && (!priceData.exDividendDate || priceData.exDividendDate < startOfToday)) {
-                                priceData.exDividendDate = details.nextDate;
-                            }
-                            if (details.nextAmount) {
-                                priceData.estNextDividendAmount = details.nextAmount;
-                            }
                         }
+
+                        const endDate = new Date();
+                        const startDate = new Date();
+                        startDate.setFullYear(startDate.getFullYear() - 20);
+                        startDate.setDate(startDate.getDate() - 7);
+
+                        const queryOptions = {
+                            period1: startDate,
+                            period2: endDate,
+                            interval: '1d' as const,
+                        };
+
+                        const chartResult = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
+                        const quotes = chartResult?.quotes || [];
+                        const history = this.processHistory(quotes);
+
+                        return { ok: true, symbol, priceData, history };
+                    } catch (error) {
+                        console.error(`Error processing market data for ${symbol}:`, error);
+                        return { ok: false, symbol, error };
                     }
+                };
 
-                    // 2. Fetch History (Chart)
-                    const endDate = new Date();
-                    const startDate = new Date();
-                    startDate.setFullYear(startDate.getFullYear() - 20);
-                    startDate.setDate(startDate.getDate() - 7);
+                const results = await Promise.all(symbolList.map(symbol => processSymbol(symbol)));
+                const validResults = results.filter((r): r is SymbolProcessSuccess => r.ok);
+                const failedResults = results.filter((r): r is SymbolProcessFailure => !r.ok);
 
-                    const queryOptions = {
-                        period1: startDate,
-                        period2: endDate,
-                        interval: '1d' as const,
-                    };
+                if (validResults.length > 0) {
+                    const upserts = validResults.map(({ symbol, priceData, history }) =>
+                        prisma.marketDataCache.upsert({
+                            where: { symbol },
+                            update: {
+                                price: priceData.price,
+                                change: priceData.change,
+                                changePercent: priceData.changePercent,
+                                currency: priceData.currency,
+                                sector: priceData.sector,
+                                country: priceData.country,
+                                sectorAllocations: priceData.sectorAllocations,
+                                countryAllocations: priceData.countryAllocations,
+                                dividendRate: priceData.dividendRate,
+                                dividendYield: priceData.dividendYield,
+                                exDividendDate: priceData.exDividendDate,
+                                estNextDividendAmount: priceData.estNextDividendAmount,
+                                history: history,
+                                marketTime: priceData.marketTime,
+                                metadataUpdatedAt: now,
+                                historyUpdatedAt: now,
+                                lastUpdated: now
+                            } as any,
+                            create: {
+                                symbol,
+                                price: priceData.price,
+                                change: priceData.change,
+                                changePercent: priceData.changePercent,
+                                currency: priceData.currency,
+                                sector: priceData.sector,
+                                country: priceData.country,
+                                sectorAllocations: priceData.sectorAllocations,
+                                countryAllocations: priceData.countryAllocations,
+                                dividendRate: priceData.dividendRate,
+                                dividendYield: priceData.dividendYield,
+                                exDividendDate: priceData.exDividendDate,
+                                estNextDividendAmount: priceData.estNextDividendAmount,
+                                history: history,
+                                marketTime: priceData.marketTime,
+                                metadataUpdatedAt: now,
+                                historyUpdatedAt: now,
+                                lastUpdated: now
+                            } as any
+                        })
+                    );
 
-                    const chartResult = await yahooFinance.chart(symbol, queryOptions) as any;
-                    const quotes = chartResult?.quotes || [];
-
-                    const history = this.processHistory(quotes);
-
-                    return {
-                        symbol,
-                        priceData,
-                        history
-                    };
-                } catch (error) {
-                    console.error(`Error processing market data for ${symbol}:`, error);
-                    return null;
+                    await prisma.$transaction(upserts);
+                    invalidateMarketCaches({
+                        symbols: validResults.map(r => r.symbol),
+                        clearIntraday: true,
+                        clearDailyUnadjusted: true,
+                    });
+                    console.log(`Market data refreshed for ${validResults.length} symbol(s)`);
                 }
-            };
 
-            const results = await Promise.all(symbolList.map(symbol => processSymbol(symbol)));
-            const validResults = results.filter((r): r is NonNullable<typeof r> => r !== null);
-
-            if (validResults.length > 0) {
-                const upserts = validResults.map(({ symbol, priceData, history }) =>
-                    prisma.marketDataCache.upsert({
-                        where: { symbol },
-                        update: {
-                            price: priceData.price,
-                            change: priceData.change,
-                            changePercent: priceData.changePercent,
-                            currency: priceData.currency,
-                            sector: priceData.sector,
-                            country: priceData.country,
-                            sectorAllocations: priceData.sectorAllocations,
-                            countryAllocations: priceData.countryAllocations,
-                            dividendRate: priceData.dividendRate,
-                            dividendYield: priceData.dividendYield,
-                            exDividendDate: priceData.exDividendDate,
-                            estNextDividendAmount: priceData.estNextDividendAmount,
-                            history: history,
-                            marketTime: priceData.marketTime,
-                            lastUpdated: now
-                        },
-                        create: {
-                            symbol,
-                            price: priceData.price,
-                            change: priceData.change,
-                            changePercent: priceData.changePercent,
-                            currency: priceData.currency,
-                            sector: priceData.sector,
-                            country: priceData.country,
-                            sectorAllocations: priceData.sectorAllocations,
-                            countryAllocations: priceData.countryAllocations,
-                            dividendRate: priceData.dividendRate,
-                            dividendYield: priceData.dividendYield,
-                            exDividendDate: priceData.exDividendDate,
-                            estNextDividendAmount: priceData.estNextDividendAmount,
-                            history: history,
-                            marketTime: priceData.marketTime,
-                            lastUpdated: now
-                        }
-                    })
-                );
-
-                await prisma.$transaction(upserts);
-                console.log(`Market data refreshed for ${validResults.length} symbol(s)`);
+                if (validResults.length === 0 && failedResults.length > 0) {
+                    throw failedResults[0].error instanceof Error
+                        ? failedResults[0].error
+                        : new Error(String(failedResults[0].error || 'Failed to refresh market data'));
+                }
+            } catch (error) {
+                console.error(`Error refreshing market data for symbols:`, error);
+                throw error;
+            } finally {
+                inFlightMap.delete(batchKey);
             }
-        } catch (error) {
-            console.error(`Error refreshing market data for symbols:`, error);
-        }
+        })();
+
+        inFlightMap.set(batchKey, promise);
+        await promise;
     }
 
     /**
-     * Efficiently updates ONLY current price and change data.
-     * Supports single symbol or bulk array of symbols to avoid N+1 queries.
-     * Skips history, profiles, dividends.
-     * Used for frequent (e.g. 2 min) cron updates.
+     * Efficiently upserts ONLY current price, change, currency, and marketTime in chunked batches.
+     * Creates missing cache rows cleanly while preserving existing metadata/history columns on update.
+     * Deduplicates concurrent overlapping calls per symbol so overlapping cron/SWR/manual runs
+     * never fire duplicate Yahoo quote requests.
      */
     static async refreshPriceOnly(symbols: string | string[]): Promise<number> {
-        const symbolList = Array.isArray(symbols) ? symbols : [symbols];
+        const rawList = Array.isArray(symbols) ? symbols : [symbols];
+        const symbolList = Array.from(new Set(rawList.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean)));
         if (symbolList.length === 0) return 0;
 
-        try {
-            // Bulk fetch quote for all symbols in batch or single symbol
-            const result = await apiThrottler.add(() => yahooFinance.quote(symbols as any));
-            if (!result) return 0;
+        interface SymbolFlightDeferred {
+            promise: Promise<boolean>;
+            resolve: (updated: boolean) => void;
+            reject: (err: unknown) => void;
+        }
 
-            const quotes: any[] = Array.isArray(result) ? result : [result];
-            if (quotes.length === 0) return 0;
+        const inFlightMap = getInFlightMap<boolean>('_marketPriceOnlySymbolInFlight');
+        const waitPromises: Array<Promise<boolean>> = [];
+        const toFetch: string[] = [];
+        const claimed = new Map<string, SymbolFlightDeferred>();
 
-            const now = new Date();
-            const updates = quotes
-                .filter(q => q && q.symbol)
-                .map(q => {
-                    const priceData: Record<string, any> = {
-                        price: q.regularMarketPrice || 0,
-                        change: q.regularMarketChange || 0,
-                        changePercent: q.regularMarketChangePercent || 0,
-                        lastUpdated: now
-                    };
-                    if (q.regularMarketTime) {
-                        priceData.marketTime = new Date(q.regularMarketTime);
-                    }
-                    return prisma.marketDataCache.updateMany({
-                        where: { symbol: q.symbol },
-                        data: priceData
-                    });
-                });
-
-            if (updates.length > 0) {
-                await prisma.$transaction(updates);
+        for (const sym of symbolList) {
+            const existing = inFlightMap.get(sym);
+            if (existing) {
+                waitPromises.push(existing);
+                continue;
             }
 
-            return updates.length;
-        } catch (error) {
-            throw error;
-        }
-    }
+            let resolve!: (updated: boolean) => void;
+            let reject!: (err: unknown) => void;
+            const promise = new Promise<boolean>((res, rej) => {
+                resolve = res;
+                reject = rej;
+            });
+            // Prevent unhandled rejection crashes if an earlier chunk aborts before later chunks run.
+            promise.catch(() => {});
 
+            inFlightMap.set(sym, promise);
+            claimed.set(sym, { promise, resolve, reject });
+            waitPromises.push(promise);
+            toFetch.push(sym);
+        }
+
+        if (toFetch.length > 0) {
+            const batchSize = Math.max(1, getMarketConfig().incrementalBatchSize);
+            try {
+                for (let i = 0; i < toFetch.length; i += batchSize) {
+                    const chunk = toFetch.slice(i, i + batchSize);
+                    const quoteArg = !Array.isArray(symbols) && chunk.length === 1 && toFetch.length === 1
+                        ? chunk[0]
+                        : chunk;
+
+                    const result = await apiThrottler.add(() =>
+                        yahooFinance.quote(quoteArg as any, {}, { validateResult: false })
+                    );
+                    const quotes: any[] = !result ? [] : (Array.isArray(result) ? result : [result]);
+
+                    const now = new Date();
+                    const validQuotes = quotes.filter(
+                        (q) =>
+                            q &&
+                            typeof q.symbol === 'string' &&
+                            q.symbol.trim().length > 0 &&
+                            typeof q.regularMarketPrice === 'number' &&
+                            Number.isFinite(q.regularMarketPrice) &&
+                            q.regularMarketPrice > 0
+                    );
+
+                    const chunkUpdatedSymbols: string[] = [];
+                    if (validQuotes.length > 0) {
+                        const upserts = validQuotes.map((q) => {
+                            const sym = q.symbol.trim();
+                            chunkUpdatedSymbols.push(sym);
+                            const change = typeof q.regularMarketChange === 'number' && Number.isFinite(q.regularMarketChange)
+                                ? q.regularMarketChange
+                                : 0;
+                            const changePercent = typeof q.regularMarketChangePercent === 'number' && Number.isFinite(q.regularMarketChangePercent)
+                                ? q.regularMarketChangePercent
+                                : 0;
+                            const parsedMarketTime = q.regularMarketTime
+                                ? parseMarketTime(q.regularMarketTime, now)
+                                : undefined;
+
+                            const updateData: Record<string, any> = {
+                                price: q.regularMarketPrice,
+                                change,
+                                changePercent,
+                                lastUpdated: now,
+                            };
+                            if (parsedMarketTime) {
+                                updateData.marketTime = parsedMarketTime;
+                            }
+                            if (q.currency) {
+                                updateData.currency = q.currency;
+                            }
+
+                            return prisma.marketDataCache.upsert({
+                                where: { symbol: sym },
+                                update: updateData,
+                                create: {
+                                    symbol: sym,
+                                    price: q.regularMarketPrice,
+                                    change,
+                                    changePercent,
+                                    currency: q.currency || 'USD',
+                                    marketTime: parsedMarketTime ?? now,
+                                    lastUpdated: now,
+                                }
+                            });
+                        });
+
+                        await prisma.$transaction(upserts);
+                        invalidateMarketCaches({ symbols: chunkUpdatedSymbols });
+                    }
+
+                    const updatedUpper = new Set(chunkUpdatedSymbols.map((s) => s.toUpperCase()));
+                    for (const sym of chunk) {
+                        const deferred = claimed.get(sym);
+                        if (deferred) {
+                            inFlightMap.delete(sym);
+                            claimed.delete(sym);
+                            deferred.resolve(updatedUpper.has(sym.toUpperCase()));
+                        }
+                    }
+                }
+            } catch (err) {
+                for (const [sym, deferred] of claimed.entries()) {
+                    inFlightMap.delete(sym);
+                    deferred.reject(err);
+                }
+                claimed.clear();
+            } finally {
+                for (const [sym, deferred] of claimed.entries()) {
+                    inFlightMap.delete(sym);
+                    deferred.resolve(false);
+                }
+                claimed.clear();
+            }
+        }
+
+        const outcomes = await Promise.all(waitPromises);
+        return outcomes.filter(Boolean).length;
+    }
 
     static async getIntradayHistory(symbol: string): Promise<Record<string, number>> {
         const prices: Record<string, number> = {};
         try {
             const list = await this.getIntradayPrices(symbol);
             list.forEach(p => {
-                // Ensure date is ISO string full timestamp
                 const d = new Date(p.date).toISOString();
                 prices[d] = p.value;
             });
@@ -1122,56 +1443,63 @@ export class MarketDataService {
         return prices;
     }
 
-    // Use global cache to survive module reloads
     private static get intradayCache() {
-        if (!(global as any)._marketIntradayCache) {
-            (global as any)._marketIntradayCache = new Map<string, { data: { date: string, value: number }[], timestamp: number }>();
+        if (!(globalThis as any)._marketIntradayCache) {
+            (globalThis as any)._marketIntradayCache = new Map<string, { data: { date: string, value: number }[], timestamp: number }>();
         }
-        return (global as any)._marketIntradayCache as Map<string, { data: { date: string, value: number }[], timestamp: number }>;
+        return (globalThis as any)._marketIntradayCache as Map<string, { data: { date: string, value: number }[], timestamp: number }>;
     }
 
-    // Increased to 5 minutes to improve 1D chart loading
     private static INTRADAY_TTL = 5 * 60 * 1000; // 5 Minutes
 
+    /**
+     * Fetches 15m intraday series for a symbol with 5-minute caching and singleflight coalescing.
+     */
     static async getIntradayPrices(symbol: string): Promise<{ date: string, value: number }[]> {
         const now = Date.now();
         const cached = this.intradayCache.get(symbol);
 
-        // 1. Return Cache if Valid
         if (cached && (now - cached.timestamp < this.INTRADAY_TTL)) {
             return cached.data;
         }
 
-        try {
-            // Calculate start date (5 days ago to ensure we get full recent session)
-            // Yahoo sometimes returns empty if weekend, so we need enough buffer to find the last valid session
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - 5);
-
-            const queryOptions = {
-                period1: startDate,
-                interval: '15m' as const,
-                includePrePost: false
-            };
-
-            const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
-            const quotes = result?.quotes || [];
-
-            // Return all quotes, filtering will happen in Analytics
-            const data = quotes
-                .filter((q: any) => q.date && (q.close || q.open))
-                .map((q: any) => ({
-                    date: new Date(q.date).toISOString(),
-                    value: q.close || q.open
-                }));
-
-            // 2. Set Cache
-            this.intradayCache.set(symbol, { data, timestamp: now });
-
-            return data;
-
-        } catch (error) {
-            throw error;
+        const inFlightMap = getInFlightMap<{ date: string, value: number }[]>('_marketIntradayInFlight');
+        if (inFlightMap.has(symbol)) {
+            return await inFlightMap.get(symbol)!;
         }
+
+        const promise = (async (): Promise<{ date: string, value: number }[]> => {
+            try {
+                const startDate = new Date();
+                startDate.setDate(startDate.getDate() - 5);
+
+                const queryOptions = {
+                    period1: startDate,
+                    interval: '15m' as const,
+                    includePrePost: false
+                };
+
+                const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
+                const quotes = result?.quotes || [];
+
+                const data = quotes
+                    .filter((q: any) => q.date && (q.close || q.open))
+                    .map((q: any) => ({
+                        date: new Date(q.date).toISOString(),
+                        value: q.close || q.open
+                    }));
+
+                this.intradayCache.set(symbol, { data, timestamp: Date.now() });
+                return data;
+            } finally {
+                inFlightMap.delete(symbol);
+            }
+        })();
+
+        inFlightMap.set(symbol, promise);
+        return await promise;
     }
 }
+
+// Register background SWR price flusher dynamically on MarketDataService so tests mocking refreshPriceOnly intercept it.
+registerBackgroundPriceRunner((batch) => MarketDataService.refreshPriceOnly(batch));

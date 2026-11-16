@@ -5,11 +5,12 @@ import styles from '../page.module.css';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
 import { useEffect, useState } from 'react';
 import { getExchangeRate } from '@/lib/currencyCache';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import { MdTableChart } from 'react-icons/md';
 
 const QUICK_CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD'];
 
-function ExchangeRateCell({ from, to }: { from: string; to: string }) {
+function ExchangeRateCell({ from, to, refreshToken }: { from: string; to: string; refreshToken: number }) {
     const [rate, setRate] = useState<number | null>(null);
 
     useEffect(() => {
@@ -24,7 +25,7 @@ function ExchangeRateCell({ from, to }: { from: string; to: string }) {
         return () => {
             mounted = false;
         };
-    }, [from, to]);
+    }, [from, to, refreshToken]);
 
     const isSelf = from === to;
     if (rate === null) {
@@ -36,6 +37,13 @@ function ExchangeRateCell({ from, to }: { from: string; to: string }) {
 
 export default function CurrencySettingsPage() {
     const { currency, setCurrency, format } = useCurrency();
+    const [refreshToken, setRefreshToken] = useState(0);
+
+    useLiveSync({
+        events: ['MARKET_SYNCED'],
+        revalidateIntervalMs: 10 * 60 * 1000,
+        onSync: () => setRefreshToken((n) => n + 1),
+    });
 
     return (
         <div className={styles.stack}>
@@ -97,7 +105,7 @@ export default function CurrencySettingsPage() {
                             Exchange Rate Matrix
                         </h2>
                         <p className={styles.cardSubheading}>
-                            Cross-currency conversion rates cached across the platform and refreshed every 8 hours.
+                            Cross-currency conversion rates updated via 2-minute server FX sync and 10-minute client cache.
                         </p>
                     </div>
                     <span className={`${styles.statusPill} ${styles.statusPositive}`}>
@@ -128,7 +136,12 @@ export default function CurrencySettingsPage() {
                                 >
                                     <td>{from.code}</td>
                                     {SUPPORTED_CURRENCIES.map((to) => (
-                                        <ExchangeRateCell key={`${from.code}-${to.code}`} from={from.code} to={to.code} />
+                                        <ExchangeRateCell
+                                            key={`${from.code}-${to.code}`}
+                                            from={from.code}
+                                            to={to.code}
+                                            refreshToken={refreshToken}
+                                        />
                                     ))}
                                 </tr>
                             ))}

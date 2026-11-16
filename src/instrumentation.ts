@@ -1,67 +1,64 @@
-
-
 export async function register() {
     console.log(`[Instrumentation] Registering. Runtime: ${process.env.NEXT_RUNTIME}`);
 
     if (process.env.NEXT_RUNTIME === 'nodejs' || !process.env.NEXT_RUNTIME) {
-        // Only run on server-side (Node.js)
+        const g = globalThis as { __ascendCronInitialized?: boolean };
+        if (g.__ascendCronInitialized) {
+            return;
+        }
+        g.__ascendCronInitialized = true;
+
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const cron = require('node-cron');
+        const { runIncrementalSync, runFullMarketSync } = await import('@/lib/market-sync');
 
-        console.log('[Instrumentation] Initializing Cron Jobs...');
+        console.log('[Instrumentation] Initializing in-process market sync schedules...');
 
-        // State to coordinate jobs
-        let isFullRefreshRunning = false;
-
-        // 1. Schedule: Every hour at minute 0 (HEAVY REFRESH: History + Metadata)
-        cron.schedule('0 * * * *', async () => {
-            if (isFullRefreshRunning) return; // Should not happen given schedule, but safety
-            isFullRefreshRunning = true;
-            console.log('[Cron] Triggering Scheduled Market Data Refresh (Full)...');
-            try {
-                const baseUrl = process.env.APP_URL || 'http://127.0.0.1:3000';
-                await fetch(`${baseUrl}/api/cron/market-data`, {
-                    headers: { 'x-cron-secret': process.env.CRON_SECRET || '' }
-                });
-            } catch (e) {
-                console.error('[Cron] Failed to trigger full market data refresh:', e);
-            } finally {
-                isFullRefreshRunning = false;
-                console.log('[Cron] Full Refresh Finished. Locking released.');
-            }
-        });
-
-        // 2. Schedule: Every 2 minutes (LIGHT REFRESH: Price Only)
-        // Note: logs here confirm scheduling works
+        // 1. Every 2 minutes: fast incremental price/FX sync (respects market hours cadence)
         cron.schedule('*/2 * * * *', async () => {
-            if (isFullRefreshRunning) {
-                console.log('[Cron] Skipping Incremental Refresh (Full Refresh in progress).');
-                return;
-            }
-
-            console.log('[Cron] Triggering Incremental Price Refresh...');
             try {
-                const baseUrl = process.env.APP_URL || 'http://127.0.0.1:3000';
-                const res = await fetch(`${baseUrl}/api/cron/market-data/incremental`, {
-                    headers: { 'x-cron-secret': process.env.CRON_SECRET || '' }
+                const res = await runIncrementalSync({
+                    respectMarketHours: true,
+                    reason: 'cron',
                 });
-                if (!res.ok) console.error(`[Cron] Incremental failed: ${res.status}`);
+                if (res.ran) {
+                    console.log(`[Cron:Incremental] Done. ${res.stats.success}/${res.stats.total} updated.`);
+                }
             } catch (e) {
-                console.error('[Cron] Failed to trigger incremental refresh:', e);
+                console.error('[Cron] Failed incremental price refresh:', e);
             }
         });
 
-        // Trigger on Startup (One-off)
-        setTimeout(async () => {
-            console.log('[Startup] Triggering Initial Market Data Refresh...');
+        // 2. Every 6 hours: metadata, dividend, and 20Y chart hydration (skips fresh entries)
+        cron.schedule('0 */6 * * *', async () => {
+            console.log('[Cron] Triggering scheduled metadata & history sync...');
             try {
-                const baseUrl = process.env.APP_URL || 'http://127.0.0.1:3000';
-                await fetch(`${baseUrl}/api/cron/market-data`, {
-                    headers: { 'x-cron-secret': process.env.CRON_SECRET || '' }
-                });
+                await runFullMarketSync({ force: false });
             } catch (e) {
-                console.error('[Startup] Failed to trigger initial refresh:', e);
+                console.error('[Cron] Failed metadata/history refresh:', e);
             }
-        }, 10000); // 10s delay
+        });
+
+        // 3. Startup fast price warm-up (+5s)
+        const startupFastTimer = setTimeout(async () => {
+            console.log('[Startup] Running initial fast price sync...');
+            try {
+                await runIncrementalSync({ force: true, reason: 'startup' });
+            } catch (e) {
+                console.error('[Startup] Initial fast sync failed:', e);
+            }
+        }, 5000);
+        if (typeof startupFastTimer.unref === 'function') startupFastTimer.unref();
+
+        // 4. Startup stale metadata/history hydration (+25s, decoupled from fast price sync)
+        const startupFullTimer = setTimeout(async () => {
+            console.log('[Startup] Running initial stale metadata/history hydration...');
+            try {
+                await runFullMarketSync({ force: false, onlyStaleMetadata: true });
+            } catch (e) {
+                console.error('[Startup] Initial metadata hydration failed:', e);
+            }
+        }, 25000);
+        if (typeof startupFullTimer.unref === 'function') startupFullTimer.unref();
     }
 }

@@ -1,16 +1,20 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from '../page.module.css';
 import { useSession } from 'next-auth/react';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { emitLiveSyncEvent, ensureMarketSyncConvergence } from '@/lib/live-sync';
 import {
     MdAccountBalanceWallet,
     MdAdd,
+    MdBolt,
     MdCategory,
     MdClose,
     MdPlayArrow,
     MdReceiptLong,
+    MdRefresh,
     MdSync
 } from 'react-icons/md';
 
@@ -39,8 +43,67 @@ interface YahooTypeRecord {
     name: string;
 }
 
+interface MarketSyncStatusResponse {
+    marketDataVersion: number;
+    portfolioMutationVersion: number;
+    isIncrementalRunning: boolean;
+    isFullSyncRunning: boolean;
+    isRefreshing: boolean;
+    lastIncrementalSyncAt: string | null;
+    lastFullSyncAt: string | null;
+    lastMarketWriteAt: string | null;
+    lastSyncError: string | null;
+    lastIncrementalStats: {
+        total: number;
+        success: number;
+        failed: number;
+    } | null;
+    isMarketOpen: boolean;
+    sessionLabel: string;
+    effectivePriceTtlMs: number;
+    config?: {
+        priceCacheTtlMs: number;
+        offHoursPriceCacheTtlMs: number;
+        metadataCacheTtlMs: number;
+        historyCacheTtlMs: number;
+        manualRefreshCooldownMs: number;
+        marketHoursAware: boolean;
+    };
+    throttler?: {
+        isRateLimited: boolean;
+        resetTime: string | null;
+        queueLength: number;
+        activeCount: number;
+    };
+    activeSymbolCount: number;
+    staleSymbolCount: number;
+    oldestSyncAt: string | null;
+    newestSyncAt: string | null;
+}
+
 interface SessionUser {
     role?: string;
+}
+
+function formatDurationShort(ms: number | undefined): string {
+    if (!ms || !Number.isFinite(ms)) return '—';
+    const seconds = Math.round(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = (ms / 3_600_000);
+    return Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
+}
+
+function formatRelativeTimestamp(isoDate: string | null | undefined, nowMs: number): string {
+    if (!isoDate) return 'Never';
+    const ts = Date.parse(isoDate);
+    if (!Number.isFinite(ts)) return 'Unknown';
+    const diffSec = Math.max(0, Math.floor((nowMs - ts) / 1000));
+    if (diffSec < 45) return 'Just now';
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+    return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export default function MasterDataSettingsPage() {
@@ -63,10 +126,15 @@ export default function MasterDataSettingsPage() {
     const [editBehavior, setEditBehavior] = useState<'ADD' | 'REMOVE' | 'NEUTRAL'>('ADD');
     const [editCurrency, setEditCurrency] = useState('USD');
 
+    const [syncStatus, setSyncStatus] = useState<MarketSyncStatusResponse | null>(null);
+    const [nowMs, setNowMs] = useState(() => Date.now());
     const [logs, setLogs] = useState<string[]>([]);
+    const [isQuickSyncing, setIsQuickSyncing] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
     const [errorBanner, setErrorBanner] = useState<string | null>(null);
     const [successBanner, setSuccessBanner] = useState<string | null>(null);
+
+    const suppressSelfSyncRef = useRef(false);
 
     const { data: session } = useSession();
     const role = (session?.user as SessionUser | undefined)?.role || 'VIEWER';
@@ -74,10 +142,10 @@ export default function MasterDataSettingsPage() {
     const loadMasterData = useCallback(async (signal?: AbortSignal) => {
         try {
             const [invRes, yahooRes, actRes, accRes] = await Promise.all([
-                fetch('/api/settings/investment-types', { signal }),
-                fetch('/api/settings/yahoo-types', { signal }),
-                fetch('/api/settings/activity-types', { signal }),
-                fetch('/api/settings/account-types', { signal })
+                fetch('/api/settings/investment-types', { signal, cache: 'no-store' }),
+                fetch('/api/settings/yahoo-types', { signal, cache: 'no-store' }),
+                fetch('/api/settings/activity-types', { signal, cache: 'no-store' }),
+                fetch('/api/settings/account-types', { signal, cache: 'no-store' })
             ]);
 
             if (signal?.aborted) return;
@@ -104,15 +172,68 @@ export default function MasterDataSettingsPage() {
         }
     }, []);
 
+    const loadSyncStatus = useCallback(async (signal?: AbortSignal) => {
+        try {
+            const res = await fetch('/api/market-data/status', { signal, cache: 'no-store' });
+            if (!res.ok || signal?.aborted) return;
+            const status = (await res.json()) as MarketSyncStatusResponse;
+            if (signal?.aborted || !status || typeof status !== 'object') return;
+            setSyncStatus(status);
+            setNowMs(Date.now());
+            ensureMarketSyncConvergence({
+                currentVersion: status.marketDataVersion,
+                isRefreshing: status.isRefreshing,
+                staleCount: status.staleSymbolCount,
+                throttledUntil: status.throttler?.resetTime ?? null,
+            });
+        } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') return;
+            console.error('Failed to load market sync status', err);
+        }
+    }, []);
+
+    const notifyPortfolioUpdated = useCallback((reason: string) => {
+        try {
+            suppressSelfSyncRef.current = true;
+            emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason });
+        } finally {
+            suppressSelfSyncRef.current = false;
+        }
+    }, []);
+
+    const notifyMarketSynced = useCallback((reason: string, version?: number) => {
+        try {
+            suppressSelfSyncRef.current = true;
+            emitLiveSyncEvent('MARKET_SYNCED', { reason, version, isRefreshing: false });
+        } finally {
+            suppressSelfSyncRef.current = false;
+        }
+    }, []);
+
+    useLiveSync({
+        enabled: role === 'ADMIN',
+        events: ['MARKET_SYNCED', 'PORTFOLIO_UPDATED', 'ACTIVITIES_CHANGED', 'SYNC_STATUS_CHANGED'],
+        onSync: () => {
+            if (suppressSelfSyncRef.current) return;
+            void loadSyncStatus();
+        },
+    });
+
     useEffect(() => {
         if (role !== 'ADMIN') return;
         const controller = new AbortController();
-        const run = async () => {
-            await loadMasterData(controller.signal);
-        };
-        run();
+        void loadMasterData(controller.signal);
+        void loadSyncStatus(controller.signal);
         return () => controller.abort();
-    }, [role, loadMasterData]);
+    }, [role, loadMasterData, loadSyncStatus]);
+
+    useEffect(() => {
+        if (role !== 'ADMIN') return;
+        const id = window.setInterval(() => {
+            setNowMs(Date.now());
+        }, 15_000);
+        return () => window.clearInterval(id);
+    }, [role]);
 
     const cancelEditing = () => {
         setEditingScope(null);
@@ -137,6 +258,7 @@ export default function MasterDataSettingsPage() {
                 setNewInvestmentTypeMapping('');
                 setSuccessBanner('Investment type added.');
                 await loadMasterData();
+                notifyPortfolioUpdated('investment-type-created');
             } else {
                 const body = await res.json().catch(() => ({}));
                 setErrorBanner(body.error || 'Failed to add investment type.');
@@ -163,6 +285,10 @@ export default function MasterDataSettingsPage() {
                 cancelEditing();
                 setSuccessBanner('Investment type updated.');
                 await loadMasterData();
+                notifyPortfolioUpdated('investment-type-updated');
+            } else {
+                const body = await res.json().catch(() => ({}));
+                setErrorBanner(body.error || 'Failed to update investment type.');
             }
         } catch (error) {
             console.error('Failed to update investment type', error);
@@ -177,11 +303,13 @@ export default function MasterDataSettingsPage() {
             const res = await fetch(`/api/settings/investment-types/${id}`, { method: 'DELETE' });
             if (res.ok) {
                 await loadMasterData();
+                notifyPortfolioUpdated('investment-type-deleted');
             } else {
                 setErrorBanner('Failed to delete investment type.');
             }
         } catch (error) {
             console.error('Failed to delete investment type', error);
+            setErrorBanner('Network error while deleting investment type.');
         }
     };
 
@@ -199,6 +327,7 @@ export default function MasterDataSettingsPage() {
                 setNewActivityType('');
                 setSuccessBanner('Activity type added.');
                 await loadMasterData();
+                notifyPortfolioUpdated('activity-type-created');
             } else {
                 const body = await res.json().catch(() => ({}));
                 setErrorBanner(body.error || 'Failed to add activity type.');
@@ -222,6 +351,10 @@ export default function MasterDataSettingsPage() {
                 cancelEditing();
                 setSuccessBanner('Activity type updated.');
                 await loadMasterData();
+                notifyPortfolioUpdated('activity-type-updated');
+            } else {
+                const body = await res.json().catch(() => ({}));
+                setErrorBanner(body.error || 'Failed to update activity type.');
             }
         } catch (error) {
             console.error('Failed to update activity type', error);
@@ -236,11 +369,13 @@ export default function MasterDataSettingsPage() {
             const res = await fetch(`/api/settings/activity-types/${id}`, { method: 'DELETE' });
             if (res.ok) {
                 await loadMasterData();
+                notifyPortfolioUpdated('activity-type-deleted');
             } else {
                 setErrorBanner('Failed to delete activity type.');
             }
         } catch (error) {
             console.error('Failed to delete activity type', error);
+            setErrorBanner('Network error while deleting activity type.');
         }
     };
 
@@ -258,6 +393,7 @@ export default function MasterDataSettingsPage() {
                 setNewAccountTypeName('');
                 setSuccessBanner('Account type added.');
                 await loadMasterData();
+                notifyPortfolioUpdated('account-type-created');
             } else {
                 const body = await res.json().catch(() => ({}));
                 setErrorBanner(body.error || 'Failed to add account type.');
@@ -281,6 +417,10 @@ export default function MasterDataSettingsPage() {
                 cancelEditing();
                 setSuccessBanner('Account type updated.');
                 await loadMasterData();
+                notifyPortfolioUpdated('account-type-updated');
+            } else {
+                const body = await res.json().catch(() => ({}));
+                setErrorBanner(body.error || 'Failed to update account type.');
             }
         } catch (error) {
             console.error('Failed to update account type', error);
@@ -295,39 +435,109 @@ export default function MasterDataSettingsPage() {
             const res = await fetch(`/api/settings/account-types/${id}`, { method: 'DELETE' });
             if (res.ok) {
                 await loadMasterData();
+                notifyPortfolioUpdated('account-type-deleted');
             } else {
                 setErrorBanner('Failed to delete account type.');
             }
         } catch (error) {
             console.error('Failed to delete account type', error);
+            setErrorBanner('Network error while deleting account type.');
+        }
+    };
+
+    const triggerQuickPriceSync = async () => {
+        if (isQuickSyncing || isRunning) return;
+        setIsQuickSyncing(true);
+        setErrorBanner(null);
+        setSuccessBanner(null);
+
+        try {
+            const res = await fetch('/api/cron/market-data/incremental', { cache: 'no-store' });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(payload?.error || `HTTP ${res.status}`);
+            }
+
+            const stats = payload?.stats;
+            const summaryText = stats
+                ? `Quick price sync finished: ${stats.success}/${stats.total} updated${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${payload.coalesced ? ' (coalesced with active run)' : ''}.`
+                : 'Quick price sync completed.';
+
+            setSuccessBanner(summaryText);
+            setLogs((prev) => [...prev, `[Quick Sync] ${summaryText}`]);
+
+            const statusRes = await fetch('/api/market-data/status', { cache: 'no-store' });
+            let version: number | undefined;
+            if (statusRes.ok) {
+                const freshStatus = (await statusRes.json()) as MarketSyncStatusResponse;
+                setSyncStatus(freshStatus);
+                setNowMs(Date.now());
+                version = freshStatus.marketDataVersion;
+            }
+            notifyMarketSynced('admin-quick-sync', version);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Quick price sync failed.';
+            setErrorBanner(msg);
+            setLogs((prev) => [...prev, `[Quick Sync Error] ${msg}`]);
+        } finally {
+            setIsQuickSyncing(false);
         }
     };
 
     const triggerMarketDataRefresh = async () => {
-        if (isRunning) return;
-        if (!confirm('Start background market data refresh?')) return;
+        if (isRunning || isQuickSyncing) return;
+        if (!confirm('Start full background refresh of market quotes, metadata, and history?')) return;
 
         setIsRunning(true);
-        setLogs(['Initializing market data refresh stream...']);
+        setErrorBanner(null);
+        setSuccessBanner(null);
+        setLogs(['Initializing full metadata & history sync stream...']);
 
         try {
-            const response = await fetch('/api/cron/market-data?stream=true');
-            const reader = response.body?.getReader();
-            const decoder = new TextDecoder();
+            const response = await fetch('/api/cron/market-data?stream=true', { cache: 'no-store' });
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                throw new Error(errText || `HTTP ${response.status}`);
+            }
 
+            const reader = response.body?.getReader();
             if (!reader) throw new Error('No readable stream');
+
+            const decoder = new TextDecoder();
+            let lineBuffer = '';
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                const text = decoder.decode(value, { stream: true });
-                const newLines = text.split('\n').filter(Boolean);
-                if (newLines.length > 0) {
-                    setLogs((prev) => [...prev, ...newLines]);
+                lineBuffer += decoder.decode(value, { stream: true });
+                const parts = lineBuffer.split('\n');
+                lineBuffer = parts.pop() ?? '';
+                const lines = parts.filter(Boolean);
+                if (lines.length > 0) {
+                    setLogs((prev) => [...prev, ...lines]);
                 }
             }
-        } catch {
-            setLogs((prev) => [...prev, 'Error: Failed to stream refresh logs.']);
+
+            lineBuffer += decoder.decode();
+            const trailingLines = lineBuffer.split('\n').filter(Boolean);
+            if (trailingLines.length > 0) {
+                setLogs((prev) => [...prev, ...trailingLines]);
+            }
+
+            const statusRes = await fetch('/api/market-data/status', { cache: 'no-store' });
+            let version: number | undefined;
+            if (statusRes.ok) {
+                const freshStatus = (await statusRes.json()) as MarketSyncStatusResponse;
+                setSyncStatus(freshStatus);
+                setNowMs(Date.now());
+                version = freshStatus.marketDataVersion;
+            }
+            setSuccessBanner('Full metadata & history sync completed.');
+            notifyMarketSynced('admin-full-sync', version);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Failed to stream refresh logs.';
+            setErrorBanner(msg);
+            setLogs((prev) => [...prev, `Error: ${msg}`]);
         } finally {
             setIsRunning(false);
         }
@@ -351,6 +561,9 @@ export default function MasterDataSettingsPage() {
             return acc;
         }, {})
     );
+
+    const isSyncBusy = isRunning || isQuickSyncing || Boolean(syncStatus?.isRefreshing);
+    const isRateLimited = Boolean(syncStatus?.throttler?.isRateLimited);
 
     return (
         <div className={styles.stack}>
@@ -391,35 +604,168 @@ export default function MasterDataSettingsPage() {
                             Data Management &amp; Market Sync
                         </h2>
                         <p className={styles.cardSubheading}>
-                            Manually trigger a full background refresh of market quotes, historical prices, and dividends.
+                            Monitor market-hours freshness, throttler health, and run quick or full synchronization jobs.
                         </p>
                     </div>
-                    <span className={`${styles.statusPill} ${isRunning ? styles.statusWarning : styles.statusPositive}`}>
-                        {isRunning ? 'Streaming...' : 'Idle'}
-                    </span>
+                    <div className={styles.pillGroup}>
+                        {syncStatus && (
+                            <span className={`${styles.statusPill} ${styles.statusNeutral}`}>
+                                v{syncStatus.marketDataVersion}
+                            </span>
+                        )}
+                        <span
+                            className={`${styles.statusPill} ${
+                                isSyncBusy
+                                    ? styles.statusWarning
+                                    : isRateLimited
+                                        ? styles.statusNegative
+                                        : styles.statusPositive
+                            }`}
+                        >
+                            {isRunning
+                                ? 'Full Sync Running...'
+                                : isQuickSyncing || syncStatus?.isRefreshing
+                                    ? 'Syncing Quotes...'
+                                    : isRateLimited
+                                        ? 'Rate Limited'
+                                        : 'Idle'}
+                        </span>
+                    </div>
                 </div>
 
-                <div className={styles.summaryStrip}>
-                    <button
-                        type="button"
-                        onClick={triggerMarketDataRefresh}
-                        className={styles.button}
-                        disabled={isRunning}
-                    >
-                        <MdPlayArrow size={18} aria-hidden="true" />
-                        {isRunning ? 'Refreshing Market Data...' : 'Trigger Market Data Refresh'}
-                    </button>
+                {syncStatus && (
+                    <div className={styles.diagGrid}>
+                        <div className={styles.diagTile}>
+                            <span className={styles.diagLabel}>Market Session</span>
+                            <div className={styles.diagValueRow}>
+                                <span className={styles.diagValue}>{syncStatus.sessionLabel}</span>
+                                <span
+                                    className={`${styles.statusPill} ${
+                                        syncStatus.isMarketOpen ? styles.statusPositive : styles.statusNeutral
+                                    }`}
+                                >
+                                    {syncStatus.isMarketOpen ? 'Open' : 'Off-Hours'}
+                                </span>
+                            </div>
+                            <span className={styles.diagSub}>
+                                Effective TTL: {formatDurationShort(syncStatus.effectivePriceTtlMs)}
+                            </span>
+                        </div>
 
-                    {logs.length > 0 && (
+                        <div className={styles.diagTile}>
+                            <span className={styles.diagLabel}>Tracked Symbols</span>
+                            <div className={styles.diagValueRow}>
+                                <span className={styles.diagValue}>{syncStatus.activeSymbolCount} active</span>
+                                <span
+                                    className={`${styles.statusPill} ${
+                                        syncStatus.staleSymbolCount > 0 ? styles.statusWarning : styles.statusPositive
+                                    }`}
+                                >
+                                    {syncStatus.staleSymbolCount} stale
+                                </span>
+                            </div>
+                            <span className={styles.diagSub}>
+                                Oldest quote: {formatRelativeTimestamp(syncStatus.oldestSyncAt, nowMs)}
+                            </span>
+                        </div>
+
+                        <div className={styles.diagTile}>
+                            <span className={styles.diagLabel}>Last Quick Price Sync</span>
+                            <div className={styles.diagValueRow}>
+                                <span className={styles.diagValue}>
+                                    {formatRelativeTimestamp(syncStatus.lastIncrementalSyncAt, nowMs)}
+                                </span>
+                            </div>
+                            <span className={styles.diagSub}>
+                                {syncStatus.lastIncrementalStats
+                                    ? `${syncStatus.lastIncrementalStats.success}/${syncStatus.lastIncrementalStats.total} updated${
+                                          syncStatus.lastIncrementalStats.failed > 0
+                                              ? ` · ${syncStatus.lastIncrementalStats.failed} failed`
+                                              : ''
+                                      }`
+                                    : 'No incremental run recorded yet'}
+                            </span>
+                        </div>
+
+                        <div className={styles.diagTile}>
+                            <span className={styles.diagLabel}>Full Sync &amp; Throttler</span>
+                            <div className={styles.diagValueRow}>
+                                <span className={styles.diagValue}>
+                                    {formatRelativeTimestamp(syncStatus.lastFullSyncAt, nowMs)}
+                                </span>
+                                <span
+                                    className={`${styles.statusPill} ${
+                                        isRateLimited ? styles.statusNegative : styles.statusPositive
+                                    }`}
+                                >
+                                    {isRateLimited ? 'Cooldown' : 'Healthy'}
+                                </span>
+                            </div>
+                            <span className={styles.diagSub}>
+                                {isRateLimited && syncStatus.throttler?.resetTime
+                                    ? `Resets ${new Date(syncStatus.throttler.resetTime).toLocaleTimeString([], {
+                                          hour: '2-digit',
+                                          minute: '2-digit',
+                                      })}`
+                                    : `Queue ${syncStatus.throttler?.queueLength ?? 0} · Active ${
+                                          syncStatus.throttler?.activeCount ?? 0
+                                      }`}
+                            </span>
+                        </div>
+                    </div>
+                )}
+
+                {syncStatus?.lastSyncError && (
+                    <div role="status" className={styles.errorBanner}>
+                        <span>Last sync error: {syncStatus.lastSyncError}</span>
+                    </div>
+                )}
+
+                <div className={styles.summaryStrip}>
+                    <div className={styles.diagActions}>
+                        <button
+                            type="button"
+                            onClick={triggerQuickPriceSync}
+                            className={styles.button}
+                            disabled={isQuickSyncing || isRunning}
+                        >
+                            <MdBolt size={18} aria-hidden="true" />
+                            {isQuickSyncing ? 'Running Quick Price Sync...' : 'Run Quick Price Sync'}
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={triggerMarketDataRefresh}
+                            className={styles.secondaryBtn}
+                            disabled={isRunning || isQuickSyncing}
+                        >
+                            <MdPlayArrow size={18} aria-hidden="true" />
+                            {isRunning ? 'Running Full Sync...' : 'Run Full Metadata & History Sync'}
+                        </button>
+                    </div>
+
+                    <div className={styles.diagActions}>
                         <button
                             type="button"
                             className={`${styles.secondaryBtn} ${styles.compactBtn}`}
-                            onClick={() => setLogs([])}
-                            disabled={isRunning}
+                            onClick={() => void loadSyncStatus()}
+                            disabled={isRunning || isQuickSyncing}
                         >
-                            Clear Console
+                            <MdRefresh size={16} aria-hidden="true" />
+                            Refresh Status
                         </button>
-                    )}
+
+                        {logs.length > 0 && (
+                            <button
+                                type="button"
+                                className={`${styles.secondaryBtn} ${styles.compactBtn}`}
+                                onClick={() => setLogs([])}
+                                disabled={isRunning || isQuickSyncing}
+                            >
+                                Clear Console
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {logs.length > 0 && (

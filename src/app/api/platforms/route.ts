@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from "@/auth";
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function GET(request: Request) {
     const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     try {
         const platforms = await prisma.platform.findMany();
         return NextResponse.json(platforms);
-    } catch (error) {
+    } catch {
         return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
     }
 }
@@ -39,9 +39,10 @@ export async function POST(request: Request) {
                 currency: currency || 'USD'
             },
         });
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json(platform);
-    } catch (error) {
+    } catch {
         return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
     }
 }

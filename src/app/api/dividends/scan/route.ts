@@ -1,15 +1,11 @@
 
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import YahooFinance from 'yahoo-finance2';
+import { apiThrottler, yahooFinance } from '@/lib/market-data';
 import { calculateHoldingsFromActivities } from '@/lib/portfolio-helper';
 import { buildBehaviorMap } from '@/lib/activity-helpers';
 
 export const dynamic = 'force-dynamic';
-
-const yahooFinance = new YahooFinance({
-    suppressNotices: ['yahooSurvey', 'ripHistorical']
-});
 
 import { auth } from "@/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -160,12 +156,12 @@ export async function POST(request: Request) {
         // 2. Scan each symbol
         for (const symbol of symbolsToScan) {
             try {
-                const chartResult = await yahooFinance.chart(symbol, {
+                const chartResult = await apiThrottler.add(() => yahooFinance.chart(symbol, {
                     period1: startDate,
                     period2: endDate,
                     interval: '1d',
                     events: 'div'
-                });
+                }));
 
                 const symbolHoldingsActivities = holdingsActivitiesMap.get(symbol) || [];
                 const symbolExistingDividends = existingDividendsMap.get(symbol) || [];

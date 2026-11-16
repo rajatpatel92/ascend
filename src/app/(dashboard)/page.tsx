@@ -4,9 +4,13 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import Link from 'next/link';
+import { MdRefresh } from 'react-icons/md';
 import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import usePersistentState from '@/hooks/usePersistentState';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { ClientCache } from '@/lib/client-cache';
+import { emitLiveSyncEvent, ensureMarketSyncConvergence } from '@/lib/live-sync';
 import ReportFilters, { FilterOptions } from '@/components/ReportFilters';
 import PerformanceChart from '@/components/PerformanceChart';
 import TopMovers from '@/components/TopMovers';
@@ -17,6 +21,17 @@ interface AllocationItem {
   name: string;
   value: number;
   platformName?: string;
+}
+
+interface SyncStatusInfo {
+  syncedAt: string | null;
+  marketTime: string | null;
+  isRefreshing: boolean;
+  staleCount: number;
+  marketDataVersion: number;
+  isMarketOpen?: boolean;
+  effectivePriceTtlMs?: number;
+  throttledUntil: string | null;
 }
 
 interface PortfolioSummary {
@@ -43,6 +58,7 @@ interface PortfolioSummary {
   projectedDividends: number;
   upcomingDividends: any[];
   lastUpdated: string | null;
+  syncStatus?: SyncStatusInfo;
 }
 
 type AllocTabKey = 'account' | 'accountType' | 'type' | 'sector';
@@ -56,10 +72,24 @@ const ALLOC_TABS: { id: AllocTabKey; label: string }[] = [
 
 const SEGMENT_COLORS = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#06b6d4', '#64748b'];
 
+function formatRelativeSyncedLabel(isoDate: string | null | undefined, nowMs: number): string {
+  if (!isoDate) return 'Awaiting sync';
+  const ts = Date.parse(isoDate);
+  if (!Number.isFinite(ts)) return 'Synced recently';
+  const diffSec = Math.max(0, Math.floor((nowMs - ts) / 1000));
+  if (diffSec < 45) return 'Synced just now';
+  if (diffSec < 3600) return `Synced ${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `Synced ${Math.floor(diffSec / 3600)}h ago`;
+  return `Synced ${new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+}
+
 export default function Dashboard() {
   const { data: session } = useSession();
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const { format, convert, currency } = useCurrency();
+
+  const userRole = (session?.user as { role?: string } | undefined)?.role || 'VIEWER';
+  const canRefresh = userRole === 'ADMIN' || userRole === 'EDITOR';
 
   // Layer 1 Global Filters
   const [globalFilters, setGlobalFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('dashboard_filters', null);
@@ -73,42 +103,94 @@ export default function Dashboard() {
   const [allocTab, setAllocTab] = useState<AllocTabKey>('account');
   const allocTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
+  // Live sync, manual refresh & relative time tick state
+  const [syncTick, setSyncTick] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+  const [cooldownUntilMs, setCooldownUntilMs] = useState(0);
+  const [refreshFeedback, setRefreshFeedback] = useState<string | null>(null);
+  const loadedViewKeyRef = useRef<string | null>(null);
+
+  useLiveSync({
+    enabled: isFiltersLoaded,
+    events: ['MARKET_SYNCED', 'PORTFOLIO_UPDATED', 'ACTIVITIES_CHANGED', 'SYNC_STATUS_CHANGED'],
+    onSync: (_reason, event) => {
+      if (event?.type === 'SYNC_STATUS_CHANGED') {
+        setSummary((prev) => {
+          if (!prev || 'error' in prev || !prev.syncStatus) return prev;
+          return {
+            ...prev,
+            syncStatus: {
+              ...prev.syncStatus,
+              isRefreshing: event.isRefreshing ?? false,
+              throttledUntil:
+                event.throttledUntil !== undefined
+                  ? event.throttledUntil
+                  : prev.syncStatus.throttledUntil,
+            },
+          };
+        });
+        return;
+      }
+      setRefreshFeedback(null);
+      setSyncTick((t) => t + 1);
+    },
+  });
+
+  const activeThrottleResetMs = useMemo(() => {
+    if (!summary || 'error' in summary || !summary.syncStatus?.throttledUntil) return 0;
+    const parsed = Date.parse(summary.syncStatus.throttledUntil);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }, [summary]);
+
+  const hasActiveCountdown = cooldownUntilMs > nowMs || activeThrottleResetMs > nowMs;
+
+  useEffect(() => {
+    const intervalMs = hasActiveCountdown ? 1_000 : 30_000;
+    const id = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, intervalMs);
+    return () => window.clearInterval(id);
+  }, [hasActiveCountdown]);
+
   useEffect(() => {
     if (!isFiltersLoaded) return;
 
     const controller = new AbortController();
 
     const fetchData = async () => {
+      const investmentTypes = globalFilters?.investmentTypes || [];
+      const accountTypes = globalFilters?.accountTypes || [];
+      const cacheKey = ClientCache.generateKey('portfolio_summary', {
+        currency,
+        investmentTypes,
+        accountTypes,
+      });
+
       try {
-        let url = `/api/portfolio?currency=${currency}`;
-        if (globalFilters) {
-          if (globalFilters.investmentTypes.length > 0) {
-            url += `&investmentTypes=${globalFilters.investmentTypes.join(',')}`;
-          }
-          if (globalFilters.accountTypes.length > 0) {
-            url += `&accountTypes=${globalFilters.accountTypes.join(',')}`;
-          }
+        let url = `/api/portfolio?currency=${encodeURIComponent(currency)}`;
+        if (investmentTypes.length > 0) {
+          url += `&investmentTypes=${encodeURIComponent(investmentTypes.join(','))}`;
+        }
+        if (accountTypes.length > 0) {
+          url += `&accountTypes=${encodeURIComponent(accountTypes.join(','))}`;
         }
 
-        const cacheKey = `portfolio_summary_${currency}_${globalFilters ? JSON.stringify(globalFilters) : 'ALL'}`;
-
-        try {
-          const cached = localStorage.getItem(cacheKey);
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (parsed && typeof parsed === 'object' && !('error' in parsed)) {
-              setSummary(parsed);
-            }
-          }
-        } catch {
-          // Ignore malformed cache or storage access failure
+        const cached = ClientCache.get<PortfolioSummary>(cacheKey);
+        if (cached && typeof cached === 'object' && !('error' in cached)) {
+          setSummary(cached);
         }
 
-        const res = await fetch(url, { signal: controller.signal });
+        const res = await fetch(url, { signal: controller.signal, cache: 'no-store' });
         const data = await res.json();
         if (controller.signal.aborted) return;
 
         if (!res.ok || (data && typeof data === 'object' && 'error' in data)) {
+          // Preserve currently rendered data on background sync error for the same view
+          if (loadedViewKeyRef.current === cacheKey) {
+            setRefreshFeedback('Background update failed; showing last loaded quotes.');
+            return;
+          }
           setSummary(
             data && typeof data === 'object' && 'error' in data
               ? data
@@ -117,11 +199,19 @@ export default function Dashboard() {
           return;
         }
 
+        loadedViewKeyRef.current = cacheKey;
         setSummary(data);
-        try {
-          localStorage.setItem(cacheKey, JSON.stringify(data));
-        } catch {
-          // Ignore storage quota or private-mode errors
+        setRefreshFeedback(null);
+        setNowMs(Date.now());
+        ClientCache.set(cacheKey, data);
+
+        if (data?.syncStatus) {
+          ensureMarketSyncConvergence({
+            currentVersion: data.syncStatus.marketDataVersion,
+            isRefreshing: data.syncStatus.isRefreshing,
+            staleCount: data.syncStatus.staleCount,
+            throttledUntil: data.syncStatus.throttledUntil,
+          });
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -129,9 +219,51 @@ export default function Dashboard() {
       }
     };
 
-    fetchData();
+    void fetchData();
     return () => controller.abort();
-  }, [currency, globalFilters, isFiltersLoaded]);
+  }, [currency, globalFilters, isFiltersLoaded, syncTick]);
+
+  const handleManualRefresh = async () => {
+    if (!canRefresh || isManualRefreshing || cooldownUntilMs > Date.now()) return;
+    setIsManualRefreshing(true);
+    setRefreshFeedback(null);
+
+    try {
+      const res = await fetch('/api/market-data/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'portfolio', mode: 'price' }),
+      });
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setRefreshFeedback(payload?.error || `Refresh failed (HTTP ${res.status})`);
+        return;
+      }
+
+      const remainingMs =
+        typeof payload.cooldownRemainingMs === 'number' && payload.cooldownRemainingMs > 0
+          ? payload.cooldownRemainingMs
+          : 15_000;
+      setCooldownUntilMs(Date.now() + remainingMs);
+      setNowMs(Date.now());
+
+      if (payload.skippedReason === 'cooldown') {
+        setRefreshFeedback(`On cooldown (${Math.ceil(remainingMs / 1000)}s)`);
+        return;
+      }
+
+      emitLiveSyncEvent('MARKET_SYNCED', {
+        version: payload?.syncStatus?.marketDataVersion,
+        reason: 'manual-dashboard-refresh',
+      });
+    } catch (err) {
+      console.error('Failed to refresh portfolio market data', err);
+      setRefreshFeedback('Network error while refreshing quotes.');
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  };
 
   const metrics = useMemo(() => {
     if (!summary || 'error' in summary) {
@@ -303,6 +435,16 @@ export default function Dashboard() {
   const remainingAllocCount = Math.max(0, allocSnapshot.items.length - 4);
   const otherAllocValue = allocSnapshot.items.slice(4).reduce((sum, item) => sum + item.value, 0);
 
+  const syncedAtIso = summary.syncStatus?.syncedAt || summary.lastUpdated;
+  const marketTimeIso = summary.syncStatus?.marketTime || summary.lastUpdated;
+  const isSyncingNow = isManualRefreshing || Boolean(summary.syncStatus?.isRefreshing);
+  const isThrottled = activeThrottleResetMs > nowMs;
+  const throttleRemainingSec = isThrottled ? Math.max(1, Math.ceil((activeThrottleResetMs - nowMs) / 1000)) : 0;
+  const cooldownRemainingSec = cooldownUntilMs > nowMs ? Math.max(1, Math.ceil((cooldownUntilMs - nowMs) / 1000)) : 0;
+  const marketTimeLabel = marketTimeIso
+    ? new Date(marketTimeIso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
+
   return (
     <div className={styles.container}>
       {/* Header */}
@@ -311,17 +453,60 @@ export default function Dashboard() {
           <h1 className={styles.greeting}>{greeting}, {userName}</h1>
           <div className={styles.metaLine}>
             <span className={styles.date}>{dateStr}</span>
-            {summary.lastUpdated && (
-              <span className={styles.syncStatus}>
-                <span className={styles.statusDot} aria-hidden="true" />
-                Refreshed {new Date(summary.lastUpdated).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            <span
+              className={styles.syncStatus}
+              title={marketTimeLabel ? `Market data as of ${marketTimeLabel}` : 'Market data sync status'}
+            >
+              <span
+                className={`${styles.statusDot} ${
+                  isSyncingNow ? styles.statusDotRefreshing : isThrottled ? styles.statusDotWarning : ''
+                }`}
+                aria-hidden="true"
+              />
+              <span>{isSyncingNow ? 'Syncing quotes…' : formatRelativeSyncedLabel(syncedAtIso, nowMs)}</span>
+              {marketTimeLabel && (
+                <span className={styles.marketAsOf}>&bull; Market {marketTimeLabel}</span>
+              )}
+            </span>
+            {isThrottled && (
+              <span className={styles.throttlePill} role="status">
+                Rate-limited &bull; retrying in {throttleRemainingSec}s
+              </span>
+            )}
+            {refreshFeedback && (
+              <span className={styles.refreshFeedback} role="status">
+                {refreshFeedback}
               </span>
             )}
           </div>
         </div>
-        {isFiltersLoaded && (
-          <ReportFilters onChange={setGlobalFilters} initialFilters={globalFilters || undefined} />
-        )}
+        <div className={styles.headerControls}>
+          {canRefresh && (
+            <button
+              type="button"
+              className={styles.refreshBtn}
+              onClick={handleManualRefresh}
+              disabled={isManualRefreshing || cooldownRemainingSec > 0}
+              title="Refresh live market prices"
+            >
+              <MdRefresh
+                size={16}
+                className={isManualRefreshing ? styles.spinIcon : undefined}
+                aria-hidden="true"
+              />
+              <span>
+                {isManualRefreshing
+                  ? 'Refreshing…'
+                  : cooldownRemainingSec > 0
+                    ? `Refresh (${cooldownRemainingSec}s)`
+                    : 'Refresh'}
+              </span>
+            </button>
+          )}
+          {isFiltersLoaded && (
+            <ReportFilters onChange={setGlobalFilters} initialFilters={globalFilters || undefined} />
+          )}
+        </div>
       </header>
 
       <div className={styles.dashboardGrid}>

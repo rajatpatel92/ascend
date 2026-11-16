@@ -4,6 +4,7 @@
 import { useState, useRef } from 'react';
 import { FaCloudUploadAlt, FaCheckCircle, FaSpinner, FaTimes } from 'react-icons/fa';
 import { useModalBehavior } from '@/hooks/useModalBehavior';
+import { emitLiveSyncEvent } from '@/lib/live-sync';
 import modalStyles from './ActivitiesModal.module.css';
 import styles from './BulkUploadModal.module.css';
 
@@ -112,6 +113,7 @@ export default function BulkUploadModal({ onClose, onSuccess }: BulkUploadModalP
                 throw new Error(data.error || 'Import failed');
             }
 
+            emitLiveSyncEvent('ACTIVITIES_CHANGED', { reason: 'csv-import' });
             setStep('SUCCESS');
         } catch (err: any) {
             setError(err.message);

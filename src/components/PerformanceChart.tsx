@@ -16,6 +16,7 @@ import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
 import DateInput from './DateInput';
 import { computePerformanceChartMetrics, HistoryPointInput } from '@/lib/performance-chart';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 type HistoryPoint = HistoryPointInput;
 
@@ -70,9 +71,15 @@ export default function PerformanceChart({
     const [data, setData] = useState<HistoryPoint[]>([]);
     const [loading, setLoading] = useState(false);
     const [chartMode, setChartMode] = useState<ChartMode>('value');
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedViewKeyRef = useRef<string | null>(null);
     const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const { format, currency } = useCurrency();
     const { formatDate } = useDate();
+
+    useLiveSync({
+        onSync: () => setSyncTick((t) => t + 1),
+    });
 
     const modeTabs = useMemo<{ id: ChartMode; label: string }[]>(() => [
         { id: 'value', label: `Value vs. Invested (${currency})` },
@@ -81,6 +88,7 @@ export default function PerformanceChart({
 
     useEffect(() => {
         if (range === 'CUSTOM' && (!customStart || !customEnd)) {
+            loadedViewKeyRef.current = null;
             setData([]);
             setLoading(false);
             return;
@@ -97,7 +105,10 @@ export default function PerformanceChart({
                 setData(cached);
             }
 
-            setLoading(true);
+            const isBackground = loadedViewKeyRef.current === cacheKey;
+            if (!isBackground) {
+                setLoading(true);
+            }
             try {
                 let url = `/api/portfolio/history?range=${range}&currency=${currency}`;
                 if (range === 'CUSTOM' && customStart && customEnd) {
@@ -110,10 +121,11 @@ export default function PerformanceChart({
                     url += `&accountTypes=${filterAccountTypes.join(',')}`;
                 }
 
-                const res = await fetch(url, { signal: controller.signal });
+                const res = await fetch(url, { signal: controller.signal, cache: 'no-store' });
                 if (!res.ok) return;
                 const json = await res.json();
                 if (!controller.signal.aborted && Array.isArray(json)) {
+                    loadedViewKeyRef.current = cacheKey;
                     setData(json);
                     ClientCache.set(cacheKey, json);
                 }
@@ -127,9 +139,9 @@ export default function PerformanceChart({
             }
         };
 
-        fetchData();
+        void fetchData();
         return () => controller.abort();
-    }, [range, customStart, customEnd, currency, filterInvestmentTypes, filterAccountTypes]);
+    }, [range, customStart, customEnd, currency, filterInvestmentTypes, filterAccountTypes, syncTick]);
 
     const {
         chartData,

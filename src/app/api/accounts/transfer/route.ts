@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 import { buildBehaviorMap } from '@/lib/activity-helpers';
 
 export async function POST(request: Request) {
@@ -153,6 +154,8 @@ export async function POST(request: Request) {
                 });
             }
         });
+
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json({ success: true, transferredHoldingsCount: transferActivitiesToCreate.length / 2 });
 

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 import { normalizeActivityType } from '@/lib/activity-helpers';
 
 export async function POST(req: NextRequest) {
@@ -190,6 +191,7 @@ export async function POST(req: NextRequest) {
                 return prisma.activity.create({ data });
             })
         );
+        invalidatePortfolioMutationCaches();
         // 3. Trigger Market Data Refresh
         // Prefetch data so the UI is snappy when the user navigates away
         try {

@@ -1,10 +1,9 @@
-
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
-import { MarketDataService } from '@/lib/market-data';
+import { auth } from '@/auth';
 import { isValidCronSecret } from '@/lib/api-auth';
+import { runIncrementalSync } from '@/lib/market-sync';
 
-export const maxDuration = 30; // Fast execution
+export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
@@ -13,57 +12,31 @@ export async function GET(request: Request) {
     const bearerToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
     const headerKey = request.headers.get('x-cron-secret') || bearerToken;
 
-    if (!isValidCronSecret(headerKey) && !isValidCronSecret(key)) {
+    const session = await auth();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const isAdmin = (session?.user as any)?.role === 'ADMIN';
+
+    if (!isValidCronSecret(headerKey) && !isValidCronSecret(key) && !isAdmin) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-
     try {
         console.log('[Cron:Incremental] Starting Price-Only Refresh...');
-
-        // 1. Get Symbols
-        const investments = await prisma.investment.findMany({ select: { symbol: true } });
-        const uniqueSymbols = Array.from(new Set(investments.map(i => i.symbol)));
-
-        // Add Benchmark Symbols (both system and user configured)
-        const benchmarks = await prisma.benchmark.findMany({ select: { symbol: true } });
-        benchmarks.forEach(b => {
-            if (!uniqueSymbols.includes(b.symbol)) uniqueSymbols.push(b.symbol);
+        const result = await runIncrementalSync({
+            force: true,
+            reason: 'cron-http',
         });
 
-        // Add Currencies
-        const currencyPairs = ['CAD=X', 'EUR=X', 'GBP=X', 'INR=X', 'AUD=X', 'JPY=X'];
-        currencyPairs.forEach(pair => {
-            if (!uniqueSymbols.includes(pair)) uniqueSymbols.push(pair);
+        console.log(`[Cron:Incremental] Done. ${result.stats.success}/${result.stats.total} updated.`);
+        return NextResponse.json({
+            message: 'Incremental Refresh Done',
+            stats: result.stats,
+            coalesced: result.coalesced,
+            syncedAt: result.syncedAt,
         });
-
-        // 2. Process in Batches (Batch size: 10 symbols per request)
-        const BATCH_SIZE = 10;
-        const results = { total: uniqueSymbols.length, success: 0, failed: 0 };
-
-        for (let i = 0; i < uniqueSymbols.length; i += BATCH_SIZE) {
-            const batch = uniqueSymbols.slice(i, i + BATCH_SIZE);
-
-            try {
-                const count = await MarketDataService.refreshPriceOnly(batch);
-                results.success += count;
-                results.failed += (batch.length - count);
-            } catch (e) {
-                // Silent fail for incremental batch to avoid log spam
-                results.failed += batch.length;
-            }
-
-            // Minimal pause between batches to be nice to API
-            if (i + BATCH_SIZE < uniqueSymbols.length) {
-                await new Promise(r => setTimeout(r, 200));
-            }
-        }
-
-        console.log(`[Cron:Incremental] Done. ${results.success}/${results.total} updated.`);
-        return NextResponse.json({ message: 'Incremental Refresh Done', stats: results });
-
-    } catch (error: any) {
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Internal Server Error';
         console.error('[Cron:Incremental] Failed:', error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        return NextResponse.json({ error: message }, { status: 500 });
     }
 }

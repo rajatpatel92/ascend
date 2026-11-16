@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
     XAxis,
     YAxis,
@@ -14,6 +14,7 @@ import styles from './PortfolioChart.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
 import DateInput from './DateInput';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 interface HistoryPoint {
     date: string;
@@ -50,8 +51,15 @@ export default function PortfolioChart({
     const [data, setData] = useState<HistoryPoint[]>([]);
     // Local state removed
     const [loading, setLoading] = useState(false);
-    const { format, convert, currency } = useCurrency();
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedViewKeyRef = useRef<string | null>(null);
+    const { format, currency } = useCurrency();
     const { formatDate } = useDate();
+
+    useLiveSync({
+        enabled: !externalData,
+        onSync: () => setSyncTick((t) => t + 1),
+    });
 
     // Use external data if provided, otherwise local state
     const displayData = externalData || data;
@@ -59,9 +67,16 @@ export default function PortfolioChart({
     useEffect(() => {
         // Skip fetch if external data is provided
         if (externalData) return;
+        if (range === 'CUSTOM' && (!customStart || !customEnd)) return;
+
+        const controller = new AbortController();
+        const filterKey = `${(filterInvestmentTypes || []).slice().sort().join('-')}_${(filterAccountTypes || []).slice().sort().join('-')}`;
+        const viewKey = `${range}-${currency}-${customStart}-${customEnd}-${filterKey}`;
 
         const fetchData = async () => {
-            setLoading(true);
+            if (loadedViewKeyRef.current !== viewKey) {
+                setLoading(true);
+            }
             try {
                 let url = `/api/portfolio/history?range=${range}&currency=${currency}`;
                 if (range === 'CUSTOM' && customStart && customEnd) {
@@ -74,22 +89,26 @@ export default function PortfolioChart({
                     url += `&accountTypes=${filterAccountTypes.join(',')}`;
                 }
 
-                const res = await fetch(url);
+                const res = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+                if (!res.ok) return;
                 const json = await res.json();
-                if (Array.isArray(json)) {
+                if (!controller.signal.aborted && Array.isArray(json)) {
+                    loadedViewKeyRef.current = viewKey;
                     setData(json);
                 }
             } catch (error) {
+                if (error instanceof DOMException && error.name === 'AbortError') return;
                 console.error('Failed to fetch history', error);
             } finally {
-                setLoading(false);
+                if (!controller.signal.aborted) {
+                    setLoading(false);
+                }
             }
         };
 
-        if (range !== 'CUSTOM' || (customStart && customEnd)) {
-            fetchData();
-        }
-    }, [range, customStart, customEnd, externalData, currency, filterInvestmentTypes, filterAccountTypes]);
+        void fetchData();
+        return () => controller.abort();
+    }, [range, customStart, customEnd, externalData, currency, filterInvestmentTypes, filterAccountTypes, syncTick]);
 
     // Convert data to selected currency (only if not external, as external data is already converted)
     const chartData = displayData.map(point => ({

@@ -911,6 +911,61 @@
     white-space: pre-wrap;
 }
 
+/* Market Sync Diagnostics Grid */
+.diagGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0.75rem;
+}
+
+.diagTile {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.75rem;
+    background: var(--background);
+    border: 1px solid var(--card-border);
+    min-width: 0;
+}
+
+.diagLabel {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.diagValueRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.diagValue {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.diagSub {
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    line-height: 1.35;
+    font-variant-numeric: tabular-nums;
+}
+
+.diagActions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
 .emptyState {
     text-align: center;
     padding: 2rem 1rem;

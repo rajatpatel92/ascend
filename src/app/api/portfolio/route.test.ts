@@ -31,7 +31,7 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/prisma") {
     return {
       shortCircuit: true,
-      url: "data:text/javascript," + encodeURIComponent("export const prisma = { activity: { findMany: (...args) => globalThis.__mockPrisma.activity.findMany(...args) }, activityType: { findMany: (...args) => globalThis.__mockPrisma.activityType.findMany(...args) }, user: { findMany: (...args) => globalThis.__mockPrisma.user.findMany(...args) } };")
+      url: "data:text/javascript," + encodeURIComponent("export const prisma = { activity: { findMany: (...args) => globalThis.__mockPrisma.activity.findMany(...args) }, activityType: { findMany: (...args) => globalThis.__mockPrisma.activityType.findMany(...args) }, user: { findMany: (...args) => globalThis.__mockPrisma.user.findMany(...args) }, marketDataCache: { findMany: (...args) => globalThis.__mockPrisma.marketDataCache?.findMany ? globalThis.__mockPrisma.marketDataCache.findMany(...args) : [] } };")
     };
   }
   if (specifier === "@/lib/market-data") {
@@ -63,6 +63,7 @@ interface MockGlobals {
         activity: { findMany: () => Promise<unknown[]> };
         activityType: { findMany: () => Promise<unknown[]> };
         user: { findMany: () => Promise<unknown[]> };
+        marketDataCache?: { findMany: (args: unknown) => Promise<unknown[]> };
     };
     __mockMarketDataService: {
         getPrice: (symbol: string) => Promise<Record<string, unknown> | null>;
@@ -83,6 +84,9 @@ mockGlobals.__mockPrisma = {
         findMany: async () => []
     },
     user: {
+        findMany: async () => []
+    },
+    marketDataCache: {
         findMany: async () => []
     }
 };
@@ -106,6 +110,9 @@ test('GET /api/portfolio', async (t) => {
                 findMany: async () => []
             },
             user: {
+                findMany: async () => []
+            },
+            marketDataCache: {
                 findMany: async () => []
             }
         };
@@ -673,5 +680,197 @@ test('GET /api/portfolio', async (t) => {
         assert.strictEqual(data.totalValue, 8000);
         assert.ok(!data.allocationByPlatform.some((p: { name: string }) => p.name === 'Unknown'));
         assert.strictEqual(data.allocationByAccount.length, 2);
+    });
+
+    await t.test('skips getPrice and getHistoricalPrices for exited holdings while applying FX and populating syncStatus', async (subT) => {
+        subT.mock.timers.enable({
+            apis: ['Date'],
+            now: new Date('2026-07-15T15:00:00.000Z'), // Wed 11:00 ET (2m regular TTL)
+        });
+
+        try {
+            const { resetCacheVersionsForTests, invalidateMarketCaches } = await import('@/lib/cache-invalidation');
+            const { resetSyncStateForTests } = await import('@/lib/sync-state');
+            resetSyncStateForTests();
+            resetCacheVersionsForTests();
+            invalidateMarketCaches({ symbols: ['AAPL'] });
+
+            mockGlobals.__mockPrisma.activityType.findMany = async () => [
+                { name: 'BUY', behavior: 'ADD' },
+                { name: 'SELL', behavior: 'REMOVE' },
+                { name: 'DIVIDEND', behavior: 'NEUTRAL' }
+            ];
+            mockGlobals.__mockPrisma.activity.findMany = async () => [
+                {
+                    id: 'sold-buy',
+                    type: 'BUY',
+                    date: new Date('2026-01-05T00:00:00Z'),
+                    quantity: 10,
+                    price: 50,
+                    fee: 0,
+                    currency: 'CAD',
+                    investment: { symbol: 'SOLD.TO', name: 'Sold ETF', type: 'ETF', currencyCode: 'CAD' },
+                    platform: { name: 'WealthSimple' },
+                    account: { id: 'acc-1', name: 'Rajat', type: 'TFSA' }
+                },
+                {
+                    id: 'sold-div',
+                    type: 'DIVIDEND',
+                    date: new Date('2026-02-01T00:00:00Z'),
+                    quantity: 1,
+                    price: 100,
+                    fee: 0,
+                    currency: 'CAD',
+                    investment: { symbol: 'SOLD.TO', name: 'Sold ETF', type: 'ETF', currencyCode: 'CAD' },
+                    platform: { name: 'WealthSimple' },
+                    account: { id: 'acc-1', name: 'Rajat', type: 'TFSA' }
+                },
+                {
+                    id: 'sold-sell',
+                    type: 'SELL',
+                    date: new Date('2026-03-01T00:00:00Z'),
+                    quantity: 10,
+                    price: 60, // Realized gain = 100 CAD
+                    fee: 0,
+                    currency: 'CAD',
+                    investment: { symbol: 'SOLD.TO', name: 'Sold ETF', type: 'ETF', currencyCode: 'CAD' },
+                    platform: { name: 'WealthSimple' },
+                    account: { id: 'acc-1', name: 'Rajat', type: 'TFSA' }
+                },
+                {
+                    id: 'active-buy',
+                    type: 'BUY',
+                    date: new Date('2026-01-10T00:00:00Z'),
+                    quantity: 5,
+                    price: 180,
+                    fee: 0,
+                    currency: 'USD',
+                    investment: { symbol: 'AAPL', name: 'Apple Inc.', type: 'EQUITY', currencyCode: 'USD' },
+                    platform: { name: 'Questrade' },
+                    account: { id: 'acc-2', name: 'Rajat', type: 'RRSP' }
+                }
+            ];
+
+            const priceCalledFor: string[] = [];
+            const histCalledFor: string[] = [];
+            const marketTime = new Date('2026-07-15T14:59:00.000Z');
+            const syncedTime = new Date(Date.now() - 10_000); // 10s old (fresh)
+
+            mockGlobals.__mockMarketDataService.getPrice = async (symbol: string) => {
+                priceCalledFor.push(symbol);
+                if (symbol === 'AAPL') {
+                    return {
+                        price: 200,
+                        currency: 'USD',
+                        regularMarketTime: marketTime.toISOString(),
+                        regularMarketChange: 2,
+                        regularMarketChangePercent: 1
+                    };
+                }
+                return null;
+            };
+            mockGlobals.__mockMarketDataService.getHistoricalPrices = async (symbol: string) => {
+                histCalledFor.push(symbol);
+                return {};
+            };
+            mockGlobals.__mockMarketDataService.getExchangeRate = async (from: string, to: string) => {
+                if (from === 'CAD' && to === 'USD') return 0.7;
+                return 1;
+            };
+            mockGlobals.__mockPrisma.marketDataCache = {
+                findMany: async () => [
+                    { symbol: 'AAPL', price: 200, lastUpdated: syncedTime }
+                ]
+            };
+
+            const request = new Request('http://localhost/api/portfolio?currency=USD');
+            const response = await GET(request as Parameters<typeof GET>[0]);
+            assert.strictEqual(response.status, 200);
+            const data = await response.json();
+
+            // Exited holding SOLD.TO must NEVER trigger MarketDataService.getPrice or getHistoricalPrices
+            assert.deepStrictEqual(priceCalledFor, ['AAPL']);
+            assert.deepStrictEqual(histCalledFor, ['AAPL']);
+
+            // Realized gains (100 CAD * 0.7 = 70 USD) & Dividends (100 CAD * 0.7 = 70 USD) still apply CAD->USD FX
+            const sold = data.constituents.find((c: { symbol: string }) => c.symbol === 'SOLD.TO');
+            assert.ok(sold);
+            assert.ok(Math.abs(sold.realizedGain - 70) < 1e-6);
+            assert.ok(Math.abs(sold.lifetimeDividends - 70) < 1e-6);
+
+            // syncStatus telemetry & backward-compatible lastUpdated
+            assert.ok(data.lastUpdated);
+            assert.ok(data.syncStatus);
+            assert.strictEqual(data.syncStatus.syncedAt, syncedTime.toISOString());
+            assert.strictEqual(data.syncStatus.marketTime, marketTime.toISOString());
+            assert.strictEqual(data.syncStatus.isRefreshing, false);
+            assert.strictEqual(data.syncStatus.staleCount, 0);
+            assert.strictEqual(data.syncStatus.marketDataVersion, 2);
+            assert.strictEqual(data.syncStatus.isMarketOpen, true);
+            assert.strictEqual(data.syncStatus.effectivePriceTtlMs, 120000);
+            assert.strictEqual(data.syncStatus.throttledUntil, null);
+
+            resetSyncStateForTests();
+            resetCacheVersionsForTests();
+        } finally {
+            subT.mock.timers.reset();
+        }
+    });
+
+    await t.test('populates syncStatus.staleCount > 0 and throttledUntil when symbols are stale or rate limited', async (subT) => {
+        subT.mock.timers.enable({
+            apis: ['Date'],
+            now: new Date('2026-07-15T15:00:00.000Z'), // Wed 11:00 ET (2m TTL)
+        });
+
+        try {
+            const { resetSyncStateForTests, setThrottlerSnapshot } = await import('@/lib/sync-state');
+            resetSyncStateForTests();
+            const resetIso = new Date(Date.now() + 45_000).toISOString();
+            setThrottlerSnapshot({
+                isRateLimited: true,
+                resetTime: resetIso,
+                queueLength: 2,
+                activeCount: 0,
+            });
+
+            mockGlobals.__mockPrisma.activityType.findMany = async () => [{ name: 'BUY', behavior: 'ADD' }];
+            mockGlobals.__mockPrisma.activity.findMany = async () => [
+                {
+                    id: 'b1',
+                    type: 'BUY',
+                    date: new Date('2026-01-10T00:00:00Z'),
+                    quantity: 5,
+                    price: 180,
+                    fee: 0,
+                    currency: 'USD',
+                    investment: { symbol: 'AAPL', name: 'Apple Inc.', type: 'EQUITY', currencyCode: 'USD' },
+                    platform: { name: 'Questrade' },
+                    account: { id: 'acc-1', name: 'Rajat', type: 'RRSP' }
+                }
+            ];
+            mockGlobals.__mockMarketDataService.getPrice = async () => ({
+                price: 200,
+                currency: 'USD',
+                regularMarketTime: new Date().toISOString(),
+                regularMarketChange: 0,
+                regularMarketChangePercent: 0
+            });
+            mockGlobals.__mockPrisma.marketDataCache = {
+                findMany: async () => [
+                    { symbol: 'AAPL', price: 200, lastUpdated: new Date(Date.now() - 10 * 60 * 1000) } // 10m > 2m TTL
+                ]
+            };
+
+            const res = await GET(new Request('http://localhost/api/portfolio?currency=USD') as Parameters<typeof GET>[0]);
+            assert.strictEqual(res.status, 200);
+            const data = await res.json();
+            assert.strictEqual(data.syncStatus.staleCount, 1);
+            assert.strictEqual(data.syncStatus.throttledUntil, resetIso);
+
+            resetSyncStateForTests();
+        } finally {
+            subT.mock.timers.reset();
+        }
     });
 });

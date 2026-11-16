@@ -1,10 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from './prisma.ts';
-import YahooFinance from 'yahoo-finance2';
-
-const yahooFinance = new YahooFinance({
-    suppressNotices: ['yahooSurvey']
-});
+import { apiThrottler, yahooFinance } from './market-data.ts';
+import { invalidatePortfolioMutationCaches } from './cache-invalidation.ts';
 
 export class SplitService {
     /**
@@ -45,7 +42,7 @@ export class SplitService {
 
             let splits: any[] = [];
             try {
-                const result = await yahooFinance.chart(symbol, queryOptions) as any;
+                const result = await apiThrottler.add(() => yahooFinance.chart(symbol, queryOptions)) as any;
                 if (result?.events?.splits) {
                     const rawSplits = result.events.splits;
                     splits = Array.isArray(rawSplits) ? rawSplits : Object.values(rawSplits);
@@ -58,6 +55,7 @@ export class SplitService {
         });
 
         const results = await Promise.all(fetchSplitPromises);
+        let appliedAny = false;
 
         for (const { inv, splits } of results) {
             if (splits.length === 0) continue;
@@ -139,6 +137,7 @@ export class SplitService {
                     await prisma.activity.createMany({
                         data: activitiesToCreate
                     });
+                    appliedAny = true;
 
                     // Restore granular logging
                     relevantAccounts.forEach(accountId => {
@@ -150,6 +149,9 @@ export class SplitService {
                     console.log(`[SplitService] Batched ${activitiesToCreate.length} split activities for ${symbol}`);
                 }
             }
+        }
+        if (appliedAny) {
+            invalidatePortfolioMutationCaches();
         }
         console.log('[SplitService] Detection complete.');
     }

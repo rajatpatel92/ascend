@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function PUT(
     request: Request,
@@ -27,6 +28,8 @@ export async function PUT(
                 isActive: isActive !== undefined ? isActive : undefined
             }
         });
+
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json(updated);
     } catch (error) {
@@ -61,6 +64,8 @@ export async function DELETE(
         await prisma.account.delete({
             where: { id },
         });
+
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json({ success: true });
     } catch (error) {

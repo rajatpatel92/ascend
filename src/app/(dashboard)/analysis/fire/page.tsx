@@ -14,6 +14,7 @@ import {
 import { MdClose, MdSettings, MdTune } from 'react-icons/md';
 import { useCurrency } from '@/context/CurrencyContext';
 import usePersistentState from '@/hooks/usePersistentState';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import {
     buildFireProfileSlugId,
     hasFireProfileChanges,
@@ -62,6 +63,7 @@ export default function FireAnalysisPage() {
     const [currentPortfolioValue, setCurrentPortfolioValue] = useState<number>(0);
     const [loadingPortfolio, setLoadingPortfolio] = useState<boolean>(true);
     const [fetchError, setFetchError] = useState<string | null>(null);
+    const [syncTick, setSyncTick] = useState<number>(0);
 
     // Saved FIRE profiles & collapsible simulation studio state
     const [profiles, setProfiles] = useState<FireProfile[]>([]);
@@ -92,6 +94,11 @@ export default function FireAnalysisPage() {
     const tableTabRef = useRef<HTMLButtonElement>(null);
     const prevCurrencyRef = useRef<string>(currency);
     const hasHydratedProfilesRef = useRef<boolean>(false);
+    const loadedPortfolioCurrencyRef = useRef<string | null>(null);
+
+    useLiveSync({
+        onSync: () => setSyncTick((t) => t + 1),
+    });
 
     useEffect(() => {
         const updateTheme = () => {
@@ -109,9 +116,15 @@ export default function FireAnalysisPage() {
     // Fetch current portfolio value directly in the selected currency
     useEffect(() => {
         const controller = new AbortController();
-        setLoadingPortfolio(true);
+        const isBackground = loadedPortfolioCurrencyRef.current === currency;
+        if (!isBackground) {
+            setLoadingPortfolio(true);
+        }
 
-        fetch(`/api/portfolio?currency=${encodeURIComponent(currency)}`, { signal: controller.signal })
+        fetch(`/api/portfolio?currency=${encodeURIComponent(currency)}`, {
+            signal: controller.signal,
+            cache: 'no-store',
+        })
             .then((res) => {
                 if (!res.ok) {
                     throw new Error(`HTTP ${res.status}`);
@@ -119,6 +132,8 @@ export default function FireAnalysisPage() {
                 return res.json();
             })
             .then((data) => {
+                if (controller.signal.aborted) return;
+                loadedPortfolioCurrencyRef.current = currency;
                 if (typeof data?.totalValue === 'number' && Number.isFinite(data.totalValue)) {
                     setCurrentPortfolioValue(data.totalValue);
                 }
@@ -128,12 +143,14 @@ export default function FireAnalysisPage() {
             .catch((err: unknown) => {
                 if (err instanceof DOMException && err.name === 'AbortError') return;
                 console.error('Failed to fetch portfolio value for FIRE:', err);
-                setFetchError('Unable to load live portfolio balance. Using manual simulation baseline.');
+                if (!isBackground) {
+                    setFetchError('Unable to load live portfolio balance. Using manual simulation baseline.');
+                }
                 setLoadingPortfolio(false);
             });
 
         return () => controller.abort();
-    }, [currency]);
+    }, [currency, syncTick]);
 
     const convertRef = useRef(convert);
     useEffect(() => {

@@ -33,20 +33,6 @@ function formatInCurrency(amount: number, currencyCode: string): string {
     }
 }
 
-function clearAnalysisCaches(): void {
-    ClientCache.clear();
-    if (typeof window === 'undefined') return;
-    try {
-        Object.keys(localStorage).forEach((key) => {
-            if (key.startsWith('analysis_')) {
-                localStorage.removeItem(key);
-            }
-        });
-    } catch {
-        // Ignore storage access errors
-    }
-}
-
 export default function DripMigrationModal({
     isOpen,
     onClose,
@@ -196,7 +182,7 @@ export default function DripMigrationModal({
                 throw new Error(data.error || 'Failed to migrate selected activities.');
             }
 
-            clearAnalysisCaches();
+            ClientCache.clearPortfolioCaches();
             onSuccess(data.updatedCount ?? selectedIds.size);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Migration failed.');

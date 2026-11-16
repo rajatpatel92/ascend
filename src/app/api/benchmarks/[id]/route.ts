@@ -1,8 +1,10 @@
 
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function DELETE(
     req: Request,
@@ -30,6 +32,8 @@ export async function DELETE(
         await prisma.benchmark.delete({
             where: { id }
         });
+
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json({ success: true });
     } catch (error) {

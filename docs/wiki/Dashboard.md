@@ -8,7 +8,7 @@ The **Dashboard** is the executive command center of Ascend, delivering an insti
 
 At the top of the Dashboard, you are greeted with the current system date, data refresh status pill, and interactive **Report Filters**:
 
-* **Greeting & Sync Status**: Displays a time-aware greeting (`Good Morning / Afternoon / Evening, <Name>`), system date, and live `Refreshed` timestamp badge.
+* **Greeting & Sync Status**: Displays a time-aware greeting (`Good Morning / Afternoon / Evening, <Name>`), system date, live **`Synced ...`** local update indicator alongside the exchange quote timestamp (**`Market data as of ...`**), automatic background sync badge, and a role-gated (`ADMIN` / `EDITOR`) **Refresh** trigger with cooldown protection.
 * **Persistent Report Filters (`ReportFilters`)**: Dynamically scope the entire dashboard by:
   * **Investment Types** (e.g., Equity, ETF, Mutual Fund, Fixed Income, Crypto)
   * **Account Types** (e.g., TFSA, RRSP, Taxable, 401(k), IRA, Demat)
@@ -99,6 +99,6 @@ Provides immediate visibility into dividend distributions:
 ## 🔄 Market Data Sync & Refresh Intervals
 
 * **Automatic Background Sync (`src/instrumentation.ts`)**:
-  * **Every 2 Minutes**: Incremental price refresh (`/api/cron/market-data/incremental`).
-  * **Every Hour**: Full market data refresh (historical daily prices, ETF sector/country allocations, dividend declarations) via `/api/cron/market-data`.
-* **Manual Refresh**: Trigger anytime from **Settings > Master Data** or via individual asset pages.
+  * **Every 2 Minutes**: Incremental price & FX refresh (`runIncrementalSync({ respectMarketHours: true })`), using `2m` freshness during regular North American hours (`09:30–16:15 ET`, Mon–Fri) and `30m` off-hours/weekends.
+  * **Every 6 Hours**: Metadata & historical OHLCV hydration (`runFullMarketSync({ force: false })`, skipping entries updated within the `12h` metadata / `24h` history TTLs).
+* **Live UI Convergence & Manual Refresh**: Active tabs automatically revalidate on visibility/focus, reconnect, and cross-tab events (`useLiveSync`). `ADMIN` and `EDITOR` roles can trigger coalesced manual refreshes directly from the Dashboard or Asset Deep-Dive (`ADMIN` can inspect throttler diagnostics and run syncs under **Settings > Master Data**).

@@ -1,67 +1,79 @@
 import test from 'node:test';
 import assert from 'node:assert';
 
+interface LocalStorageMock {
+    readonly length: number;
+    key: (index: number) => string | null;
+    getItem: (key: string) => string | null;
+    setItem: (key: string, value: string) => void;
+    removeItem: (key: string) => void;
+    clear: () => void;
+}
+
+const g = globalThis as Record<string, unknown>;
+
 // Mocking browser environment before importing ClientCache
 const storage: Record<string, string> = {};
-const localStorageMock = {
-    getItem: (key: string) => storage[key] || null,
+const nonEnumerableBacking: Record<string, string> = {};
+
+const localStorageMock: LocalStorageMock = {
+    get length() {
+        return new Set([...Object.keys(storage), ...Object.keys(nonEnumerableBacking)]).size;
+    },
+    key: (index: number) => {
+        const keys = Array.from(new Set([...Object.keys(storage), ...Object.keys(nonEnumerableBacking)]));
+        return keys[index] ?? null;
+    },
+    getItem: (key: string) => storage[key] ?? nonEnumerableBacking[key] ?? null,
     setItem: (key: string, value: string) => {
         storage[key] = value;
-        (localStorageMock as any)[key] = value;
     },
     removeItem: (key: string) => {
         delete storage[key];
-        delete (localStorageMock as any)[key];
+        delete nonEnumerableBacking[key];
     },
     clear: () => {
-        Object.keys(storage).forEach(k => {
-            delete (localStorageMock as any)[k];
-            delete storage[k];
-        });
+        Object.keys(storage).forEach((k) => delete storage[k]);
+        Object.keys(nonEnumerableBacking).forEach((k) => delete nonEnumerableBacking[k]);
     },
 };
 
-(globalThis as any).localStorage = localStorageMock;
-(globalThis as any).window = {};
-(globalThis as any).btoa = (str: string) => Buffer.from(str).toString('base64');
+g.localStorage = localStorageMock;
+g.window = {};
+g.btoa = (str: string) => Buffer.from(str).toString('base64');
 
 // DOMException mock for QuotaExceededError
 class MockDOMException extends Error {
-    name: string;
     constructor(message: string, name: string) {
         super(message);
         this.name = name;
     }
 }
-(globalThis as any).DOMException = MockDOMException;
+g.DOMException = MockDOMException;
 
 // Now import ClientCache
-import { ClientCache } from './client-cache.ts';
+import { ClientCache, DEFAULT_CLIENT_CACHE_TTL_MS } from './client-cache.ts';
 
 const CACHE_PREFIX = 'portfolio_cache_';
 
 test('ClientCache', async (t) => {
     t.beforeEach(() => {
-        // Clear storage before each test
-        Object.keys(storage).forEach(key => {
-            delete storage[key];
-            delete (localStorageMock as any)[key];
-        });
+        localStorageMock.clear();
     });
 
     await t.test('get - returns null if window is undefined', () => {
-        const originalWindow = (globalThis as any).window;
-        delete (globalThis as any).window;
+        const originalWindow = g.window;
+        delete g.window;
         assert.strictEqual(ClientCache.get('key'), null);
-        (globalThis as any).window = originalWindow;
+        g.window = originalWindow;
     });
 
     await t.test('set - returns early if window is undefined', () => {
-        const originalWindow = (globalThis as any).window;
-        delete (globalThis as any).window;
+        const originalWindow = g.window;
+        delete g.window;
         ClientCache.set('key', 'value');
         assert.strictEqual(Object.keys(storage).length, 0);
-        (globalThis as any).window = originalWindow;
+        g.window = originalWindow;
     });
 
     await t.test('set and get valid data', () => {
@@ -91,18 +103,59 @@ test('ClientCache', async (t) => {
         assert.strictEqual(storage[CACHE_PREFIX + key], undefined);
     });
 
-    await t.test('get - returns null and removes item on TTL expiration', () => {
-        const key = 'expired';
-        const expiredEntry = {
-            timestamp: Date.now() - (25 * 60 * 60 * 1000), // 25 hours ago
-            version: 2,
-            data: 'expired data'
-        };
-        localStorageMock.setItem(CACHE_PREFIX + key, JSON.stringify(expiredEntry));
+    await t.test('get - defaults to 15 minute TTL and expires entries past DEFAULT_CLIENT_CACHE_TTL_MS', () => {
+        assert.strictEqual(DEFAULT_CLIENT_CACHE_TTL_MS, 15 * 60 * 1000);
 
-        const retrieved = ClientCache.get(key);
-        assert.strictEqual(retrieved, null);
-        assert.strictEqual(storage[CACHE_PREFIX + key], undefined);
+        const freshKey = 'fresh14m';
+        localStorageMock.setItem(
+            CACHE_PREFIX + freshKey,
+            JSON.stringify({
+                timestamp: Date.now() - (14 * 60 * 1000 + 50 * 1000),
+                version: 2,
+                data: 'still valid',
+            })
+        );
+        assert.strictEqual(ClientCache.get(freshKey), 'still valid');
+
+        const staleKey = 'expired15m';
+        localStorageMock.setItem(
+            CACHE_PREFIX + staleKey,
+            JSON.stringify({
+                timestamp: Date.now() - (DEFAULT_CLIENT_CACHE_TTL_MS + 1000),
+                version: 2,
+                data: 'expired data',
+            })
+        );
+        assert.strictEqual(ClientCache.get(staleKey), null);
+        assert.strictEqual(storage[CACHE_PREFIX + staleKey], undefined);
+    });
+
+    await t.test('get - supports numeric and options-object ttlMs overrides and rejects invalid TTLs', () => {
+        const analyticsKey = 'analytics20m';
+        localStorageMock.setItem(
+            CACHE_PREFIX + analyticsKey,
+            JSON.stringify({
+                timestamp: Date.now() - (20 * 60 * 1000),
+                version: 2,
+                data: { points: [1, 2, 3] },
+            })
+        );
+
+        // Default 15m rejects it if read directly without override -> first test with 30m number & object override
+        assert.deepStrictEqual(ClientCache.get(analyticsKey, 30 * 60 * 1000), { points: [1, 2, 3] });
+        assert.deepStrictEqual(ClientCache.get(analyticsKey, { ttlMs: 30 * 60 * 1000 }), { points: [1, 2, 3] });
+
+        // Shorter TTL expires and cleans up
+        assert.strictEqual(ClientCache.get(analyticsKey, { ttlMs: 10 * 60 * 1000 }), null);
+        assert.strictEqual(storage[CACHE_PREFIX + analyticsKey], undefined);
+
+        // Non-positive or non-finite TTL evicts entry immediately
+        localStorageMock.setItem(
+            CACHE_PREFIX + 'zeroTtl',
+            JSON.stringify({ timestamp: Date.now(), version: 2, data: 'x' })
+        );
+        assert.strictEqual(ClientCache.get('zeroTtl', 0), null);
+        assert.strictEqual(storage[CACHE_PREFIX + 'zeroTtl'], undefined);
     });
 
     await t.test('get - handles malformed JSON and logs error', () => {
@@ -110,8 +163,8 @@ test('ClientCache', async (t) => {
         localStorageMock.setItem(CACHE_PREFIX + key, '{ invalid json ');
 
         const originalConsoleError = console.error;
-        let loggedError: any = null;
-        console.error = (...args: any[]) => {
+        let loggedError: unknown[] | null = null;
+        console.error = (...args: unknown[]) => {
             loggedError = args;
         };
 
@@ -133,8 +186,8 @@ test('ClientCache', async (t) => {
         };
 
         const originalConsoleError = console.error;
-        let loggedError: any = null;
-        console.error = (...args: any[]) => {
+        let loggedError: unknown[] | null = null;
+        console.error = (...args: unknown[]) => {
             loggedError = args;
         };
 
@@ -157,8 +210,8 @@ test('ClientCache', async (t) => {
         };
 
         const originalConsoleError = console.error;
-        let loggedError: any = null;
-        console.error = (...args: any[]) => {
+        let loggedError: unknown[] | null = null;
+        console.error = (...args: unknown[]) => {
             loggedError = args;
         };
 
@@ -181,12 +234,12 @@ test('ClientCache', async (t) => {
 
         const originalConsoleError = console.error;
         const originalConsoleWarn = console.warn;
-        let loggedError: any = null;
-        let loggedWarn: any = null;
-        console.error = (...args: any[]) => {
+        let loggedError: unknown[] | null = null;
+        let loggedWarn: unknown[] | null = null;
+        console.error = (...args: unknown[]) => {
             loggedError = args;
         };
-        console.warn = (...args: any[]) => {
+        console.warn = (...args: unknown[]) => {
             loggedWarn = args;
         };
 
@@ -207,10 +260,8 @@ test('ClientCache', async (t) => {
         const key = 'quota';
         const data = 'some data';
 
-        // Prefill with some other keys
         ClientCache.set('other', 'other data');
         storage['not_our_prefix'] = 'leave me alone';
-        (localStorageMock as any)['not_our_prefix'] = 'leave me alone';
 
         let setItemCalls = 0;
         const originalSetItem = localStorageMock.setItem;
@@ -220,18 +271,18 @@ test('ClientCache', async (t) => {
                 throw new MockDOMException('Quota exceeded', 'QuotaExceededError');
             }
             storage[k] = v;
-            (localStorageMock as any)[k] = v;
         };
 
-        ClientCache.set(key, data);
+        try {
+            ClientCache.set(key, data);
 
-        assert.strictEqual(setItemCalls, 2); // First failed, second succeeded after clear
-        assert.strictEqual(storage[CACHE_PREFIX + 'other'], undefined); // Cleared
-        assert.strictEqual(storage['not_our_prefix'], 'leave me alone'); // Not cleared
-        assert.ok(storage[CACHE_PREFIX + key]);
-
-        // Restore
-        localStorageMock.setItem = originalSetItem;
+            assert.strictEqual(setItemCalls, 2);
+            assert.strictEqual(storage[CACHE_PREFIX + 'other'], undefined);
+            assert.strictEqual(storage['not_our_prefix'], 'leave me alone');
+            assert.ok(storage[CACHE_PREFIX + key]);
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+        }
     });
 
     await t.test('set - handles NS_ERROR_DOM_QUOTA_REACHED error by clearing and retrying', () => {
@@ -246,18 +297,18 @@ test('ClientCache', async (t) => {
                 throw new MockDOMException('Quota exceeded', 'NS_ERROR_DOM_QUOTA_REACHED');
             }
             storage[k] = v;
-            (localStorageMock as any)[k] = v;
         };
 
-        assert.doesNotThrow(() => {
-            ClientCache.set(key, data);
-        });
+        try {
+            assert.doesNotThrow(() => {
+                ClientCache.set(key, data);
+            });
 
-        assert.strictEqual(setItemCalls, 2);
-        assert.ok(storage[CACHE_PREFIX + key]);
-
-        // Restore
-        localStorageMock.setItem = originalSetItem;
+            assert.strictEqual(setItemCalls, 2);
+            assert.ok(storage[CACHE_PREFIX + key]);
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+        }
     });
 
     await t.test('set - handles persistent QuotaExceededError when retry after clear fails', () => {
@@ -269,12 +320,13 @@ test('ClientCache', async (t) => {
             throw new MockDOMException('Quota exceeded', 'QuotaExceededError');
         };
 
-        assert.doesNotThrow(() => {
-            ClientCache.set(key, data);
-        });
-
-        // Restore
-        localStorageMock.setItem = originalSetItem;
+        try {
+            assert.doesNotThrow(() => {
+                ClientCache.set(key, data);
+            });
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+        }
     });
 
     await t.test('set - handles generic storage error without throwing', () => {
@@ -286,12 +338,13 @@ test('ClientCache', async (t) => {
             throw new Error('SecurityError: Access is denied');
         };
 
-        assert.doesNotThrow(() => {
-            ClientCache.set(key, data);
-        });
-
-        // Restore
-        localStorageMock.setItem = originalSetItem;
+        try {
+            assert.doesNotThrow(() => {
+                ClientCache.set(key, data);
+            });
+        } finally {
+            localStorageMock.setItem = originalSetItem;
+        }
     });
 
     await t.test('generateKey - produces stable keys', () => {
@@ -317,16 +370,61 @@ test('ClientCache', async (t) => {
         assert.strictEqual(key1, key2);
     });
 
+    await t.test('invalidateByPrefix - removes only matching prefixed entries via Web Storage key(i)', () => {
+        nonEnumerableBacking[CACHE_PREFIX + 'evolution_1'] = 'val1';
+        nonEnumerableBacking[CACHE_PREFIX + 'evolution_2'] = 'val2';
+        nonEnumerableBacking[CACHE_PREFIX + 'comparison-1'] = 'keep';
+        nonEnumerableBacking['other_key'] = 'keep';
+
+        ClientCache.invalidateByPrefix('evolution_');
+
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'evolution_1'], undefined);
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'evolution_2'], undefined);
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'comparison-1'], 'keep');
+        assert.strictEqual(nonEnumerableBacking['other_key'], 'keep');
+    });
+
+    await t.test('clearPortfolioCaches - removes current and legacy portfolio keys without touching unrelated settings', () => {
+        // Store in nonEnumerableBacking to verify Web Storage length/key(i) enumeration
+        nonEnumerableBacking[CACHE_PREFIX + 'portfolio_summary_abc'] = '1';
+        nonEnumerableBacking[CACHE_PREFIX + 'portfolio-history-1Y-CAD'] = '2';
+        nonEnumerableBacking[CACHE_PREFIX + 'comparison-1M'] = '3';
+        nonEnumerableBacking[CACHE_PREFIX + 'evolution_xyz'] = '4';
+        nonEnumerableBacking[CACHE_PREFIX + 'analysis_AAPL'] = '5';
+        nonEnumerableBacking['portfolio_summary_legacy'] = '6';
+        nonEnumerableBacking['analysis_AAPL'] = '7';
+
+        // Should remain untouched
+        nonEnumerableBacking[CACHE_PREFIX + 'ui_pref'] = 'keep-pref';
+        nonEnumerableBacking['dashboard_filters'] = 'keep-filters';
+        nonEnumerableBacking['rate_v4_USD_CAD'] = 'keep-fx';
+
+        ClientCache.clearPortfolioCaches();
+
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'portfolio_summary_abc'], undefined);
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'portfolio-history-1Y-CAD'], undefined);
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'comparison-1M'], undefined);
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'evolution_xyz'], undefined);
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'analysis_AAPL'], undefined);
+        assert.strictEqual(nonEnumerableBacking['portfolio_summary_legacy'], undefined);
+        assert.strictEqual(nonEnumerableBacking['analysis_AAPL'], undefined);
+
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + 'ui_pref'], 'keep-pref');
+        assert.strictEqual(nonEnumerableBacking['dashboard_filters'], 'keep-filters');
+        assert.strictEqual(nonEnumerableBacking['rate_v4_USD_CAD'], 'keep-fx');
+    });
+
     await t.test('clear - removes only prefixed keys', () => {
         localStorageMock.setItem(CACHE_PREFIX + '1', 'val1');
         localStorageMock.setItem(CACHE_PREFIX + '2', 'val2');
-        storage['other_app'] = 'val3';
-        (localStorageMock as any)['other_app'] = 'val3';
+        nonEnumerableBacking[CACHE_PREFIX + '3'] = 'val3';
+        storage['other_app'] = 'val4';
 
         ClientCache.clear();
 
         assert.strictEqual(storage[CACHE_PREFIX + '1'], undefined);
         assert.strictEqual(storage[CACHE_PREFIX + '2'], undefined);
-        assert.strictEqual(storage['other_app'], 'val3');
+        assert.strictEqual(nonEnumerableBacking[CACHE_PREFIX + '3'], undefined);
+        assert.strictEqual(storage['other_app'], 'val4');
     });
 });

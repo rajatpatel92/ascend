@@ -10,14 +10,19 @@ import {
     type PortfolioActivityLike
 } from '@/lib/dividend-estimator';
 import { ACTIVE_QUANTITY_EPSILON, buildBehaviorMap } from '@/lib/activity-helpers';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { auth } from '@/auth';
+import { requireAuth } from '@/lib/api-auth';
+import { getCacheVersions } from '@/lib/cache-invalidation';
+import { getEffectivePriceTtlMs } from '@/lib/market-hours';
+import { getThrottlerSnapshot, isSyncActive } from '@/lib/sync-state';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-    const session = await auth();
-    if (!session) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
+    if (!authResult.authorized) {
+        return authResult.response;
     }
 
     try {
@@ -63,6 +68,7 @@ export async function GET(request: NextRequest) {
         const holdingsMap = new Map<string, {
             quantity: number,
             investment: any,
+            lastActivityCurrency: string,
             platforms: Map<string, number>,
             accounts: Map<string, { accountId: string | null, name: string, quantity: number, platformName: string, accountType: string, costBasis: number, lifetimeDividends: number, dividendsYTD: number, realizedGain: number, cashFlows: Transaction[], firstBuyDate: Date | null }>,
             appliedSplits: Set<string>,
@@ -77,6 +83,7 @@ export async function GET(request: NextRequest) {
                 holdingsMap.set(symbol, {
                     quantity: 0,
                     investment: activity.investment,
+                    lastActivityCurrency: activity.currency || activity.investment?.currencyCode || 'USD',
                     platforms: new Map(),
                     accounts: new Map(),
                     appliedSplits: new Set(),
@@ -85,6 +92,9 @@ export async function GET(request: NextRequest) {
             }
 
             const current = holdingsMap.get(symbol)!;
+            if (activity.currency) {
+                current.lastActivityCurrency = activity.currency;
+            }
             current.rawActivities.push({
                 type: activity.type,
                 date: activity.date,
@@ -231,21 +241,49 @@ export async function GET(request: NextRequest) {
         const nowGlobal = new Date();
         const date1YGlobal = new Date(nowGlobal); date1YGlobal.setFullYear(nowGlobal.getFullYear() - 1);
 
+        const fxToUsdPromiseCache = new Map<string, Promise<number>>();
+        const getRateToUSD = (cur: string): Promise<number> => {
+            if (!cur || cur === 'USD') return Promise.resolve(1);
+            const existing = fxToUsdPromiseCache.get(cur);
+            if (existing) return existing;
+            const promise = MarketDataService.getExchangeRate(cur, 'USD')
+                .then((r) => (r && r > 0 ? r : 1))
+                .catch(() => 1);
+            fxToUsdPromiseCache.set(cur, promise);
+            return promise;
+        };
+
         // ... (Market Data Fetching Loop) ...
         // Process Assets (Batched)
         const processHolding = async ([symbol, data]: [string, any]) => {
             try {
-                // 1. Fetch Market Data & History in Parallel
-                // Note: MarketDataService is now globally throttled, so these calls are safe
-                const [marketData, historicalPrices] = await Promise.all([
-                    MarketDataService.getPrice(symbol),
-                    MarketDataService.getHistoricalPrices(symbol)
-                ]);
+                const hasActiveHolding = data.quantity > ACTIVE_QUANTITY_EPSILON;
+
+                // Calculate accurate Cost Basis, Realized Gains, and Dividends from Accounts map
+                let costBasis = 0;
+                let realizedGainNative = 0;
+                let localDividendsYTD = 0;
+                let localLifetimeDividends = 0;
+
+                for (const acc of data.accounts.values()) {
+                    costBasis += acc.costBasis;
+                    realizedGainNative += acc.realizedGain;
+                    localDividendsYTD += acc.dividendsYTD;
+                    localLifetimeDividends += acc.lifetimeDividends;
+                }
+
+                // 1. Fetch Market Data & History in Parallel ONLY for active positions
+                const [marketData, historicalPrices] = hasActiveHolding
+                    ? await Promise.all([
+                        MarketDataService.getPrice(symbol),
+                        MarketDataService.getHistoricalPrices(symbol)
+                    ])
+                    : [null, {} as Record<string, number>];
 
                 const price = marketData?.price || 0;
                 let regularMarketChange = marketData?.regularMarketChange || 0;
                 let regularMarketChangePercent = marketData?.regularMarketChangePercent || 0;
-                const currency = marketData?.currency || data.investment?.currencyCode || 'USD';
+                const currency = marketData?.currency || data.investment?.currencyCode || data.lastActivityCurrency || 'USD';
 
                 // 24-Hour Rule: If data is older than 24h, show 0 change
                 if (marketData?.regularMarketTime) {
@@ -259,12 +297,11 @@ export async function GET(request: NextRequest) {
                     }
                 }
 
-                // Get exchange rate if needed
-                let rateToUSD = 1;
-                if (currency !== 'USD') {
-                    const r = await MarketDataService.getExchangeRate(currency, 'USD');
-                    if (r) rateToUSD = r;
-                }
+                // Get exchange rate only if active OR holding has realized gain / dividend history
+                const needsFxConversion =
+                    currency !== 'USD' &&
+                    (hasActiveHolding || localLifetimeDividends > 0 || Math.abs(realizedGainNative) > 0.01);
+                const rateToUSD = needsFxConversion ? await getRateToUSD(currency) : 1;
 
                 // 2. Calculate Cost Basis & Cash Flows
                 const symbolCashFlows: Transaction[] = [];
@@ -288,20 +325,6 @@ export async function GET(request: NextRequest) {
                     }
                 }
 
-                // Calculate accurate Cost Basis, Realized Gains, and Dividends from Accounts map
-                let costBasis = 0;
-                let realizedGainNative = 0;
-                let localDividendsYTD = 0;
-                let localLifetimeDividends = 0;
-
-                for (const acc of data.accounts.values()) {
-                    costBasis += acc.costBasis;
-                    realizedGainNative += acc.realizedGain;
-                    localDividendsYTD += acc.dividendsYTD;
-                    localLifetimeDividends += acc.lifetimeDividends;
-                }
-
-                const hasActiveHolding = data.quantity > ACTIVE_QUANTITY_EPSILON;
                 const avgBuyPrice = hasActiveHolding ? costBasis / data.quantity : 0;
                 const value = hasActiveHolding ? data.quantity * price : 0;
                 const dayChange = hasActiveHolding ? data.quantity * regularMarketChange : 0;
@@ -768,6 +791,51 @@ export async function GET(request: NextRequest) {
 
         const prevTotalValue = totalValue - totalDayChange;
 
+        const activeSymbols = holdingsEntries
+            .filter(([, h]) => h.quantity > ACTIVE_QUANTITY_EPSILON)
+            .map(([sym]) => sym);
+        const ttlInfo = getEffectivePriceTtlMs();
+        const versions = getCacheVersions();
+        const throttler = getThrottlerSnapshot();
+        let syncedAt: string | null = null;
+        let staleCount = 0;
+
+        const prismaAny = prisma as unknown as Record<string, any>;
+        if (activeSymbols.length > 0 && typeof prismaAny.marketDataCache?.findMany === 'function') {
+            try {
+                const cacheRows = await prismaAny.marketDataCache.findMany({
+                    where: { symbol: { in: activeSymbols } },
+                    select: { symbol: true, price: true, lastUpdated: true },
+                });
+                const cacheMap = new Map<string, { price: number; lastUpdated: Date | string }>(
+                    (cacheRows || []).map((r: any) => [r.symbol, r])
+                );
+                const nowMs = Date.now();
+                let maxUpdatedMs = 0;
+
+                for (const sym of activeSymbols) {
+                    const row = cacheMap.get(sym);
+                    if (!row || row.price <= 0) {
+                        staleCount++;
+                        continue;
+                    }
+                    const ts = new Date(row.lastUpdated).getTime();
+                    if (nowMs - ts > ttlInfo.ttlMs) {
+                        staleCount++;
+                    }
+                    if (ts > maxUpdatedMs) {
+                        maxUpdatedMs = ts;
+                    }
+                }
+
+                if (maxUpdatedMs > 0) {
+                    syncedAt = new Date(maxUpdatedMs).toISOString();
+                }
+            } catch {
+                // Non-critical telemetry fallback
+            }
+        }
+
         return NextResponse.json({
             totalValue,
             totalCostBasis,
@@ -780,6 +848,16 @@ export async function GET(request: NextRequest) {
             xirr: portfolioXIRR,
             isPortfolioYoungerThan1Y,
             lastUpdated: latestDataTimestamp,
+            syncStatus: {
+                syncedAt,
+                marketTime: latestDataTimestamp ? latestDataTimestamp.toISOString() : null,
+                isRefreshing: isSyncActive(),
+                staleCount,
+                marketDataVersion: versions.marketDataVersion,
+                isMarketOpen: ttlInfo.isMarketOpen,
+                effectivePriceTtlMs: ttlInfo.ttlMs,
+                throttledUntil: throttler.isRateLimited ? throttler.resetTime : null,
+            },
             allocationByType: allocationByTypeArray,
             allocationByPlatform: allocationByPlatformArray,
             allocationByAccount: allocationByAccountArray,

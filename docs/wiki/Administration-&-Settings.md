@@ -39,7 +39,7 @@ Manage indices selectable inside **Analysis > Comparison**:
 Located at `/settings/currency`:
 
 Ascend supports 11 major currencies (`USD`, `CAD`, `EUR`, `GBP`, `INR`, `JPY`, `AUD`, `CHF`, `CNY`, `NZD`, `SGD`) with one-tap **Quick Switch** chips and a sticky **Exchange Rate Matrix** table:
-* **Automated FX Polling**: Fetches live spot crosses via Yahoo Finance (`CAD=X`, `EUR=X`, `INR=X`, etc.), cached across the platform and refreshed every 8 hours.
+* **Automated FX Polling**: Fetches canonical USD-base spot crosses via Yahoo Finance (`CAD=X`, `EUR=X`, `INR=X`, `CHF=X`, etc., dynamically collected across supported currencies, accounts, and holdings) every 2 minutes during market hours (30 minutes off-hours) on the server, paired with a 10-minute in-flight-deduplicated client cache (`currencyCache.ts`) that invalidates immediately when market syncs complete.
 * **Reverse Pair Inversion**: Automatically computes mathematical reciprocals ($1 / \text{Rate}$) whenever only the inverted cross exists.
 
 ---
@@ -63,6 +63,7 @@ Strict RBAC is enforced at both API (`requireAuth`) and UI layers:
 | :--- | :---: | :---: | :---: |
 | View Dashboards, Owner Snapshots & Reports | ✅ | ✅ | ✅ |
 | Add, Edit, Import & Migrate Activities (`DRIP`) | ✅ | ✅ | ❌ |
+| Trigger Coalesced Portfolio / Symbol Price Refreshes | ✅ | ✅ | ❌ |
 | Run Rebalancer & Save FIRE / Rebalance Profiles | ✅ | ✅ | ❌ |
 | Manage Accounts & Platforms | ✅ | ✅ | ❌ |
 | Manage Master Taxonomy Data & Market Sync | ✅ | ❌ | ❌ |
@@ -80,7 +81,7 @@ Located at `/settings/data`:
 * **Investment Types & Yahoo Mapping**: Local asset classes (`Equity`, `ETF`, `Mutual Fund`, `Crypto`, `Fixed Income`) mapped cleanly to upstream Yahoo security types for CSV import auto-categorization.
 * **Activity Types**: Transaction definitions (`BUY`, `SELL`, `DIVIDEND`, `DRIP`, `STOCK_SPLIT`, `DEPOSIT`, `WITHDRAWAL`, `TRANSFER_IN`, `TRANSFER_OUT`) with behavioral flags (`ADD`, `REMOVE`, `NEUTRAL`, `SPLIT`).
 * **Account Types**: Reusable tax/currency container templates (`TFSA`, `RRSP`, `Taxable`, `401(k)`, etc.).
-* **Manual Market Sync**: Trigger full or incremental price refreshes with live terminal stream output.
+* **Market Sync Diagnostics & Manual Sync**: Displays live market session status, effective price TTL, active vs. stale symbol counts, last incremental/full run stats, `marketDataVersion`, and throttler cooldown state (`/api/market-data/status`), with **Run Quick Price Sync** and **Run Full Metadata & History Sync** (live streamed output) actions.
 
 ---
 
@@ -102,8 +103,17 @@ ADMIN_PASSWORD="your_secure_admin_password"
 # Programmatic API & MCP Integration
 MCP_API_KEY="your_secure_mcp_api_key_for_external_agents"
 
-# Background Automation Secret
+# Optional External Cron Webhook Secret (in-process crons run automatically without it)
 CRON_SECRET="your_secure_cron_webhook_secret"
+
+# Optional Market-Hours & Cache Freshness Tuning
+MARKET_HOURS_AWARE="true"
+PRICE_CACHE_TTL_MS=120000
+OFF_HOURS_PRICE_CACHE_TTL_MS=1800000
+METADATA_CACHE_TTL_MS=43200000
+HISTORY_CACHE_TTL_MS=86400000
+MANUAL_REFRESH_COOLDOWN_MS=15000
+INCREMENTAL_SYNC_BATCH_SIZE=20
 ```
 
 * **Timing-Safe Validation**: `MCP_API_KEY` and `CRON_SECRET` are verified with `crypto.timingSafeEqual` (`src/lib/api-auth.ts`) to prevent timing side-channel leaks.

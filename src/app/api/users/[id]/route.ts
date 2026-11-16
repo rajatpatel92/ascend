@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { invalidatePortfolioMutationCaches } from "@/lib/cache-invalidation";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 
@@ -24,7 +25,7 @@ export async function DELETE(
         await prisma.user.delete({
             where: { id }
         });
-
+        invalidatePortfolioMutationCaches();
 
         return new NextResponse(null, { status: 204 });
     } catch (error) {
@@ -65,6 +66,7 @@ export async function PUT(
             where: { id },
             data: updateData
         });
+        invalidatePortfolioMutationCaches();
 
         return new NextResponse(null, { status: 200 });
     } catch (error) {

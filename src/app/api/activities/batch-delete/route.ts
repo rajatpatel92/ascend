@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function POST(req: Request) {
     const authResult = await requireAuth(req, ['ADMIN', 'EDITOR'], true);
@@ -35,6 +37,10 @@ export async function POST(req: Request) {
                 id: { in: ids }
             }
         });
+
+        if (count.count > 0) {
+            invalidatePortfolioMutationCaches();
+        }
 
         return NextResponse.json({ count: count.count });
 

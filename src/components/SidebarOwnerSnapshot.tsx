@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import styles from './SidebarOwnerSnapshot.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import {
     OWNER_SNAPSHOT_RANGES,
     RANGE_DISPLAY_LABELS,
@@ -158,6 +159,13 @@ export default function SidebarOwnerSnapshot({ collapsed }: SidebarOwnerSnapshot
     const [data, setData] = useState<OwnerSnapshotResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [hoverState, setHoverState] = useState<{ ownerId: string; index: number } | null>(null);
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedViewKeyRef = useRef<string | null>(null);
+
+    useLiveSync({
+        enabled: prefsLoaded,
+        onSync: () => setSyncTick((t) => t + 1),
+    });
 
     // Load saved timeframe & collapse state asynchronously after hydration
     useEffect(() => {
@@ -184,21 +192,26 @@ export default function SidebarOwnerSnapshot({ collapsed }: SidebarOwnerSnapshot
         };
     }, []);
 
-    // Fetch owner snapshot whenever preferences, range, or display currency change
+    // Fetch owner snapshot whenever preferences, range, display currency, or live sync change
     useEffect(() => {
         if (!prefsLoaded) return;
 
+        const viewKey = `${range}:${currency}`;
+        const isBackground = loadedViewKeyRef.current === viewKey;
         const controller = new AbortController();
-        Promise.resolve().then(() => {
-            if (!controller.signal.aborted) {
-                setLoading(true);
-                setHoverState(null);
-            }
-        });
+
+        if (!isBackground) {
+            Promise.resolve().then(() => {
+                if (!controller.signal.aborted) {
+                    setLoading(true);
+                    setHoverState(null);
+                }
+            });
+        }
 
         fetch(
             `/api/portfolio/owner-snapshot?range=${encodeURIComponent(range)}&currency=${encodeURIComponent(currency)}`,
-            { signal: controller.signal }
+            { signal: controller.signal, cache: 'no-store' }
         )
             .then(async (res) => {
                 if (!res.ok) {
@@ -208,6 +221,7 @@ export default function SidebarOwnerSnapshot({ collapsed }: SidebarOwnerSnapshot
             })
             .then((payload) => {
                 if (!controller.signal.aborted) {
+                    loadedViewKeyRef.current = viewKey;
                     setData(payload);
                     setLoading(false);
                 }
@@ -222,7 +236,7 @@ export default function SidebarOwnerSnapshot({ collapsed }: SidebarOwnerSnapshot
         return () => {
             controller.abort();
         };
-    }, [prefsLoaded, range, currency]);
+    }, [prefsLoaded, range, currency, syncTick]);
 
     const handleRangeChange = (nextRange: OwnerSnapshotRange) => {
         setRange(nextRange);

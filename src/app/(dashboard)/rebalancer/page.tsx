@@ -6,6 +6,8 @@ import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import ReportFilters, { type FilterOptions } from '@/components/ReportFilters';
 import usePersistentState from '@/hooks/usePersistentState';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { emitLiveSyncEvent } from '@/lib/live-sync';
 import { MdClose, MdExpandLess, MdExpandMore, MdSettings, MdWarningAmber } from 'react-icons/md';
 import {
     computeRebalancePlan,
@@ -96,7 +98,20 @@ export default function RebalancerPage() {
     const [errorBanner, setErrorBanner] = useState<string | null>(null);
     const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
+    const [syncTick, setSyncTick] = useState(0);
     const hasHydratedProfilesRef = useRef(false);
+    const loadedViewKeyRef = useRef<string | null>(null);
+    const suppressSelfSyncRef = useRef(false);
+    const isConfigOpenRef = useRef(isConfigOpen);
+    const activeProfileIdRef = useRef(activeProfileId);
+
+    useEffect(() => {
+        isConfigOpenRef.current = isConfigOpen;
+    }, [isConfigOpen]);
+
+    useEffect(() => {
+        activeProfileIdRef.current = activeProfileId;
+    }, [activeProfileId]);
 
     // Persistent Filters & Strategy Controls
     const [globalFilters, setGlobalFilters, isFiltersLoaded] = usePersistentState<FilterOptions | null>('rebalancer_filters', null);
@@ -108,6 +123,23 @@ export default function RebalancerPage() {
     const [tolerancePercent, setTolerancePercent] = usePersistentState<number>('rebalancer_tolerance', 1);
     const [wholeShares, setWholeShares] = usePersistentState<boolean>('rebalancer_whole_shares', false);
     const [checkedTradeList, setCheckedTradeList] = usePersistentState<string[]>('rebalancer_checked_trades', []);
+
+    useLiveSync({
+        enabled: isFiltersLoaded,
+        onSync: () => {
+            if (suppressSelfSyncRef.current) return;
+            setSyncTick((t) => t + 1);
+        },
+    });
+
+    const notifyPortfolioUpdated = useCallback((reason: string) => {
+        try {
+            suppressSelfSyncRef.current = true;
+            emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason });
+        } finally {
+            suppressSelfSyncRef.current = false;
+        }
+    }, []);
 
     // Debounce manual exclude typing so we don't fire API calls on every keystroke
     useEffect(() => {
@@ -145,8 +177,20 @@ export default function RebalancerPage() {
     );
 
     const fetchData = useCallback(async (signal?: AbortSignal) => {
-        setIsLoading(true);
-        setErrorBanner(null);
+        const normalizedInvTypes = [...(globalFilters?.investmentTypes || [])].sort();
+        const normalizedAccTypes = [...(globalFilters?.accountTypes || [])].sort();
+        const viewKey = JSON.stringify({
+            currency,
+            investmentTypes: normalizedInvTypes,
+            accountTypes: normalizedAccTypes,
+            exclude: debouncedExclude.trim(),
+        });
+        const isBackground = loadedViewKeyRef.current === viewKey;
+
+        if (!isBackground) {
+            setIsLoading(true);
+            setErrorBanner(null);
+        }
 
         try {
             let url = `/api/rebalancer?currency=${currency}`;
@@ -163,19 +207,25 @@ export default function RebalancerPage() {
             }
 
             const [dataRes, profileRes, invTypeRes] = await Promise.all([
-                fetch(url, { signal }),
-                fetch('/api/rebalancer/profiles', { signal }),
-                fetch('/api/settings/investment-types', { signal }).catch(() => null)
+                fetch(url, { signal, cache: 'no-store' }),
+                fetch('/api/rebalancer/profiles', { signal, cache: 'no-store' }),
+                fetch('/api/settings/investment-types', { signal, cache: 'no-store' }).catch(() => null)
             ]);
+
+            if (signal?.aborted) return;
 
             if (!dataRes.ok) {
                 throw new Error(`Unable to load rebalance analytics (HTTP ${dataRes.status})`);
             }
 
             const dataJson = await dataRes.json();
+            if (signal?.aborted) return;
+
             const items: RebalanceItem[] = Array.isArray(dataJson.data) ? dataJson.data : [];
+            loadedViewKeyRef.current = viewKey;
             setRebalanceData(items);
             setDataCurrency(dataJson.currency || currency);
+            setErrorBanner(null);
 
             setKnownSymbols((prev) => {
                 const merged = new Set(prev);
@@ -185,20 +235,28 @@ export default function RebalancerPage() {
 
             if (invTypeRes && invTypeRes.ok) {
                 const invTypesJson = await invTypeRes.json().catch(() => []);
-                if (Array.isArray(invTypesJson)) {
+                if (!signal?.aborted && Array.isArray(invTypesJson)) {
                     setConfiguredInvestmentTypes(invTypesJson.map((it: { name: string }) => it.name));
                 }
             }
 
             if (profileRes.ok) {
                 const store = (await profileRes.json()) as RebalanceProfileStore;
-                if (Array.isArray(store.profiles) && store.profiles.length > 0) {
+                if (!signal?.aborted && Array.isArray(store.profiles) && store.profiles.length > 0) {
                     setProfiles(store.profiles);
-                    if (!hasHydratedProfilesRef.current) {
+                    const shouldApplyActiveProfile =
+                        !hasHydratedProfilesRef.current ||
+                        (!isConfigOpenRef.current &&
+                            (Boolean(store.activeProfileId && store.activeProfileId !== activeProfileIdRef.current) ||
+                                isBackground));
+
+                    if (shouldApplyActiveProfile) {
                         hasHydratedProfilesRef.current = true;
                         const active =
                             store.profiles.find((p) => p.id === store.activeProfileId) || store.profiles[0];
-                        applyProfileToState(active, items);
+                        if (active) {
+                            applyProfileToState(active, items);
+                        }
                     } else {
                         setTargets((prev) => enrichTargetTimestamps(prev, items));
                     }
@@ -207,18 +265,22 @@ export default function RebalancerPage() {
         } catch (error) {
             if (error instanceof DOMException && error.name === 'AbortError') return;
             console.error('Failed to fetch rebalancer data:', error);
-            setErrorBanner(error instanceof Error ? error.message : 'Failed to load rebalancer data.');
+            if (!isBackground) {
+                setErrorBanner(error instanceof Error ? error.message : 'Failed to load rebalancer data.');
+            }
         } finally {
-            setIsLoading(false);
+            if (!signal?.aborted) {
+                setIsLoading(false);
+            }
         }
     }, [currency, globalFilters, debouncedExclude, applyProfileToState]);
 
     useEffect(() => {
         if (!isFiltersLoaded) return;
         const controller = new AbortController();
-        fetchData(controller.signal);
+        void fetchData(controller.signal);
         return () => controller.abort();
-    }, [isFiltersLoaded, fetchData]);
+    }, [isFiltersLoaded, fetchData, syncTick]);
 
     const persistProfile = async (
         profileId: string,
@@ -283,6 +345,7 @@ export default function RebalancerPage() {
 
             setSuccessBanner(successMessage);
             await fetchData();
+            notifyPortfolioUpdated('rebalance-profile-saved');
         } catch (error) {
             console.error('Failed to save profile:', error);
             setErrorBanner('Network error while saving target profile.');
@@ -345,6 +408,7 @@ export default function RebalancerPage() {
             if (res.ok) {
                 await fetchData();
                 setSuccessBanner(`Switched to profile "${targetProfile.name}".`);
+                notifyPortfolioUpdated('rebalance-profile-selected');
             }
         } catch (error) {
             console.error('Failed to switch profile:', error);
@@ -372,6 +436,7 @@ export default function RebalancerPage() {
             }
             setSuccessBanner('Profile deleted.');
             await fetchData();
+            notifyPortfolioUpdated('rebalance-profile-deleted');
         } catch (error) {
             console.error('Failed to delete profile:', error);
             setErrorBanner('Network error while deleting profile.');
@@ -478,7 +543,7 @@ export default function RebalancerPage() {
             }
 
             const result = await res.json();
-            const targetRes = await fetch('/api/rebalancer/targets');
+            const targetRes = await fetch('/api/rebalancer/targets', { cache: 'no-store' });
             if (targetRes.ok) {
                 const targetJson = await targetRes.json();
                 if (Array.isArray(targetJson.targets)) {
@@ -519,6 +584,7 @@ export default function RebalancerPage() {
             setSuccessBanner(
                 `Applied +1 year glide path shift to ${result.adjustedCount || 0} asset(s) and updated target baselines.`
             );
+            notifyPortfolioUpdated('glide-path-applied');
         } catch (error) {
             console.error('Failed to apply glide path step:', error);
             setErrorBanner('Network error while applying glide path step.');

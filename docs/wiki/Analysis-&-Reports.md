@@ -69,10 +69,10 @@ When inspecting **`By Sector`** or **`By Geography`**, clicking any slice opens 
 
 The redesigned individual symbol page provides complete lifecycle diagnostics for any security:
 
-* **Hero & Summary KPI Strip**: Live market price, day change, position market value, cost basis (`Avg Purchase Price`), total shares held, unrealized/realized P&L, and **Holding XIRR**.
+* **Hero & Summary KPI Strip**: Live market price, day change, position market value, cost basis (`Avg Purchase Price`), total shares held, unrealized/realized P&L, **Holding XIRR**, and a role-gated **Refresh** button (`ADMIN` / `EDITOR`) that triggers `POST /api/market-data/refresh` (`{ symbol, mode: 'full' }`) and broadcasts `MARKET_SYNCED` across open tabs and chart views.
 * **Investment Horizon & Trading Stats**: Investment age, total activity count, cumulative brokerage fees, **DRIP Reinvested Shares & Amount**, and 52-week price range bar.
 * **Interactive Cost Basis Overlay Chart (`StockChart`)**:
-  * Daily price history (`1M`, `3M`, `6M`, `YTD`, `1Y`, `3Y`, `5Y`, `ALL`) with responsive skeleton loading (`SymbolSkeleton`).
+  * Daily price history (`1M`, `3M`, `6M`, `YTD`, `1Y`, `3Y`, `5Y`, `ALL`) with responsive skeleton loading (`SymbolSkeleton`) and automatic revalidation on `MARKET_SYNCED` events.
   * Overlays your historical **`Average Purchase Price (avgPriceHistory)`** step line so you can see exactly when your position traded above or below your cost basis.
   * Plots buy/sell/DRIP execution context directly alongside price action.
 * **Account Distribution Breakdown**: Per-account share counts, market values, cost bases, and custodian platforms holding the symbol.

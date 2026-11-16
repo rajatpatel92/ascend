@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
     AreaChart,
     Area,
@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import DateInput from './DateInput';
 import styles from './PortfolioChart.module.css';
 
@@ -51,22 +52,48 @@ export default function StockChart({ data, currency: assetCurrency, avgPriceHist
     const [customEnd, setCustomEnd] = useState('');
     const [intradayData, setIntradayData] = useState<{ date: string; value: number }[]>([]);
     const [loadingIntraday, setLoadingIntraday] = useState(false);
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedIntradaySymbolRef = useRef<string | null>(null);
+
+    useLiveSync({
+        enabled: range === '1D' && Boolean(symbol),
+        onSync: () => setSyncTick((t) => t + 1),
+    });
 
     useEffect(() => {
-        if (range === '1D' && symbol) {
+        if (range !== '1D' || !symbol) return;
+
+        const controller = new AbortController();
+        const isBackground = loadedIntradaySymbolRef.current === symbol;
+        if (!isBackground) {
             // eslint-disable-next-line react-hooks/set-state-in-effect
             setLoadingIntraday(true);
-            fetch(`/api/market-data/intraday?symbol=${encodeURIComponent(symbol)}`)
-                .then(res => res.json())
-                .then(resData => {
-                    if (Array.isArray(resData)) {
-                        setIntradayData(resData);
-                    }
-                })
-                .catch(err => console.error('Failed to fetch intraday', err))
-                .finally(() => setLoadingIntraday(false));
         }
-    }, [range, symbol]);
+
+        fetch(`/api/market-data/intraday?symbol=${encodeURIComponent(symbol)}`, {
+            signal: controller.signal,
+            cache: 'no-store',
+        })
+            .then(async (res) => {
+                if (!res.ok) return;
+                const resData = await res.json();
+                if (!controller.signal.aborted && Array.isArray(resData)) {
+                    loadedIntradaySymbolRef.current = symbol;
+                    setIntradayData(resData);
+                }
+            })
+            .catch((err) => {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                console.error('Failed to fetch intraday', err);
+            })
+            .finally(() => {
+                if (!controller.signal.aborted) {
+                    setLoadingIntraday(false);
+                }
+            });
+
+        return () => controller.abort();
+    }, [range, symbol, syncTick]);
 
     const allData = useMemo(() => {
         return Object.entries(data || {})

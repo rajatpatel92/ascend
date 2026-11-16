@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import Papa from 'papaparse';
@@ -23,6 +23,8 @@ import {
 import { FaSpinner } from 'react-icons/fa';
 import { useCurrency } from '@/context/CurrencyContext';
 import { useDate } from '@/context/DateContext';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { emitLiveSyncEvent } from '@/lib/live-sync';
 import DateInput from '@/components/DateInput';
 import ActivityFormModal from '@/components/ActivityFormModal';
 import FetchDividendsModal from '@/components/FetchDividendsModal';
@@ -93,9 +95,12 @@ export default function ActivitiesPage() {
     const [currentPage, setCurrentPage] = useState(1);
     const [selectedActivities, setSelectedActivities] = useState<Set<string>>(new Set());
 
+    const suppressSelfSyncRef = useRef(false);
+    const hasLoadedActivitiesRef = useRef(false);
+
     const fetchUsers = useCallback(async () => {
         try {
-            const res = await fetch('/api/users');
+            const res = await fetch('/api/users', { cache: 'no-store' });
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) setUsers(data);
@@ -107,25 +112,50 @@ export default function ActivitiesPage() {
 
     const fetchActivities = useCallback(async () => {
         try {
-            const res = await fetch('/api/activities');
+            const res = await fetch('/api/activities', { cache: 'no-store' });
             if (!res.ok) {
                 throw new Error(`Failed to fetch activities (HTTP ${res.status})`);
             }
             const data = await res.json();
             if (Array.isArray(data)) {
+                hasLoadedActivitiesRef.current = true;
                 setActivities(data);
+                setErrorBanner(null);
             }
         } catch (error) {
             console.error('Failed to fetch activities', error);
-            setErrorBanner('Unable to load activities. Please refresh and try again.');
+            if (!hasLoadedActivitiesRef.current) {
+                setErrorBanner('Unable to load activities. Please refresh and try again.');
+            }
         } finally {
             setIsLoading(false);
         }
     }, []);
 
+    const notifyActivitiesChanged = useCallback((reason: string) => {
+        try {
+            suppressSelfSyncRef.current = true;
+            emitLiveSyncEvent('ACTIVITIES_CHANGED', { reason });
+        } finally {
+            suppressSelfSyncRef.current = false;
+        }
+    }, []);
+
+    useLiveSync({
+        events: ['ACTIVITIES_CHANGED', 'PORTFOLIO_UPDATED'],
+        onSync: (_reason, event) => {
+            if (suppressSelfSyncRef.current) return;
+            void fetchActivities();
+            if (event?.type === 'PORTFOLIO_UPDATED') {
+                void fetchUsers();
+                setAccountsRefreshKey((prev) => prev + 1);
+            }
+        },
+    });
+
     useEffect(() => {
-        fetchActivities();
-        fetchUsers();
+        void fetchActivities();
+        void fetchUsers();
     }, [fetchActivities, fetchUsers]);
 
     useEffect(() => {
@@ -259,6 +289,7 @@ export default function ActivitiesPage() {
             setDeleteTarget(null);
             setSuccessBanner('Activity deleted.');
             await fetchActivities();
+            notifyActivitiesChanged('activity-deleted');
         } catch (error) {
             console.error('Delete failed', error);
             setErrorBanner('Failed to delete activity. Please try again.');
@@ -290,6 +321,7 @@ export default function ActivitiesPage() {
             setConfirmBatchDelete(false);
             setSuccessBanner(`Deleted ${deletedCount} ${deletedCount === 1 ? 'activity' : 'activities'}.`);
             await fetchActivities();
+            notifyActivitiesChanged('activities-batch-deleted');
         } catch (error) {
             console.error('Failed to batch delete', error);
             setErrorBanner('Failed to delete selected activities.');
@@ -1262,7 +1294,8 @@ export default function ActivitiesPage() {
                     setShowActivityModal(false);
                     setEditingActivity(null);
                     setSuccessBanner(isEdit ? 'Activity updated successfully.' : 'Activity added successfully.');
-                    fetchActivities();
+                    void fetchActivities();
+                    notifyActivitiesChanged(isEdit ? 'activity-updated' : 'activity-created');
                 }}
             />
 
@@ -1271,7 +1304,8 @@ export default function ActivitiesPage() {
                 onClose={() => setShowDividendModal(false)}
                 onSuccess={(addedCount) => {
                     setSuccessBanner(`Added ${addedCount} dividend ${addedCount === 1 ? 'activity' : 'activities'}.`);
-                    fetchActivities();
+                    void fetchActivities();
+                    notifyActivitiesChanged('dividends-added');
                 }}
             />
 
@@ -1284,7 +1318,8 @@ export default function ActivitiesPage() {
                     setSuccessBanner(
                         `Converted ${migratedCount} historical ${migratedCount === 1 ? 'activity' : 'activities'} from BUY to DRIP.`
                     );
-                    fetchActivities();
+                    void fetchActivities();
+                    notifyActivitiesChanged('drip-migration');
                 }}
             />
 
@@ -1298,7 +1333,6 @@ export default function ActivitiesPage() {
                                 ? `Imported ${importedCount} ${importedCount === 1 ? 'activity' : 'activities'}.`
                                 : 'Activities imported successfully.'
                         );
-                        fetchActivities();
                     }}
                 />
             )}
@@ -1315,7 +1349,8 @@ export default function ActivitiesPage() {
                         setSuccessBanner(
                             `Updated ${updatedCount ?? selectedActivities.size} ${(updatedCount ?? selectedActivities.size) === 1 ? 'activity' : 'activities'}.`
                         );
-                        fetchActivities();
+                        void fetchActivities();
+                        notifyActivitiesChanged('activities-bulk-updated');
                     }}
                 />
             )}
@@ -1331,7 +1366,8 @@ export default function ActivitiesPage() {
                                 ? `Transferred ${transferredCount} ${transferredCount === 1 ? 'holding' : 'holdings'} successfully.`
                                 : 'Account transfer completed successfully.'
                         );
-                        fetchActivities();
+                        void fetchActivities();
+                        notifyActivitiesChanged('accounts-transferred');
                     }}
                 />
             )}

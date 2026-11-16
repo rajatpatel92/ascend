@@ -22,6 +22,8 @@ export async function resolve(specifier, context, nextResolve) {
 
 const { prisma } = await import('./prisma.ts');
 const { Throttler, apiThrottler, estimateNextDividend, MarketDataService, yahooFinance } = await import('./market-data.ts');
+const { flushBackgroundPriceSync, resetSyncStateForTests } = await import('./sync-state.ts');
+const { getCacheVersions, resetCacheVersionsForTests } = await import('./cache-invalidation.ts');
 
 test('Throttler', async (t) => {
     t.beforeEach(() => {
@@ -475,9 +477,13 @@ test('MarketDataService.getPrice', async (t) => {
         );
     });
 
-    await t.test('preserves cached ETF dividend metadata on stale interactive read when Yahoo omits it', async (subT) => {
-        const staleDate = new Date(Date.now() - 1000 * 60 * 20);
+    await t.test('serves stale cache immediately via SWR while enqueuing background refresh and preserves dividend metadata on blocking read', async (subT) => {
+        resetSyncStateForTests();
+        const staleDate = new Date(Date.now() - 1000 * 60 * 45);
         const futureExDate = new Date(Date.now() + 1000 * 60 * 60 * 24 * 12);
+        let capturedBackgroundUpsert: Record<string, unknown> | null = null;
+        let quoteCalls = 0;
+
         subT.mock.method(prisma.marketDataCache, 'findUnique', async () => ({
             symbol: 'XEQT.TO',
             price: 34,
@@ -495,13 +501,17 @@ test('MarketDataService.getPrice', async (t) => {
             exDividendDate: futureExDate,
             estNextDividendAmount: 0.17
         }));
-        subT.mock.method(yahooFinance, 'quote', async () => ({
-            regularMarketPrice: 35,
-            regularMarketChange: 0.5,
-            regularMarketChangePercent: 1.4,
-            currency: 'CAD',
-            quoteType: 'ETF'
-        }));
+        subT.mock.method(yahooFinance, 'quote', async () => {
+            quoteCalls++;
+            return {
+                symbol: 'XEQT.TO',
+                regularMarketPrice: 35,
+                regularMarketChange: 0.5,
+                regularMarketChangePercent: 1.4,
+                currency: 'CAD',
+                quoteType: 'ETF'
+            };
+        });
         subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
             summaryProfile: {},
             summaryDetail: {},
@@ -509,19 +519,38 @@ test('MarketDataService.getPrice', async (t) => {
             calendarEvents: {},
             defaultKeyStatistics: {}
         }));
-        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: { update: Record<string, unknown> }) => {
+            capturedBackgroundUpsert = args.update;
+            return args;
+        });
+        subT.mock.method(prisma, '$transaction', async (ops: unknown[]) => ops);
 
-        const result = await MarketDataService.getPrice('XEQT.TO', false);
+        // 1. Default interactive read returns stale cached price & metadata without blocking
+        const swrResult = await MarketDataService.getPrice('XEQT.TO', false);
+        assert.ok(swrResult);
+        assert.strictEqual(swrResult.price, 34);
+        assert.strictEqual(swrResult.dividendRate, 0.68);
+        assert.strictEqual(quoteCalls, 0);
 
-        assert.ok(result);
-        assert.strictEqual(result.price, 35);
-        assert.strictEqual(result.dividendRate, 0.68);
-        assert.strictEqual(result.dividendYield, 0.02);
-        assert.strictEqual(result.estNextDividendAmount, 0.17);
+        // Flushing coalesced background sync persists updated price while preserving dividend fields
+        await flushBackgroundPriceSync();
+        assert.strictEqual(quoteCalls, 1);
+        assert.ok(capturedBackgroundUpsert);
+        assert.strictEqual((capturedBackgroundUpsert as Record<string, unknown>).price, 35);
+        assert.ok(!('dividendRate' in capturedBackgroundUpsert!));
+
+        // 2. Blocking stale read fetches updated price AND preserves cached ETF dividend metadata
+        const blockingResult = await MarketDataService.getPrice('XEQT.TO', { mode: 'blocking' });
+        assert.ok(blockingResult);
+        assert.strictEqual(blockingResult.price, 35);
+        assert.strictEqual(blockingResult.dividendRate, 0.68);
+        assert.strictEqual(blockingResult.dividendYield, 0.02);
+        assert.strictEqual(blockingResult.estNextDividendAmount, 0.17);
         assert.strictEqual(
-            result.exDividendDate?.toISOString().split('T')[0],
+            blockingResult.exDividendDate?.toISOString().split('T')[0],
             futureExDate.toISOString().split('T')[0]
         );
+        resetSyncStateForTests();
     });
 
     await t.test('skips historical dividend estimation for FX pairs, indices, and cryptocurrencies', async (subT) => {
@@ -981,4 +1010,324 @@ test('MarketDataService.getDailyHistory', async (t) => {
         assert.strictEqual(chartCalledAgain, 0);
     });
 });
+
+test('MarketDataService singleflight coalescing, canonical FX, upsert & throttler telemetry', async (t) => {
+    t.beforeEach(() => {
+        apiThrottler.reset();
+        resetSyncStateForTests();
+        resetCacheVersionsForTests();
+    });
+
+    t.afterEach(() => {
+        resetSyncStateForTests();
+        resetCacheVersionsForTests();
+    });
+
+    await t.test('deduplicates 5 concurrent getPrice cold misses via singleflight into 1 Yahoo quote call', async (subT) => {
+        let quoteCalls = 0;
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+        subT.mock.method(yahooFinance, 'quote', async () => {
+            quoteCalls++;
+            await new Promise((r) => setTimeout(r, 25));
+            return {
+                symbol: 'SINGLEFLIGHT_AAPL',
+                regularMarketPrice: 210,
+                regularMarketChange: 2,
+                regularMarketChangePercent: 0.96,
+                currency: 'USD',
+            };
+        });
+
+        const versionBefore = getCacheVersions().marketDataVersion;
+        const results = await Promise.all(
+            Array.from({ length: 5 }, () => MarketDataService.getPrice('SINGLEFLIGHT_AAPL', false))
+        );
+
+        assert.strictEqual(quoteCalls, 1);
+        for (const r of results) {
+            assert.ok(r);
+            assert.strictEqual(r.price, 210);
+        }
+        assert.ok(getCacheVersions().marketDataVersion > versionBefore);
+    });
+
+    await t.test('deduplicates concurrent getExchangeRate, getHistoricalPrices, getDailyHistory, and getIntradayPrices', async (subT) => {
+        let quoteCalls = 0;
+        let chartCalls = 0;
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+        subT.mock.method(yahooFinance, 'quote', async (sym: string) => {
+            quoteCalls++;
+            await new Promise((r) => setTimeout(r, 20));
+            return { symbol: sym, regularMarketPrice: 1.38, currency: 'CAD' };
+        });
+        subT.mock.method(yahooFinance, 'chart', async () => {
+            chartCalls++;
+            await new Promise((r) => setTimeout(r, 20));
+            return {
+                quotes: [
+                    { date: '2026-05-01T14:00:00.000Z', close: 100 },
+                    { date: '2026-05-02T14:00:00.000Z', close: 102 },
+                ],
+            };
+        });
+
+        const [fxResults, histResults, dailyResults, intradayResults] = await Promise.all([
+            Promise.all([
+                MarketDataService.getExchangeRate('CAD', 'USD', false),
+                MarketDataService.getExchangeRate('CAD', 'USD', false),
+                MarketDataService.getExchangeRate('CAD', 'USD', false),
+            ]),
+            Promise.all([
+                MarketDataService.getHistoricalPrices('SF_HIST', false),
+                MarketDataService.getHistoricalPrices('SF_HIST', false),
+            ]),
+            Promise.all([
+                MarketDataService.getDailyHistory('SF_DAILY', new Date('2026-05-01T00:00:00.000Z')),
+                MarketDataService.getDailyHistory('SF_DAILY', new Date('2026-05-01T00:00:00.000Z')),
+            ]),
+            Promise.all([
+                MarketDataService.getIntradayPrices('SF_INTRA'),
+                MarketDataService.getIntradayPrices('SF_INTRA'),
+            ]),
+        ]);
+
+        assert.strictEqual(quoteCalls, 1);
+        assert.strictEqual(chartCalls, 3); // 1x historical, 1x daily, 1x intraday
+        assert.ok(Math.abs((fxResults[0] || 0) - 1 / 1.38) < 1e-6);
+        assert.strictEqual(fxResults[0], fxResults[1]);
+        assert.strictEqual(fxResults[1], fxResults[2]);
+        assert.deepStrictEqual(histResults[0], histResults[1]);
+        assert.deepStrictEqual(dailyResults[0], dailyResults[1]);
+        assert.deepStrictEqual(intradayResults[0], intradayResults[1]);
+    });
+
+    await t.test('getExchangeRate prefers cached CAD=X shorthand inverted before querying CADUSD=X', async (subT) => {
+        const queriedSymbols: string[] = [];
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async ({ where }: { where: { symbol: string } }) => {
+            queriedSymbols.push(where.symbol);
+            if (where.symbol === 'CAD=X') {
+                return {
+                    symbol: 'CAD=X',
+                    price: 1.4,
+                    currency: 'CAD',
+                    lastUpdated: new Date(),
+                    marketTime: new Date(),
+                    change: 0,
+                    changePercent: 0,
+                };
+            }
+            return null;
+        });
+
+        const rate = await MarketDataService.getExchangeRate('CAD', 'USD', false);
+        assert.ok(rate);
+        assert.ok(Math.abs(rate - 1 / 1.4) < 1e-6);
+        assert.deepStrictEqual(queriedSymbols, ['CAD=X']);
+    });
+
+    await t.test('refreshPriceOnly creates missing cache rows via upsert and preserves metadata/history on update', async (subT) => {
+        const capturedUpserts: Array<{ where: unknown; update: Record<string, unknown>; create: Record<string, unknown> }> = [];
+        subT.mock.method(yahooFinance, 'quote', async () => ([
+            { symbol: 'AAPL', regularMarketPrice: 199, regularMarketChange: 2, regularMarketChangePercent: 1.0, currency: 'USD' },
+        ]));
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: {
+            where: unknown;
+            update: Record<string, unknown>;
+            create: Record<string, unknown>;
+        }) => {
+            capturedUpserts.push(args);
+            return args;
+        });
+        subT.mock.method(prisma, '$transaction', async (ops: unknown[]) => ops);
+
+        const versionBefore = getCacheVersions().marketDataVersion;
+        const count = await MarketDataService.refreshPriceOnly(['AAPL']);
+
+        assert.strictEqual(count, 1);
+        assert.strictEqual(capturedUpserts.length, 1);
+        assert.strictEqual(capturedUpserts[0].create.symbol, 'AAPL');
+        assert.strictEqual(capturedUpserts[0].create.price, 199);
+        assert.strictEqual(capturedUpserts[0].update.price, 199);
+        assert.ok(!('history' in capturedUpserts[0].update));
+        assert.ok(!('sector' in capturedUpserts[0].update));
+        assert.ok(!('metadataUpdatedAt' in capturedUpserts[0].update));
+        assert.ok(getCacheVersions().marketDataVersion > versionBefore);
+    });
+
+    await t.test('Throttler.getStatus accurately reports rate-limit circuit breaker state', async () => {
+        const local = new Throttler(1, 5);
+        assert.deepStrictEqual(local.getStatus(), {
+            isRateLimited: false,
+            resetTime: null,
+            queueLength: 0,
+            activeCount: 0,
+        });
+
+        try {
+            await local.add(() => Promise.reject({ status: 429, message: 'Too Many Requests' }));
+        } catch {
+            // expected
+        }
+
+        const limitedStatus = local.getStatus();
+        assert.strictEqual(limitedStatus.isRateLimited, true);
+        assert.ok(limitedStatus.resetTime);
+
+        local.reset();
+        assert.strictEqual(local.getStatus().isRateLimited, false);
+        assert.strictEqual(local.getStatus().resetTime, null);
+    });
+
+    await t.test('refreshPriceOnly skips zero/undefined quotes, parses Unix seconds marketTime, and deduplicates overlapping symbols (B2, M1)', async (subT) => {
+        const upsertedSymbols: string[] = [];
+        let capturedMarketTime: Date | undefined;
+        const quoteBatches: unknown[] = [];
+
+        subT.mock.method(yahooFinance, 'quote', async (arg: string | string[]) => {
+            quoteBatches.push(arg);
+            await new Promise((r) => setTimeout(r, 20));
+            const list = Array.isArray(arg) ? arg : [arg];
+            return list.map((sym: string) => {
+                if (sym === 'ZERO_SYM') {
+                    return { symbol: 'ZERO_SYM', regularMarketPrice: 0 };
+                }
+                if (sym === 'MISSING_SYM') {
+                    return { symbol: 'MISSING_SYM' };
+                }
+                return {
+                    symbol: sym,
+                    regularMarketPrice: sym === 'AAPL' ? 200 : sym === 'MSFT' ? 400 : 120,
+                    regularMarketTime: 1768400000, // Unix seconds (2026)
+                    currency: 'USD',
+                };
+            });
+        });
+
+        subT.mock.method(
+            prisma.marketDataCache,
+            'upsert',
+            async (args: { where: { symbol: string }; update: Record<string, unknown> }) => {
+                upsertedSymbols.push(args.where.symbol);
+                if (args.where.symbol === 'AAPL' && args.update.marketTime instanceof Date) {
+                    capturedMarketTime = args.update.marketTime;
+                }
+                return args;
+            }
+        );
+        subT.mock.method(prisma, '$transaction', async (ops: unknown[]) => ops);
+
+        // Zero / missing price quotes must NOT be upserted as 0
+        const partialCount = await MarketDataService.refreshPriceOnly(['AAPL', 'ZERO_SYM', 'MISSING_SYM']);
+        assert.strictEqual(partialCount, 1);
+        assert.deepStrictEqual(upsertedSymbols, ['AAPL']);
+        assert.ok(capturedMarketTime !== undefined);
+        const marketTimeDate = capturedMarketTime as Date;
+        assert.ok(marketTimeDate instanceof Date);
+        assert.ok(marketTimeDate.getUTCFullYear() >= 2026);
+
+        // Overlapping concurrent batches: ['AAPL', 'MSFT'] + ['MSFT', 'NVDA'] -> MSFT queried only once
+        quoteBatches.length = 0;
+        const [countA, countB] = await Promise.all([
+            MarketDataService.refreshPriceOnly(['AAPL', 'MSFT']),
+            MarketDataService.refreshPriceOnly(['MSFT', 'NVDA']),
+        ]);
+        assert.strictEqual(countA, 2);
+        assert.strictEqual(countB, 2);
+        assert.strictEqual(quoteBatches.length, 2);
+        assert.deepStrictEqual(quoteBatches[0], ['AAPL', 'MSFT']);
+        assert.deepStrictEqual(quoteBatches[1], ['NVDA']);
+    });
+
+    await t.test('getPrice skips quoteSummary for FX/index symbols and keeps forceRefresh errors isolated from non-forced flights (B3, M4)', async (subT) => {
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        let capturedFxUpsert: {
+            update?: Record<string, unknown>;
+            create?: Record<string, unknown>;
+        } | undefined;
+        subT.mock.method(
+            prisma.marketDataCache,
+            'upsert',
+            async (args: { update?: Record<string, unknown>; create?: Record<string, unknown> }) => {
+                capturedFxUpsert = args;
+                return args;
+            }
+        );
+
+        let summaryCalled = false;
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => {
+            summaryCalled = true;
+            return {};
+        });
+        subT.mock.method(yahooFinance, 'quote', async (sym: string) => ({
+            symbol: sym,
+            regularMarketPrice: 1.39,
+            currency: 'CAD',
+        }));
+
+        const fxData = await MarketDataService.getPrice('CAD=X', true);
+        assert.ok(fxData);
+        assert.strictEqual(summaryCalled, false);
+        assert.ok(capturedFxUpsert?.update?.metadataUpdatedAt instanceof Date);
+        assert.ok(capturedFxUpsert?.create?.metadataUpdatedAt instanceof Date);
+
+        // Now simulate Yahoo outage: concurrent blocking non-forced vs forceRefresh=true
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => ({
+            symbol: 'OUTAGE_SYM',
+            price: 50,
+            currency: 'USD',
+            lastUpdated: new Date(Date.now() - 60 * 60 * 1000),
+            marketTime: new Date(),
+            change: 0,
+            changePercent: 0,
+        }));
+        subT.mock.method(yahooFinance, 'quote', async () => {
+            await new Promise((r) => setTimeout(r, 20));
+            throw new Error('Upstream 503');
+        });
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => {
+            throw new Error('Upstream 503');
+        });
+
+        const origWarn = console.warn;
+        const origErr = console.error;
+        console.warn = () => {};
+        console.error = () => {};
+        try {
+            const nonForcedPromise = MarketDataService.getPrice('OUTAGE_SYM', {
+                mode: 'blocking',
+                includeMetadata: true,
+            });
+            const forcedPromise = MarketDataService.getPrice('OUTAGE_SYM', true);
+
+            const nonForcedRes = await nonForcedPromise;
+            assert.strictEqual(nonForcedRes?.price, 50);
+
+            await assert.rejects(() => forcedPromise, /Upstream 503|Failed to fetch/);
+        } finally {
+            console.warn = origWarn;
+            console.error = origErr;
+        }
+    });
+
+    await t.test('refreshMarketData rejects when Yahoo fails or returns $0 price instead of succeeding silently (M4)', async (subT) => {
+        const origErr = console.error;
+        console.error = () => {};
+        try {
+            subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+                price: { regularMarketPrice: 0, currency: 'USD' },
+            }));
+            await assert.rejects(() => MarketDataService.refreshMarketData('BAD_ZERO'), /Invalid or missing quote price/);
+
+            subT.mock.method(yahooFinance, 'quoteSummary', async () => {
+                throw new Error('Rate limit 429');
+            });
+            await assert.rejects(() => MarketDataService.refreshMarketData('BAD_ERR'), /Rate limit 429/);
+        } finally {
+            console.error = origErr;
+        }
+    });
+});
+
 

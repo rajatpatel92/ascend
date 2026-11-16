@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function PUT(
     request: Request,
@@ -36,6 +37,8 @@ export async function PUT(
             },
         });
 
+        invalidatePortfolioMutationCaches();
+
         return NextResponse.json(activity);
     } catch (error) {
         console.error('Error updating activity:', error);
@@ -57,6 +60,8 @@ export async function DELETE(
         await prisma.activity.delete({
             where: { id: id }, // ID is String (UUID)
         });
+
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json({ success: true });
     } catch (error) {

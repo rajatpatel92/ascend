@@ -167,56 +167,61 @@ export class PortfolioAnalytics {
         log?: (msg: string) => void
     ): Promise<Record<string, Record<string, number>>> {
         const fxMaps: Record<string, Record<string, number>> = {};
-        const pairCache = new Map<string, Record<string, number>>();
+        const pairPromiseCache = new Map<string, Promise<Record<string, number>>>();
         const uniqueCurrencies = Array.from(new Set(relevantCurrencies.filter(c => c && c !== targetCurrency)));
         if (log) {
             log(`[PortfolioAnalytics] Fetching FX Pairs: ${uniqueCurrencies.map(c => `${c}${targetCurrency}=X`).join(', ')}`);
         }
 
-        const fetchPairHist = async (from: string, to: string): Promise<Record<string, number>> => {
+        const fetchPairHist = (from: string, to: string): Promise<Record<string, number>> => {
             const cacheKey = `${from}->${to}`;
-            if (pairCache.has(cacheKey)) return pairCache.get(cacheKey)!;
+            const existing = pairPromiseCache.get(cacheKey);
+            if (existing) return existing;
 
-            const symbol = `${from}${to}=X`;
-            let hist: Record<string, number> = { ...(await MarketDataService.getDailyHistory(symbol, lookback)) };
+            const promise = (async (): Promise<Record<string, number>> => {
+                const symbol = `${from}${to}=X`;
+                let hist: Record<string, number> = { ...(await MarketDataService.getDailyHistory(symbol, lookback)) };
 
-            // # Reason: Ascend's cron jobs refresh Yahoo USD-shorthand tickers (CAD=X, EUR=X, etc.)
-            // rather than USDCAD=X/CADUSD=X; overlay any fresh shorthand history so FX rates don't lag.
-            if (from === 'USD') {
-                const shorthandSymbol = `${to}=X`;
-                const shorthandHist = await MarketDataService.getDailyHistory(shorthandSymbol, lookback);
-                Object.entries(shorthandHist).forEach(([date, rate]) => {
-                    if (this.isIsoDateKey(date) && rate > 0) {
-                        hist[date] = rate;
-                    }
-                });
-            } else if (to === 'USD') {
-                const shorthandSymbol = `${from}=X`;
-                const shorthandHist = await MarketDataService.getDailyHistory(shorthandSymbol, lookback);
-                Object.entries(shorthandHist).forEach(([date, rate]) => {
-                    if (this.isIsoDateKey(date) && rate > 0) {
-                        hist[date] = 1 / rate;
-                    }
-                });
-            }
-
-            // Fallback: Try Reverse Pair if combined history is still empty
-            if (Object.keys(hist).length === 0) {
-                const reverseSymbol = `${to}${from}=X`;
-                if (log) log(`[PortfolioAnalytics] Direct FX ${symbol} empty. Trying reverse ${reverseSymbol}`);
-
-                const reverseHist = await MarketDataService.getDailyHistory(reverseSymbol, lookback);
-                if (Object.keys(reverseHist).length > 0) {
-                    hist = {};
-                    Object.entries(reverseHist).forEach(([date, rate]) => {
-                        if (rate > 0) hist[date] = 1 / rate;
+                // # Reason: Ascend's cron jobs refresh Yahoo USD-shorthand tickers (CAD=X, EUR=X, etc.)
+                // rather than USDCAD=X/CADUSD=X; overlay any fresh shorthand history so FX rates don't lag.
+                if (from === 'USD') {
+                    const shorthandSymbol = `${to}=X`;
+                    const shorthandHist = await MarketDataService.getDailyHistory(shorthandSymbol, lookback);
+                    Object.entries(shorthandHist).forEach(([date, rate]) => {
+                        if (this.isIsoDateKey(date) && rate > 0) {
+                            hist[date] = rate;
+                        }
                     });
-                    if (log) log(`[PortfolioAnalytics] Inverted ${Object.keys(hist).length} points from ${reverseSymbol}`);
+                } else if (to === 'USD') {
+                    const shorthandSymbol = `${from}=X`;
+                    const shorthandHist = await MarketDataService.getDailyHistory(shorthandSymbol, lookback);
+                    Object.entries(shorthandHist).forEach(([date, rate]) => {
+                        if (this.isIsoDateKey(date) && rate > 0) {
+                            hist[date] = 1 / rate;
+                        }
+                    });
                 }
-            }
 
-            pairCache.set(cacheKey, hist);
-            return hist;
+                // Fallback: Try Reverse Pair if combined history is still empty
+                if (Object.keys(hist).length === 0) {
+                    const reverseSymbol = `${to}${from}=X`;
+                    if (log) log(`[PortfolioAnalytics] Direct FX ${symbol} empty. Trying reverse ${reverseSymbol}`);
+
+                    const reverseHist = await MarketDataService.getDailyHistory(reverseSymbol, lookback);
+                    if (Object.keys(reverseHist).length > 0) {
+                        hist = {};
+                        Object.entries(reverseHist).forEach(([date, rate]) => {
+                            if (rate > 0) hist[date] = 1 / rate;
+                        });
+                        if (log) log(`[PortfolioAnalytics] Inverted ${Object.keys(hist).length} points from ${reverseSymbol}`);
+                    }
+                }
+
+                return hist;
+            })();
+
+            pairPromiseCache.set(cacheKey, promise);
+            return promise;
         };
 
         await this.batchProcess(uniqueCurrencies, 2, async (from) => {
@@ -1468,38 +1473,50 @@ export class PortfolioAnalytics {
             return false;
         };
 
-        const fetchIntradayFxMap = async (from: string, to: string): Promise<Record<string, number>> => {
-            const direct = await MarketDataService.getIntradayHistory(`${from}${to}=X`);
-            const combined: Record<string, number> = isNonEmptyMap(direct) ? { ...direct } : {};
+        const intradayFxPairPromiseCache = new Map<string, Promise<Record<string, number>>>();
+        const fetchIntradayFxMap = (from: string, to: string): Promise<Record<string, number>> => {
+            const cacheKey = `${from}->${to}`;
+            const existing = intradayFxPairPromiseCache.get(cacheKey);
+            if (existing) return existing;
 
-            if (from === 'USD') {
-                const shorthand = await MarketDataService.getIntradayHistory(`${to}=X`);
-                if (isNonEmptyMap(shorthand)) {
-                    for (const [ts, rate] of Object.entries(shorthand)) {
-                        if (rate > 0) combined[ts] = rate;
+            const promise = (async (): Promise<Record<string, number>> => {
+                if (from === 'USD') {
+                    const shorthand = await MarketDataService.getIntradayHistory(`${to}=X`);
+                    if (isNonEmptyMap(shorthand)) return shorthand;
+
+                    const direct = await MarketDataService.getIntradayHistory(`${from}${to}=X`);
+                    if (isNonEmptyMap(direct)) return direct;
+                } else if (to === 'USD') {
+                    const shorthand = await MarketDataService.getIntradayHistory(`${from}=X`);
+                    if (isNonEmptyMap(shorthand)) {
+                        const inverted: Record<string, number> = {};
+                        for (const [ts, rate] of Object.entries(shorthand)) {
+                            if (rate > 0) inverted[ts] = 1 / rate;
+                        }
+                        if (isNonEmptyMap(inverted)) return inverted;
                     }
+
+                    const direct = await MarketDataService.getIntradayHistory(`${from}${to}=X`);
+                    if (isNonEmptyMap(direct)) return direct;
+                } else {
+                    const direct = await MarketDataService.getIntradayHistory(`${from}${to}=X`);
+                    if (isNonEmptyMap(direct)) return direct;
                 }
-            } else if (to === 'USD') {
-                const shorthand = await MarketDataService.getIntradayHistory(`${from}=X`);
-                if (isNonEmptyMap(shorthand)) {
-                    for (const [ts, rate] of Object.entries(shorthand)) {
-                        if (rate > 0) combined[ts] = 1 / rate;
+
+                const reverse = await MarketDataService.getIntradayHistory(`${to}${from}=X`);
+                if (isNonEmptyMap(reverse)) {
+                    const inverted: Record<string, number> = {};
+                    for (const [ts, rate] of Object.entries(reverse)) {
+                        if (rate > 0) inverted[ts] = 1 / rate;
                     }
+                    if (isNonEmptyMap(inverted)) return inverted;
                 }
-            }
 
-            if (isNonEmptyMap(combined)) return combined;
+                return {};
+            })();
 
-            const reverse = await MarketDataService.getIntradayHistory(`${to}${from}=X`);
-            if (isNonEmptyMap(reverse)) {
-                const inverted: Record<string, number> = {};
-                for (const [ts, rate] of Object.entries(reverse)) {
-                    if (rate > 0) inverted[ts] = 1 / rate;
-                }
-                if (isNonEmptyMap(inverted)) return inverted;
-            }
-
-            return {};
+            intradayFxPairPromiseCache.set(cacheKey, promise);
+            return promise;
         };
 
         // Batch all I/O calls concurrently

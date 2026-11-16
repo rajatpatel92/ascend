@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import styles from '../page.module.css';
 import { useSession } from 'next-auth/react';
 import { SUPPORTED_CURRENCIES } from '@/lib/currencies';
+import { emitLiveSyncEvent } from '@/lib/live-sync';
 import { MdAccountBalance, MdAdd, MdClose, MdStorefront } from 'react-icons/md';
 
 interface UserRecord {
@@ -90,10 +91,10 @@ export default function AccountsSettingsPage() {
     const loadAllData = useCallback(async (signal?: AbortSignal) => {
         try {
             const [accRes, platRes, typeRes, userRes] = await Promise.all([
-                fetch('/api/accounts?includeInactive=true', { signal }),
-                fetch('/api/platforms', { signal }),
-                fetch('/api/settings/account-types', { signal }),
-                fetch('/api/users', { signal }).catch(() => null)
+                fetch('/api/accounts?includeInactive=true', { signal, cache: 'no-store' }),
+                fetch('/api/platforms', { signal, cache: 'no-store' }),
+                fetch('/api/settings/account-types', { signal, cache: 'no-store' }),
+                fetch('/api/users', { signal, cache: 'no-store' }).catch(() => null)
             ]);
 
             if (signal?.aborted) return;
@@ -145,6 +146,7 @@ export default function AccountsSettingsPage() {
                 setNewPlatformName('');
                 setSuccessBanner(`Platform "${newPlatformName.trim()}" added.`);
                 await loadAllData();
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'platform-created' });
             } else {
                 const err = await res.json().catch(() => ({}));
                 setErrorBanner(err.error || 'Failed to add platform.');
@@ -171,6 +173,7 @@ export default function AccountsSettingsPage() {
                 setEditingPlatformId(null);
                 setSuccessBanner('Platform updated.');
                 await loadAllData();
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'platform-updated' });
             } else {
                 const err = await res.json().catch(() => ({}));
                 setErrorBanner(err.error || 'Failed to update platform.');
@@ -190,6 +193,7 @@ export default function AccountsSettingsPage() {
             if (res.ok) {
                 setSuccessBanner('Platform deleted.');
                 await loadAllData();
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'platform-deleted' });
             } else {
                 const err = await res.json().catch(() => ({}));
                 setErrorBanner(err.error || 'Failed to delete platform.');
@@ -231,6 +235,7 @@ export default function AccountsSettingsPage() {
                 setSelectedPlatformId('');
                 setSuccessBanner(`Account "${resolvedName}" created.`);
                 await loadAllData();
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'account-created' });
             } else {
                 const err = await res.json().catch(() => ({}));
                 setErrorBanner(err.error || 'Failed to add account.');
@@ -277,6 +282,7 @@ export default function AccountsSettingsPage() {
                 setIsCustomEditAccountName(false);
                 setSuccessBanner('Account updated.');
                 await loadAllData();
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'account-updated' });
             } else {
                 const err = await res.json().catch(() => ({}));
                 setErrorBanner(err.error || 'Failed to update account.');
@@ -296,6 +302,7 @@ export default function AccountsSettingsPage() {
             if (res.ok) {
                 setSuccessBanner('Account deleted.');
                 await loadAllData();
+                emitLiveSyncEvent('PORTFOLIO_UPDATED', { reason: 'account-deleted' });
             } else {
                 const err = await res.json().catch(() => ({}));
                 setErrorBanner(err.error || 'Failed to delete account.');

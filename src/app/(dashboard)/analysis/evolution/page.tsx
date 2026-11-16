@@ -19,7 +19,10 @@ import { useDate } from '@/context/DateContext';
 import { ClientCache } from '@/lib/client-cache';
 import { fetchWithStaleWhileRevalidate } from '@/lib/evolution-cache';
 import { getBucketEndMs, parseLocalDate } from '@/lib/date-utils';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import usePersistentState from '@/hooks/usePersistentState';
+
+const ANALYTICS_CACHE_TTL_MS = 60 * 60 * 1000;
 
 interface EvolutionPoint {
     date: string;
@@ -111,8 +114,17 @@ export default function EvolutionPage() {
     const [dividendPeriod, setDividendPeriod] = useState<'month' | 'year'>('year');
     const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
+    const [syncTick, setSyncTick] = useState(0);
+    const loadedHistoryKeyRef = useRef<string | null>(null);
+    const loadedFlowsKeyRef = useRef<string | null>(null);
+
     const { currency, format } = useCurrency();
     const { formatDate } = useDate();
+
+    useLiveSync({
+        enabled: isFiltersLoaded,
+        onSync: () => setSyncTick((t) => t + 1),
+    });
 
     useEffect(() => {
         if (!isFiltersLoaded) return;
@@ -127,9 +139,11 @@ export default function EvolutionPage() {
 
         const fetchHistory = () => {
             const cacheKey = ClientCache.generateKey('evolution_history_v5', { filters: normalizedFilters, currency });
+            const isBackground = loadedHistoryKeyRef.current === cacheKey;
             return fetchWithStaleWhileRevalidate<EvolutionHistoryResponse>({
                 cache: ClientCache,
                 cacheKey,
+                ttlMs: ANALYTICS_CACHE_TTL_MS,
                 isValid: (val): val is EvolutionHistoryResponse =>
                     Boolean(val && typeof val === 'object' && Array.isArray((val as EvolutionHistoryResponse).evolution)),
                 signal: controller.signal,
@@ -138,7 +152,8 @@ export default function EvolutionPage() {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ filters: backendFilters, currency, mode: 'evolution' }),
-                        signal
+                        signal,
+                        cache: 'no-store',
                     });
                     if (!res.ok) {
                         throw new Error(`HTTP ${res.status}`);
@@ -150,13 +165,18 @@ export default function EvolutionPage() {
                     setFetchError(null);
                 },
                 onFresh: (json) => {
+                    loadedHistoryKeyRef.current = cacheKey;
                     setData(prev => ({ ...prev, evolution: json.evolution }));
                     setFetchError(null);
                 },
-                onLoadingChange: setLoadingHistory,
+                onLoadingChange: (loading) => {
+                    if (!isBackground || !loading) {
+                        setLoadingHistory(loading);
+                    }
+                },
                 onError: (err, hasCached) => {
                     console.error('Failed to fetch evolution history:', err);
-                    if (!hasCached) {
+                    if (!hasCached && !isBackground) {
                         setFetchError('Unable to load portfolio evolution history for the selected filters.');
                     }
                 }
@@ -165,9 +185,11 @@ export default function EvolutionPage() {
 
         const fetchFlows = () => {
             const cacheKey = ClientCache.generateKey('evolution_flows_v6', { filters: normalizedFilters, currency });
+            const isBackground = loadedFlowsKeyRef.current === cacheKey;
             return fetchWithStaleWhileRevalidate<EvolutionFlowsResponse>({
                 cache: ClientCache,
                 cacheKey,
+                ttlMs: ANALYTICS_CACHE_TTL_MS,
                 isValid: (val): val is EvolutionFlowsResponse =>
                     Boolean(
                         val &&
@@ -182,7 +204,8 @@ export default function EvolutionPage() {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ filters: backendFilters, currency, mode: 'flows' }),
-                        signal
+                        signal,
+                        cache: 'no-store',
                     });
                     if (!res.ok) {
                         throw new Error(`HTTP ${res.status}`);
@@ -193,12 +216,17 @@ export default function EvolutionPage() {
                     setData(prev => ({ ...prev, contributions: cached.contributions, dividends: cached.dividends }));
                 },
                 onFresh: (json) => {
+                    loadedFlowsKeyRef.current = cacheKey;
                     setData(prev => ({ ...prev, contributions: json.contributions, dividends: json.dividends }));
                 },
-                onLoadingChange: setLoadingFlows,
+                onLoadingChange: (loading) => {
+                    if (!isBackground || !loading) {
+                        setLoadingFlows(loading);
+                    }
+                },
                 onError: (err, hasCached) => {
                     console.error('Failed to fetch cash flows:', err);
-                    if (!hasCached) {
+                    if (!hasCached && !isBackground) {
                         setFetchError(prev => prev || 'Unable to load cash flows and dividend schedules.');
                     }
                 }
@@ -214,7 +242,7 @@ export default function EvolutionPage() {
             clearTimeout(timeout);
             controller.abort();
         };
-    }, [filters, currency, isFiltersLoaded]);
+    }, [filters, currency, isFiltersLoaded, syncTick]);
 
     const filteredEvolution = useMemo(
         () => filterByRange(data.evolution, range, 'day'),

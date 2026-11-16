@@ -12,14 +12,14 @@ Whether you are a passive index investor managing lifecycle glide-paths, a divid
 
 | Section | Description |
 | :--- | :--- |
-| **[Dashboard](Dashboard)** | Executive Wealth Strip, Total Net Worth, All-Time Profit breakdown, XIRR, Passive Income, Unified Performance Chart, Top Movers (1D impact), Dividend summary, and Sidebar Owner Net Worth Snapshots. |
+| **[Dashboard](Dashboard)** | Executive Wealth Strip, Total Net Worth, All-Time Profit breakdown, XIRR, Passive Income, Unified Performance Chart, Top Movers (1D impact), Dividend summary, Live Sync Status Pill & Manual Refresh, and Sidebar Owner Net Worth Snapshots. |
 | **[Portfolio Management](Portfolio-Management)** | Platform vs. Account hierarchy, multi-currency accounting, first-class `DRIP` & activity ledger, DRIP Migration Scanner, CSV import with alias mapping, automated dividend/split detection, account transfers, and Owner filtering. |
 | **[Portfolio Rebalancer](Portfolio-Rebalancer)** | `Full` & `Buy-Only (+ Cash Inflow)` modes, drift tolerance bands, ticker & asset-type targets, tax-aware account routing, saved rebalance profiles, and interactive glide-step simulator. |
 | **[Analysis & Reports](Analysis-&-Reports)** | Unified 5-dimension Allocation Explorer with on-demand Portfolio X-Ray (ETF look-through), benchmark comparisons, NAV evolution & contribution/dividend flows, and the **Asset Deep-Dive** page. |
 | **[FIRE Calculator](FIRE-Calculator)** | Actuarial retirement modeling with `FIXED_RATE` vs. `FIXED_HORIZON` modes, monthly compound inflation, lifestyle analysis, Saved FIRE Profiles, and collapsible simulation studio. |
 | **[MCP Integration (`ascend-mcp`)](AI-Intelligence)** | Standalone Model Context Protocol (MCP) server allowing external agents (Claude Desktop, Antigravity, Cursor) to query and record portfolio data via timing-safe `MCP_API_KEY` authentication. |
-| **[Administration & Settings](Administration-&-Settings)** | Contextual Settings sidebar & mobile picker sheet, Obsidian Carbon dark theme, user RBAC, currency FX overrides, custom benchmarks, and master taxonomy data. |
-| **[Architecture & Developer Guide](Architecture-&-Developer-Guide)** | Tech stack overview, Prisma schema models, financial calculation engines, background cron scheduling, complete REST API reference, and testing setup (`npm test`). |
+| **[Administration & Settings](Administration-&-Settings)** | Contextual Settings sidebar & mobile picker sheet, Obsidian Carbon dark theme, user RBAC, currency FX overrides, custom benchmarks, Market Sync Diagnostics, and master taxonomy data. |
+| **[Architecture & Developer Guide](Architecture-&-Developer-Guide)** | Tech stack overview, Prisma schema models, financial calculation engines, singleflight & SWR market sync coordinator, background cron scheduling, complete REST API reference, and testing setup (`npm test`). |
 
 ---
 
@@ -49,7 +49,7 @@ Ascend is built on modern web and database technologies:
 - **Database**: PostgreSQL 15+ managed via Prisma ORM 5
 - **Authentication**: NextAuth.js v5 with RBAC (`ADMIN`, `EDITOR`, `VIEWER`)
 - **Charting**: Chart.js 4 & Recharts 3
-- **Market Data**: Yahoo Finance API integration with adaptive circuit-breaker throttling
+- **Market Data**: Yahoo Finance API integration with singleflight request coalescing, market-hours-aware SWR caching, adaptive circuit-breaker throttling, and cross-tab `BroadcastChannel` live UI convergence
 - **External Agents**: Standalone `ascend-mcp` Model Context Protocol server
 
 ### Run with Docker Compose (Recommended)

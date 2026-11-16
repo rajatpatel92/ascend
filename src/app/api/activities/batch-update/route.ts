@@ -1,8 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { auth } from '@/auth';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function POST(req: NextRequest) {
     const authResult = await requireAuth(req, ['ADMIN', 'EDITOR'], true);
@@ -57,6 +59,8 @@ export async function POST(req: NextRequest) {
                 }
             }
         });
+
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json({ success: true, count: ids.length });
 

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { MarketDataService } from '@/lib/market-data';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function POST(request: Request) {
     const authResult = await requireAuth(request, ['ADMIN', 'EDITOR'], true);
@@ -70,6 +71,8 @@ export async function POST(request: Request) {
                 accountId: accountId || null,
             },
         });
+
+        invalidatePortfolioMutationCaches();
 
         // 3. Trigger Async Market Data Refresh
         // We don't await this so the UI returns immediately

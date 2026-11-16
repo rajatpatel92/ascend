@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from "@/auth";
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function PUT(
     request: Request,
@@ -24,9 +24,10 @@ export async function PUT(
             where: { id },
             data: { name, slug, currency }
         });
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json(updated);
-    } catch (error) {
+    } catch {
         return NextResponse.json({ error: 'Failed to update platform' }, { status: 500 });
     }
 }
@@ -60,6 +61,7 @@ export async function DELETE(
         await prisma.platform.delete({
             where: { id },
         });
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json({ success: true });
     } catch (error) {

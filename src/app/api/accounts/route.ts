@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireAuth } from '@/lib/api-auth';
+import { invalidatePortfolioMutationCaches } from '@/lib/cache-invalidation';
 
 export async function GET(request: Request) {
     const authResult = await requireAuth(request, ['ADMIN', 'EDITOR', 'VIEWER'], true);
@@ -52,6 +53,7 @@ export async function POST(request: Request) {
             },
             include: { platform: true }
         });
+        invalidatePortfolioMutationCaches();
 
         return NextResponse.json(account);
     } catch (error) {
