@@ -1,97 +1,73 @@
 # Portfolio Rebalancer
 
-The **Portfolio Rebalancer** is a core strategic module in Ascend designed to maintain asset allocation discipline, prevent portfolio drift, and automate lifecycle investment glide paths.
+The **Portfolio Rebalancer** (`/rebalancer`) is a strategic portfolio discipline engine designed to keep holdings aligned with your target policy, deploy new contributions cleanly, minimize unnecessary capital-gains taxes, and simulate lifecycle glide paths.
 
 ---
 
-## 🎯 1. The Discipline of Portfolio Rebalancing
+## 🎯 1. Core Capabilities
 
-Over time, divergent market returns cause a portfolio's actual asset allocation to drift away from the investor's intended target. High-performing assets become overweight (increasing risk exposure), while underperforming or defensive assets become underweight.
-
-The Ascend Rebalancer provides institutional portfolio mechanics:
-* Sets target percentage allocations for every holding.
-* Calculates real-time allocation weights and dollar drift.
-* Generates exact, actionable buy/sell orders with required share counts.
-* Implements automated **Glide-Path Drift Adjustments** for target-date retirement strategies.
+* **Rebalance Modes (`FULL` vs. `BUY_ONLY`)**: Rebalance via full Buys + Sells, or deploy **New Cash Inflow** exclusively into underweight assets without triggering taxable sales.
+* **Target Dimensions (`TICKER` vs. `CATEGORY`)**: Define targets per individual ticker symbol or at the **Asset Class / Investment Type** level (distributing category trades pro-rata across underlying constituents).
+* **Drift Tolerance Bands (`tolerancePercent`)**: Suppress micro-trades for positions sitting inside your acceptable percentage deadband (e.g., `±1.0%`), keeping portfolio turnover low.
+* **Whole-Share vs. Fractional Sizing**: Toggle whole-share trade rounding (`BUY_ONLY` floors share counts to stay strictly within your cash budget; `SELL` never oversells held shares).
+* **Tax-Aware Account Routing**: Suggests which brokerage accounts to execute trades in, prioritizing **Tax-Free** (`TFSA`, `Roth IRA`, `FHSA`, `PPF`, `NRE`) and **Tax-Deferred** (`RRSP`, `LIRA`, `RESP`, `401(k)`, `Traditional IRA`, `EPF`, `NPS`) containers ahead of **Taxable** accounts when selling, flagging taxable capital-gains warnings.
+* **Saved Rebalance Profiles**: Save and switch between multiple named allocation strategies (`Default Portfolio` and custom scoped profiles) stored via `/api/rebalancer/profiles`.
+* **Interactive Glide-Step Simulator**: Preview `+1Y` projected allocation weights based on annual drift adjustments and validate net-zero drift schedules.
 
 ---
 
-## ⚙️ 2. Target Allocation Configuration
+## ⚙️ 2. Strategy Controls & Target Configuration
 
-Navigate to **Rebalancer** in the sidebar. Click the **Configure Targets** (gear icon) button to open the target allocation editor:
+### Strategy Panel
+1. **Saved Profiles Bar**: Switch active rebalance profiles, create/save new profiles, or bind Account Type / Investment Type filters and excluded symbols directly to a profile.
+2. **Mode Switcher**:
+   * **Full Rebalance (`FULL`)**: Generates `BUY` and `SELL` orders to match target weights strictly.
+   * **Buy-Only (+ Cash Inflow) (`BUY_ONLY`)**: Enter a new deposit amount (`newCash`) and distribute cash proportionally across underweight targets (`unallocatedCash` tracks any whole-share remainder).
+3. **Drift Tolerance Band (%)**: Holdings whose $|\Delta W_i| \le \text{tolerancePercent}$ remain **`HOLD`**, preventing unnecessary churn.
+4. **Dimension Toggle (`Ticker Targets` vs. `Category Targets`)**: Switch between security-level targets and asset-class targets (`ETF`, `Equity`, `Fixed Income`, etc.).
+5. **Whole Shares Toggle**: Floor fractional shares cleanly for brokerages without fractional order support.
 
-| Configuration Field | Description | Example |
+### Configure Targets Modal
+| Field | Description | Example |
 | :--- | :--- | :--- |
-| **Symbol** | The security ticker symbol. Can be selected from current portfolio holdings or searched via Yahoo Finance. | `VTI`, `VXUS`, `BND` |
-| **Target Percentage (%)** | The target proportion of the total portfolio allocated to this asset. Total target across all assets should sum to 100%. | `60.0%`, `20.0%`, `20.0%` |
-| **Yearly Drift Adjustment (%)** | *(Optional)* The annual adjustment applied to this asset's target allocation (Glide Path). | `-1.0%` for equities, `+1.0%` for bonds |
-
-Targets are stored in the database under the `TargetAllocation` model (`src/app/api/rebalancer/targets`).
+| **Symbol / Category** | Security ticker (Yahoo search or current holdings) or Investment Type | `VTI`, `VXUS`, `BND` / `Equity` |
+| **Target Percentage (%)** | Intended portfolio weight (total across active targets should equal `100.0%`; includes one-click **Normalize to 100%** and **Seed from Holdings**) | `60.0%`, `20.0%`, `20.0%` |
+| **Yearly Drift Adjustment (%)** | *(Optional)* Annual target shift for lifecycle glide paths | `-1.0%` equities, `+1.0%` bonds |
 
 ---
 
-## 📊 3. Drift Analysis & Calculations
+## 📊 3. Drift Math, Summary Metrics & Visualizations
 
-Ascend evaluates the entire portfolio in real-time (`/api/rebalancer`):
+Ascend evaluates portfolio weights in your selected display currency (`src/lib/rebalance-planner.ts` & `src/lib/rebalance-extensions.ts`):
 
-1. **Total Portfolio Valuation ($V_{\text{total}}$)**: Sum of all holdings evaluated at current market prices and converted into your active target currency.
-2. **Current Weight ($W_{\text{current}}$)**:
+1. **Current Weight ($W_{\text{current}}$)**:
    $$W_{\text{current}, i} = \left( \frac{V_{\text{asset}, i}}{V_{\text{total}}} \right) \times 100\%$$
-3. **Drift Percentage ($\Delta W_i$)**:
+2. **Drift Percentage ($\Delta W_i$) & Monetary Drift ($\Delta V_i$)**:
    $$\Delta W_i = W_{\text{current}, i} - W_{\text{target}, i}$$
-4. **Drift Monetary Value ($\Delta V_i$)**:
    $$\Delta V_i = V_{\text{asset}, i} - (W_{\text{target}, i} \times V_{\text{total}})$$
-
-### Action Recommendations
-
-Ascend evaluates the sign and magnitude of drift to recommend specific portfolio actions:
-
-* **$\Delta V_i < -\$0.01$ (Underweight)**:
-  * **Action**: **`BUY`**
-  * **Share Sizing**:
-    $$\text{ActionShares}_i = \frac{|\Delta V_i|}{\text{Price}_{\text{native}, i} \times \text{FXRate}}$$
-* **$\Delta V_i > +\$0.01$ (Overweight)**:
-  * **Action**: **`SELL`**
-  * **Share Sizing**:
-    $$\text{ActionShares}_i = \frac{\Delta V_i}{\text{Price}_{\text{native}, i} \times \text{FXRate}}$$
-* **$|\Delta V_i| \le \$0.01$**:
-  * **Action**: **`HOLD`** (In balance)
-
-The rebalancing table sorts assets with the **most underweight positions first**, making it straightforward to allocate new cash deposits into lagging assets without triggering taxable sales.
+3. **Summary Diagnostics**: Displays **Total Buy Value**, **Total Sell Value**, **Portfolio Turnover %**, **Max Absolute Drift**, **Out-of-Band Count**, and **Unallocated Cash**.
+4. **Interactive Charts**: Visual comparison charts plotting **Current vs. Target Allocation Weights** and **Post-Trade Projected Weights**.
 
 ---
 
-## 📝 4. Trade Execution Checklist
+## 🏦 4. Tax-Aware Account Routing & Trade Checklist
 
-The Rebalancer UI provides an interactive checklist for executing rebalancing trades:
-
-1. **Review Table**: Inspect current weight, target weight, drift %, drift value, recommended action (`BUY`/`SELL`), and exact share counts.
-2. **Trade Checkbox**: As you execute orders in your brokerage accounts, click the checkbox on each row to mark the trade completed.
-3. **Native Currency Awareness**: Share counts are calculated directly in each asset's native trading currency and execution price to prevent currency rounding discrepancies.
+When a position spans multiple accounts (e.g., held in both a `TFSA`, `RRSP`, and `Taxable Margin` account), expanding a rebalance row reveals per-account trade guidance (`allocateTradeAcrossAccounts`):
+* **Sell Prioritization**: Sells are routed to **`Tax-Free`** accounts first, **`Tax-Deferred`** accounts second, and **`Taxable`** accounts last—displaying a clear **`Taxable Sale`** warning badge whenever a taxable liquidation is unavoidable.
+* **Buy Routing**: Allocates buys across eligible active accounts within scope.
+* **Trade Execution Checklist**: Mark rows complete as you place orders in your brokerage; share counts respect native trading currencies and execution prices.
 
 ---
 
-## 🛩️ 5. Automated Lifecycle Glide Paths
+## 🛩️ 5. Automated Lifecycle Glide Paths & Simulator
 
-For investors following lifecycle, target-date, or age-based asset allocation strategies (such as gradually shifting 1% from equities to fixed income each year as retirement approaches):
-
-### How Glide Paths Work
-* In **Configure Targets**, assign a **Yearly Drift Adjustment** to specific assets (e.g., `-1.0%` to Equities, `+1.0%` to Fixed Income).
-* Ascend tracks `lastAdjustmentDate` on each target.
-* **Glide Path Cron Job (`/api/cron/glide-path-adjust`)**:
-  * Evaluates all target allocations where `yearlyDriftAdjustment` is defined.
-  * When `lastAdjustmentDate` (or creation date) is older than 365 days, the system automatically shifts the `targetPercentage`:
-    $$\text{Target}_{\text{new}} = \max(0, \text{Target}_{\text{old}} + \text{YearlyDriftAdjustment})$$
-  * Updates `lastAdjustmentDate` to the current timestamp within an atomic Prisma transaction.
-
-This ensures your investment policy statement automatically adapts as you age without manual recalculations.
+For target-date or age-based allocation policies (such as shifting `-1.0%` per year from equities into fixed income):
+* **Glide-Step Simulator (`simulateGlideStep`)**: Preview your target allocation `+1Y` forward inside the UI before committing, with automatic net-drift validation (`netAnnualDrift !== 0` warning if additions and reductions don't balance to zero).
+* **Scheduled Cron Adjuster (`/api/cron/glide-path-adjust`)**: Evaluates `TargetAllocation` records with `yearlyDriftAdjustment` and shifts targets atomically every 365 days (`Math.max(0, target + adjustment)`), syncing changes cleanly with saved rebalance profiles.
 
 ---
 
 ## 🔍 6. Scoped & Filtered Rebalancing
 
-The Rebalancer features advanced filtering to support multi-account or segregated allocation strategies:
-
-* **Filter by Investment Types**: Rebalance only within specific asset classes (e.g., rebalance your Equity slice while keeping Fixed Income separate).
-* **Filter by Account Types**: Rebalance only within specific tax wrappers (e.g., rebalance within tax-advantaged accounts like TFSAs/IRAs to avoid triggering capital gains taxes in taxable accounts).
-* **Exclude Symbols**: Specify a comma-separated list of ticker symbols to exclude from the rebalancing scope (persisted under `rebalancer_exclude_symbols`).
+* **Filter by Investment Types & Account Types**: Rebalance inside a single tax wrapper (e.g., `TFSA` + `RRSP`) or asset class without affecting other accounts.
+* **Exclude Symbols**: Exclude concentrated legacy positions or cash equivalents from target calculations (can be toggled directly per row or saved with a profile under `rebalancer_exclude_symbols`).

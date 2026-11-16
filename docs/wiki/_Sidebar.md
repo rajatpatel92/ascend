@@ -10,8 +10,8 @@
 * **[Analysis & Reports](Analysis-&-Reports)**
 * **[FIRE Calculator](FIRE-Calculator)**
 
-### 🤖 AI & Integrations
-* **[AI Intelligence](AI-Intelligence)**
+### 🔌 External Integrations
+* **[MCP Integration (`ascend-mcp`)](AI-Intelligence)**
 
 ### ⚙️ Operations & Config
 * **[Administration & Settings](Administration-&-Settings)**

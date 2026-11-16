@@ -2,9 +2,9 @@
 
 **Track, Analyze, and Optimize your investments with institutional precision.**
 
-**Ascend** is a self-hosted, multi-currency portfolio management and financial intelligence application. It abstracts the complexity of holding heterogeneous assets (Equities, ETFs, Mutual Funds, Fixed Income, Crypto) across multiple brokerages, currencies, and tax containers into a high-performance, unified dashboard.
+**Ascend Portfolio Manager** is a self-hosted, multi-currency portfolio management and financial analytics platform. It unifies heterogeneous assets (Equities, ETFs, Mutual Funds, Fixed Income, Crypto) across multiple brokerages, currencies, tax containers, and household owners into a crisp, high-performance dashboard.
 
-Whether you are a passive index investor running lifecycle glide-paths, a dividend growth investor, or an active allocator, Ascend provides mathematically rigorous return calculations (Dollar-Weighted XIRR, Time-Weighted Return NAV unitization), multi-mode FIRE retirement simulations, intelligent portfolio rebalancing, and conversational AI grounded in your private portfolio data.
+Whether you are a passive index investor managing lifecycle glide-paths, a dividend-growth / DRIP investor, or an active household allocator, Ascend provides mathematically rigorous return metrics (Dollar-Weighted XIRR, Time-Weighted Return NAV unitization), tax-aware portfolio rebalancing, multi-mode FIRE retirement simulations with saved profiles, and Model Context Protocol (MCP) integration for external AI agents.
 
 ---
 
@@ -12,14 +12,14 @@ Whether you are a passive index investor running lifecycle glide-paths, a divide
 
 | Section | Description |
 | :--- | :--- |
-| **[Dashboard](Dashboard)** | High-level Net Worth, XIRR, Time-Weighted Return, Top Movers (impact-weighted), Dividend summary, and dual interactive charts. |
-| **[Portfolio Management](Portfolio-Management)** | Platform vs Account hierarchy, multi-currency handling, activity logging, automated dividend detection & DRIP, automated stock split detection, account transfers, and bulk CSV workflows. |
-| **[Portfolio Rebalancer](Portfolio-Rebalancer)** | Target asset allocations, drift calculations, exact share order recommendations, and automated lifecycle glide-path drift adjustments. |
-| **[Analysis & Reports](Analysis-&-Reports)** | Multi-layer allocation drill-downs, dynamic benchmark comparisons, Net Asset Value evolution, contribution/dividend cash-flow history, and the individual **Asset Deep-Dive** page. |
-| **[FIRE Calculator](FIRE-Calculator)** | Advanced retirement modeling featuring dual calculation modes (`FIXED_RATE` vs `FIXED_HORIZON`), monthly compound inflation, lifestyle analysis, and multi-decade decumulation schedules. |
-| **[AI Intelligence](AI-Intelligence)** | In-app portfolio assistant powered by Google Gemini, OpenAI, or Anthropic Claude, plus Model Context Protocol (MCP) server integration (`ascend-mcp`). |
-| **[Administration & Settings](Administration-&-Settings)** | User management, Role-Based Access Control (RBAC), currency conversion overrides, custom benchmarks, and master taxonomy data. |
-| **[Architecture & Developer Guide](Architecture-&-Developer-Guide)** | Tech stack overview, Prisma schema data models, background cron scheduling, financial calculation engines, API reference, and development setup. |
+| **[Dashboard](Dashboard)** | Executive Wealth Strip, Total Net Worth, All-Time Profit breakdown, XIRR, Passive Income, Unified Performance Chart, Top Movers (1D impact), Dividend summary, and Sidebar Owner Net Worth Snapshots. |
+| **[Portfolio Management](Portfolio-Management)** | Platform vs. Account hierarchy, multi-currency accounting, first-class `DRIP` & activity ledger, DRIP Migration Scanner, CSV import with alias mapping, automated dividend/split detection, account transfers, and Owner filtering. |
+| **[Portfolio Rebalancer](Portfolio-Rebalancer)** | `Full` & `Buy-Only (+ Cash Inflow)` modes, drift tolerance bands, ticker & asset-type targets, tax-aware account routing, saved rebalance profiles, and interactive glide-step simulator. |
+| **[Analysis & Reports](Analysis-&-Reports)** | Unified 5-dimension Allocation Explorer with on-demand Portfolio X-Ray (ETF look-through), benchmark comparisons, NAV evolution & contribution/dividend flows, and the **Asset Deep-Dive** page. |
+| **[FIRE Calculator](FIRE-Calculator)** | Actuarial retirement modeling with `FIXED_RATE` vs. `FIXED_HORIZON` modes, monthly compound inflation, lifestyle analysis, Saved FIRE Profiles, and collapsible simulation studio. |
+| **[MCP Integration (`ascend-mcp`)](AI-Intelligence)** | Standalone Model Context Protocol (MCP) server allowing external agents (Claude Desktop, Antigravity, Cursor) to query and record portfolio data via timing-safe `MCP_API_KEY` authentication. |
+| **[Administration & Settings](Administration-&-Settings)** | Contextual Settings sidebar & mobile picker sheet, Obsidian Carbon dark theme, user RBAC, currency FX overrides, custom benchmarks, and master taxonomy data. |
+| **[Architecture & Developer Guide](Architecture-&-Developer-Guide)** | Tech stack overview, Prisma schema models, financial calculation engines, background cron scheduling, complete REST API reference, and testing setup (`npm test`). |
 
 ---
 
@@ -32,12 +32,12 @@ Step 1: Define Platforms ➔ Step 2: Create Accounts ➔ Step 3: Record Activiti
 ```
 
 1. **Create Platforms**: Navigate to **Settings > Master Data > Platforms** to register your brokerage institutions (e.g., *Interactive Brokers*, *Questrade*, *Wealthsimple*, *Zerodha*).
-2. **Create Accounts**: Go to **Settings > Accounts** and create individual accounts attached to your platforms (e.g., "TFSA", "RRSP", "Taxable USD", "Demat"). Each account is designated with its native currency.
-3. **Log or Import Activities**:
-   - **Manual Entry**: Click **Activities** in the sidebar and use the **Add Activity** modal with live Yahoo Finance ticker search.
-   - **Bulk Import**: Use the **Import CSV** tool to upload your transaction history in bulk with pre-flight schema and ticker validation.
-   - **Auto-Scan Dividends**: Click **Fetch Dividends** to scan declaring companies, review ex-dividend dates, and optionally auto-reinvest (DRIP).
-4. **Explore the Dashboard**: Ascend automatically unitizes your daily Net Asset Value (NAV), tracks portfolio drift against targets, computes annualized dollar-weighted returns (XIRR), and projects dividend cash flows.
+2. **Create Accounts**: Go to **Settings > Accounts** and create individual accounts attached to your platforms (e.g., `TFSA`, `RRSP`, `Taxable USD`, `Demat`), assigning each its native currency.
+3. **Log, Import, or Migrate Activities**:
+   - **Manual Entry**: Click **Activities** in the sidebar and use **Add Activity** with live Yahoo Finance ticker search.
+   - **Bulk Import**: Use **Import CSV** to upload your brokerage export with automatic type alias mapping (e.g., `Reinvest` → `DRIP`, `DIV` → `DIVIDEND`) and pre-flight validation.
+   - **Auto-Scan Dividends & Migrate DRIPs**: Click **Fetch Dividends** to scan declaring payouts or **Migrate DRIPs** to automatically pair historical `DIVIDEND` and `BUY` transactions into clean `DRIP` entries.
+4. **Explore the Dashboard & Owners**: Ascend automatically unitizes daily Net Asset Value (NAV), breaks down sidebar Net Worth snapshots by household owner (`24H` to `ALL`), tracks drift against rebalance targets, and computes XIRR.
 
 ---
 
@@ -48,9 +48,9 @@ Ascend is built on modern web and database technologies:
 - **Language**: TypeScript 5 with strict typing
 - **Database**: PostgreSQL 15+ managed via Prisma ORM 5
 - **Authentication**: NextAuth.js v5 with RBAC (`ADMIN`, `EDITOR`, `VIEWER`)
-- **Charting**: Chart.js & Recharts
+- **Charting**: Chart.js 4 & Recharts 3
 - **Market Data**: Yahoo Finance API integration with adaptive circuit-breaker throttling
-- **AI / MCP**: Gemini, OpenAI, Claude, plus standalone `ascend-mcp` service
+- **External Agents**: Standalone `ascend-mcp` Model Context Protocol server
 
 ### Run with Docker Compose (Recommended)
 
@@ -90,7 +90,7 @@ For full setup instructions, data models, and API documentation, visit the **[Ar
 
 ## 🔒 Privacy & Data Ownership Principles
 
-1. **Self-Hosted Data**: All financial data, transactions, and account identifiers remain strictly on your local PostgreSQL database.
-2. **Local Mode AI**: The AI Intelligence module is opt-in. When disabled, zero outgoing HTTP requests are made to external LLM providers. When enabled, only anonymized summaries (symbols, percentage weights, values) are transmitted.
-3. **API Key Security**: Third-party LLM keys and system secrets are encrypted and stored in the database.
-4. **Encrypted Constant-Time Comparisons**: API keys and webhook/cron secrets are validated using timing-safe comparisons to eliminate side-channel vulnerabilities.
+1. **100% Self-Hosted Data**: All financial ledgers, holdings, profiles, and account identifiers remain strictly inside your private PostgreSQL database.
+2. **No In-App Third-Party LLM Telemetry**: Ascend has no built-in LLM provider integrations and makes zero outgoing calls to external AI services.
+3. **Programmatic MCP Access Control**: External agent access via `ascend-mcp` is strictly opt-in using `MCP_API_KEY`.
+4. **Timing-Safe Secret Validation**: API keys (`MCP_API_KEY`) and cron webhook secrets (`CRON_SECRET`) are evaluated using `crypto.timingSafeEqual` constant-time comparisons to eliminate timing side-channel vulnerabilities.

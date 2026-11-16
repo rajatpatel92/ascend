@@ -1,6 +1,6 @@
-# Ascend - Personal Portfolio Manager  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+# Ascend — Personal Portfolio Manager [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A comprehensive, self-hosted portfolio management application designed to track your investments across multiple accounts and currencies.
+A comprehensive, self-hosted, multi-currency portfolio management platform designed to track, analyze, and rebalance investments across multiple brokerages, currencies, tax accounts, and household owners.
 
 <p align="center">
   <img src="public/dashboard-light.png" width="45%" alt="Light Mode Dashboard" />
@@ -10,21 +10,34 @@ A comprehensive, self-hosted portfolio management application designed to track 
 
 ## Features
 
--   **Multi-Currency Support**: Track investments in their native currency and view your portfolio value in your preferred base currency (e.g., USD, CAD, INR).
--   **Advanced FIRE Analysis**:
-    -   **"Solve for X" Simulations**: Calculate the safe withdrawal rate for a specific duration or find out how long a specific rate will last.
-    -   **Inflation Adjustment**: Projections account for inflation to ensure real purchasing power is maintained.
-    -   **Lifestyle Analysis**: Determine the minimum monthly income required to maintain your current standard of living in retirement.
-    -   **Detailed Projections**: Year-by-year breakdown of principal, gains, withdrawals, and balances.
--   **Deep Allocation Analysis**:
-    -   **Investment Type Breakdown**: Aggregate view across all asset classes with accurate currency conversion.
-    -   **Dividend Analysis**: Automatic yield calculation with fallback deduction for missing data.
-    -   **Realized Gains**: Tracking for sold assets and historical performance.
--   **Performance Tracking**:
-    -   **XIRR Calculation**: Accurate return on investment considering cash flows.
-    -   **Portfolio Evolution**: Visualize Portfolio growth vs. average contributions over time. Visualize dividend history over time.
--   **Privacy Focused**: Self-hosted solution ensures you own your financial data.
--   **Dark Mode**: Sleek, eye-friendly interface.
+- **Executive Dashboard & Household Owner Snapshots**:
+  - **Executive Wealth Strip**: Live Net Worth, All-Time Profit (Capital Gains vs. Dividends split), Annualized XIRR (with `<1Y` guard), and Passive Income (projected annual dividends, yield, YTD progress, and Yield on Cost).
+  - **Unified Performance & Valuation Chart**: Time-Weighted Return (TWR) NAV curve and monetary evolution across `1D` through `ALL` and custom date ranges.
+  - **Portfolio Pulse Grid**: 1D impact-weighted Top Movers, interactive Allocation Snapshot tabs, and Dividend Summary with upcoming ex-dividend dates.
+  - **Sidebar Owner Net Worth Snapshot**: Compact per-owner cards (`24H`, `1W`, `1M`, `YTD`, `1Y`, `ALL`) with interactive sparklines and hover scrubbing.
+- **Immutable Ledger & First-Class DRIP Engine**:
+  - Track `BUY`, `SELL`, `DIVIDEND`, `DRIP`, `STOCK_SPLIT`, `DEPOSIT`, `WITHDRAWAL`, `TRANSFER_IN`, and `TRANSFER_OUT` activities across platforms and accounts.
+  - **DRIP Migration Scanner**: Automatically scans historical `DIVIDEND` + `BUY` pairs and converts eligible reinvestments to `DRIP` without distorting net investor contributions.
+  - **Smart CSV Import & Bulk Workflows**: Pre-flight ticker/FX validation with automatic brokerage type alias mapping (e.g., `DIV` → `DIVIDEND`, `Reinvestment` → `DRIP`), batch editing, account transfers, and automated stock-split & dividend scanning.
+  - **Ledger Filtering**: Filter by Household Owner, Account Type, Platform, Symbol, Activity Type, and Date Range with live `Net Capital Flow` and `Brokerage Fees` KPIs.
+- **Portfolio Rebalancer**:
+  - **Full & Buy-Only Modes**: Deploy new cash inflows exclusively into underweight holdings without triggering taxable sales.
+  - **Drift Tolerance Bands & Whole-Share Sizing**: Keep turnover disciplined and respect exact cash budgets.
+  - **Ticker & Asset-Type Targets**: Rebalance by individual holding or asset category, backed by **Saved Rebalance Profiles** and automated **Glide-Step** lifecycle scheduling.
+  - **Tax-Aware Account Routing**: Prioritizes `Tax-Free` and `Tax-Deferred` containers ahead of `Taxable` accounts for sells, surfacing capital-gains warnings.
+- **Allocation X-Ray, Comparison & Asset Deep-Dive**:
+  - **Unified Allocation Explorer**: Switch across Sector, Geography, Investment Type, Account Type, and Account & Platform with on-demand **Portfolio X-Ray** decomposing direct equity vs. ETF look-through weights.
+  - **Benchmark Comparison & Wealth Evolution**: Normalized index comparisons (custom benchmarks supported) plus net contribution and dividend growth charts.
+  - **Asset Deep-Dive (`/analysis/[symbol]`)**: Cost-basis average price overlay (`avgPriceHistory`), account distribution, ETF sector/country breakdown, DRIP reinvestment stats, and per-symbol CSV export.
+- **FIRE Independence Planner**:
+  - Dual mathematical simulation modes (`FIXED_RATE` & `FIXED_HORIZON`), monthly compound inflation, lifestyle sustainability checks, **Saved FIRE Profiles**, and collapsible simulation studio.
+- **Modern UI, Obsidian Carbon & Contextual Settings**:
+  - Adaptive collapsible sidebar with **Contextual Settings Navigation**, mobile vertical section picker, and **Obsidian Carbon** (`#09090b`) dark theme alongside crisp light mode.
+  - Role-Based Access Control (`ADMIN`, `EDITOR`, `VIEWER`) and timing-safe programmatic API access.
+- **MCP Integration (`ascend-mcp`)**:
+  - Connect external AI agents and assistants (Claude Desktop, Antigravity, Cursor) over the Model Context Protocol using `MCP_API_KEY`.
+
+For full feature guides, mathematical formulas, and API docs, explore the **[Ascend Wiki](docs/wiki/Home.md)**.
 
 ## Installation
 
@@ -33,83 +46,89 @@ A comprehensive, self-hosted portfolio management application designed to track 
 The fastest way to get started using the official pre-built image (supports `amd64` and `arm64`).
 
 **Prerequisites:**
--   [Docker](https://docs.docker.com/get-docker/)
--   [Docker Compose](https://docs.docker.com/compose/install/)
+- [Docker](https://docs.docker.com/get-docker/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
 
 **Steps:**
 
-1.  **Create a directory** for the project and enter it:
-    ```bash
-    mkdir ascend && cd ascend
-    ```
+1. **Create a directory** for the project and enter it:
+   ```bash
+   mkdir ascend && cd ascend
+   ```
 
-2.  **Configure Environment:**
-    Create a `.env` file with the following content (or copy from `env.example` if you have the source):
-    ```env
-    # Database
-    POSTGRES_USER=postgres
-    POSTGRES_PASSWORD=postgres
-    POSTGRES_DB=portfolio_db
+2. **Configure Environment:**
+   Create a `.env` file with the following content (or copy from `env.example` if you have the source):
+   ```env
+   # Database
+   POSTGRES_USER=postgres
+   POSTGRES_PASSWORD=postgres
+   POSTGRES_DB=portfolio_db
 
-    # Next Auth
-    NEXTAUTH_URL="http://localhost:3000"
-    NEXTAUTH_SECRET="your_secure_random_secret_here" # Generate with: openssl rand -base64 32
-    AUTH_TRUST_HOST=true
+   # Next Auth
+   NEXTAUTH_URL="http://localhost:3000"
+   NEXTAUTH_SECRET="your_secure_random_secret_here" # Generate with: openssl rand -base64 32
+   AUTH_TRUST_HOST=true
 
-    # Seeding
-    ADMIN_PASSWORD="your_secure_password_here"
-    ```
+   # Seeding
+   ADMIN_PASSWORD="your_secure_password_here"
 
-3.  **Create `docker-compose.yml`**:
-    Create a file named `docker-compose.yml` with the following content:
-    ```yaml
-    services:
-      app:
-        image: rajatpatel7/ascend:latest
-        container_name: ascend
-        restart: always
-        ports:
-          - "3000:3000"
-        environment:
-          - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-          - NEXTAUTH_URL=${NEXTAUTH_URL}
-          - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
-          - AUTH_TRUST_HOST=true
-          - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-        depends_on:
-          - db
-        networks:
-          - portfolio-network
+   # Optional: Programmatic API / MCP & Cron Webhooks
+   # MCP_API_KEY="your_secure_mcp_api_key"
+   # CRON_SECRET="your_secure_cron_secret"
+   ```
 
-      db:
-        image: postgres:15-alpine
-        container_name: portfolio-db
-        restart: always
-        environment:
-          - POSTGRES_USER=${POSTGRES_USER}
-          - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-          - POSTGRES_DB=${POSTGRES_DB}
-        volumes:
-          - postgres_data:/var/lib/postgresql/data
-        networks:
-          - portfolio-network
+3. **Create `docker-compose.yml`**:
+   Create a file named `docker-compose.yml` with the following content:
+   ```yaml
+   services:
+     app:
+       image: rajatpatel7/ascend:latest
+       container_name: ascend
+       restart: always
+       ports:
+         - "3000:3000"
+       environment:
+         - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+         - NEXTAUTH_URL=${NEXTAUTH_URL}
+         - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+         - AUTH_TRUST_HOST=true
+         - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+         - MCP_API_KEY=${MCP_API_KEY:-}
+         - CRON_SECRET=${CRON_SECRET:-}
+       depends_on:
+         - db
+       networks:
+         - portfolio-network
 
-    networks:
-      portfolio-network:
-        driver: bridge
+     db:
+       image: postgres:15-alpine
+       container_name: portfolio-db
+       restart: always
+       environment:
+         - POSTGRES_USER=${POSTGRES_USER}
+         - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+         - POSTGRES_DB=${POSTGRES_DB}
+       volumes:
+         - postgres_data:/var/lib/postgresql/data
+       networks:
+         - portfolio-network
 
-    volumes:
-      postgres_data:
-    ```
+   networks:
+     portfolio-network:
+       driver: bridge
 
-4.  **Start the Application:**
-    ```bash
-    docker-compose up -d
-    ```
+   volumes:
+     postgres_data:
+   ```
 
-5.  **Access the Dashboard:**
-    Open [http://localhost:3000](http://localhost:3000).
-    -   **Default Admin Credentials**: `admin` / (The password configured in `.env`)
+4. **Start the Application:**
+   ```bash
+   docker-compose up -d
+   ```
+
+5. **Access the Dashboard:**
+   Open [http://localhost:3000](http://localhost:3000).
+   - **Default Admin Credentials**: `admin` / (The password configured in `.env`)
 
 ---
 
@@ -117,22 +136,22 @@ The fastest way to get started using the official pre-built image (supports `amd
 
 If you want to modify the code or build the image yourself.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <your-repo-url>
-    cd ascend
-    ```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/rajatpatel92/ascend.git
+   cd ascend
+   ```
 
-2.  **Configure Environment:**
-    ```bash
-    cp env.example .env
-    ```
-    *Update `.env` with your preferred credentials if needed.*
+2. **Configure Environment:**
+   ```bash
+   cp env.example .env
+   ```
+   *Update `.env` with your preferred credentials if needed.*
 
-3.  **Run with Docker Compose:**
-    ```bash
-    docker-compose up -d --build
-    ```
+3. **Run with Docker Compose:**
+   ```bash
+   docker-compose up -d --build
+   ```
 
 ---
 
@@ -141,58 +160,60 @@ If you want to modify the code or build the image yourself.
 For development or running without Docker.
 
 **Prerequisites:**
--   [Node.js](https://nodejs.org/) (v18 or higher)
--   [PostgreSQL](https://www.postgresql.org/) database
+- [Node.js](https://nodejs.org/) (v22+ recommended for native `--experimental-strip-types` test runner)
+- [PostgreSQL](https://www.postgresql.org/) database
 
 **Steps:**
 
-1.  **Clone and Install Dependencies:**
-    ```bash
-    git clone <your-repo-url>
-    cd ascend
-    npm install
-    ```
+1. **Clone and Install Dependencies:**
+   ```bash
+   git clone https://github.com/rajatpatel92/ascend.git
+   cd ascend
+   npm install
+   ```
 
-2.  **Configure Environment:**
-    ```bash
-    cp env.example .env
-    ```
-    Update `.env` with your local PostgreSQL credentials.
+2. **Configure Environment:**
+   ```bash
+   cp env.example .env
+   ```
+   Update `.env` with your local PostgreSQL credentials.
 
-3.  **Setup Database:**
-    ```bash
-    npx prisma migrate dev
-    npx prisma db seed
-    ```
+3. **Setup Database:**
+   ```bash
+   npx prisma migrate dev
+   npx prisma db seed
+   ```
 
-4.  **Start the Development Server:**
-    ```bash
-    npm run dev
-    ```
+4. **Run Tests & Start the Development Server:**
+   ```bash
+   npm test
+   npm run dev
+   ```
 
 ## Tech Stack
 
--   **Framework**: [Next.js](https://nextjs.org/) (App Router)
--   **Database**: PostgreSQL with [Prisma ORM](https://www.prisma.io/)
--   **Styling**: CSS Modules
--   **Charts**: Recharts & Chart.js
--   **Authentication**: NextAuth.js
+- **Framework**: [Next.js 16](https://nextjs.org/) (App Router) & React 19
+- **Database**: PostgreSQL 15+ with [Prisma ORM 5](https://www.prisma.io/)
+- **Styling**: CSS Modules with Light & Obsidian Carbon Dark modes
+- **Charts**: Chart.js 4 & Recharts 3
+- **Market Feeds**: [yahoo-finance2](https://github.com/gadicc/node-yahoo-finance2) with adaptive throttling & circuit breaker
+- **Authentication**: [NextAuth.js v5](https://next-auth.js.org/) (`ADMIN`, `EDITOR`, `VIEWER` RBAC)
 
 ## Acknowledgments
 
 This project makes use of the following open-source libraries:
 
--   [Next.js](https://nextjs.org/) - The React Framework for the Web
--   [React](https://react.dev/) - The library for web and native user interfaces
--   [Prisma](https://www.prisma.io/) - Next-generation Node.js and TypeScript ORM
--   [NextAuth.js](https://next-auth.js.org/) - Authentication for Next.js
--   [Chart.js](https://www.chartjs.org/) - Simple yet flexible JavaScript charting for designers & developers
--   [Recharts](https://recharts.org/) - Redefined chart library built with React and D3
--   [Framer Motion](https://www.framer.com/motion/) - A production-ready motion library for React
--   [Lucide React](https://lucide.dev/) - Beautiful & consistent icon toolkit made by the community
--   [date-fns](https://date-fns.org/) - Modern JavaScript date utility library
--   [yahoo-finance2](https://github.com/gadicc/node-yahoo-finance2) - Yahoo Finance API wrapper
--   [react-icons](https://react-icons.github.io/react-icons/) - Include popular icons in your React projects easily
+- [Next.js](https://nextjs.org/) - The React Framework for the Web
+- [React](https://react.dev/) - The library for web and native user interfaces
+- [Prisma](https://www.prisma.io/) - Next-generation Node.js and TypeScript ORM
+- [NextAuth.js](https://next-auth.js.org/) - Authentication for Next.js
+- [Chart.js](https://www.chartjs.org/) - Simple yet flexible JavaScript charting for designers & developers
+- [Recharts](https://recharts.org/) - Redefined chart library built with React and D3
+- [Framer Motion](https://www.framer.com/motion/) - A production-ready motion library for React
+- [Lucide React](https://lucide.dev/) - Beautiful & consistent icon toolkit made by the community
+- [date-fns](https://date-fns.org/) - Modern JavaScript date utility library
+- [yahoo-finance2](https://github.com/gadicc/node-yahoo-finance2) - Yahoo Finance API wrapper
+- [react-icons](https://react-icons.github.io/react-icons/) - Include popular icons in your React projects easily
 
 ## License
 

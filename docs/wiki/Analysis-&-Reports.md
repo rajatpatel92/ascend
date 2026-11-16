@@ -1,155 +1,99 @@
 # Analysis & Reports
 
-The **Analysis** module provides specialized analytical lenses to dissect portfolio risk, asset allocation, historical wealth accumulation, and individual asset performance.
+The **Analysis** module provides specialized analytical lenses to dissect asset allocation, ETF look-through exposure, benchmark outperformance, historical wealth accumulation, and individual holding lifecycles.
 
 ---
 
 ## 🧭 Sub-Modules Overview
 
-1. **[Allocation](#1-allocation-analysis)**: Interactive multi-dimensional breakdown of portfolio diversification with dual-layer filtering and comprehensive constituent performance.
-2. **[Asset Deep-Dive (`/analysis/[symbol]`)](#2-asset-deep-dive-analysissymbol)**: Dedicated holding view with cost-basis overlays, account distribution, and ETF sector/geographic breakdowns.
-3. **[Comparison](#3-benchmark-comparison)**: Benchmark your portfolio against standard indices or custom user-defined securities.
-4. **[Evolution](#4-wealth-evolution-contributions--dividends)**: Historical Net Asset Value trajectories, net contribution flows, and long-term dividend growth.
-5. **[FIRE Calculator](FIRE-Calculator)**: Financial Independence and Retirement decumulation simulation engine.
+1. **[Allocation Explorer (`/analysis/allocation`)](#1-allocation-analysis)**: Unified 5-dimension explorer with on-demand **Portfolio X-Ray** decomposition and cross-filtered constituents audit table.
+2. **[Asset Deep-Dive (`/analysis/[symbol]`)](#2-asset-deep-dive-analysissymbol)**: Redesigned individual security view with cost-basis average price overlay (`avgPriceHistory`), account distribution, ETF sector/geography breakdowns, and DRIP stats.
+3. **[Benchmark Comparison (`/analysis/comparison`)](#3-benchmark-comparison)**: Normalized portfolio performance vs. system or custom user-defined market indices with top/bottom contributor leaderboards.
+4. **[Wealth Evolution (`/analysis/evolution`)](#4-wealth-evolution-contributions--dividends)**: Nominal NAV curve, net investor capital inflows (excluding DRIPs), and dividend vs. DRIP cash-flow history.
+5. **[FIRE Calculator (`/analysis/fire`)](FIRE-Calculator)**: Two-phase retirement modeling with saved profiles.
 
 ---
 
 ## 🍰 1. Allocation Analysis
 
-Located at `/analysis/allocation`, this page visualizes portfolio exposure and provides a deep constituent audit table.
+Located at `/analysis/allocation`, this page visualizes portfolio exposure across five dimensions and feeds a live cross-filtered constituents audit table.
 
 ### Dual-Layer Filtering Architecture
-
-Ascend uses an advanced two-layer filtering model:
-
 1. **Layer 1: Global Filters (`ReportFilters`)**:
-   - Filter by **Investment Types** (e.g., Equity, ETF, Fixed Income, Crypto).
-   - Filter by **Account Types** (e.g., TFSA, RRSP, Taxable, 401(k)).
-   - Persisted across visits under `allocation_filters`.
+   - Filter by **Investment Types** (Equity, ETF, Mutual Fund, Fixed Income, Crypto) and **Account Types** (TFSA, RRSP, Taxable, 401(k), etc.), persisted across sessions under `allocation_filters`.
 2. **Layer 2: Interactive Cross-Filtering**:
-   - Click directly on any donut chart slice or account category.
-   - The entire constituents table immediately sub-slices to display only assets matching the selected category.
-   - Supports multi-select via `Ctrl + Click` / `Cmd + Click`.
+   - Click any donut slice or legend entry to isolate matching holdings in the Constituents Grid below (active filter badges appear at the top for quick clearing).
+   - Supports multi-dimension filtering via `Ctrl + Click` / `Cmd + Click`.
 
-### Allocation Visualizations & View Modes
-
-The Allocation page provides three distinct perspective views via a dedicated switcher:
-
-1. **Macro X-Ray (Sectors & Geography)** *(Default)*:
-   - **By Sector (Look-Through X-Ray)**: Decomposes ETF sector weightings (e.g. VOO's ~30% Technology) and combines them with direct stock holdings (e.g. direct AAPL shares) for true macro sector exposure.
-   - **By Geography (Country Exposure)**: Look-through geographic exposure across domestic, North American, European, Asian, and emerging markets.
-   - **By Investment Type**: High-level distribution between Equities, ETFs, Crypto, Mutual Funds, and Cash.
-2. **Structure & Accounts**:
-   - **By Investment Type**: High-level asset class breakdown.
-   - **By Account Type**: Distribution across tax containers (Registered/Tax-Advantaged vs. Taxable).
-   - **By Account & Platform**: Granular distribution across brokerage institutions and specific accounts.
-3. **All Dimensions**:
-   - Displays all five allocation charts simultaneously in a responsive grid.
+### Unified Allocation Explorer (5 Dimensions)
+A streamlined tab bar switches cleanly across five analytical dimensions without vertical clutter or mobile overflow:
+1. **`By Sector`** *(Default)*: Look-through GICS sector exposure combining direct stocks (e.g., `AAPL`) with underlying ETF sector weights (e.g., `VOO`).
+2. **`By Geography`**: Look-through country exposure combining direct positions and ETF geographic allocations.
+3. **`By Investment Type`**: Asset class breakdown (`ETF`, `Equity`, `Crypto`, `Mutual Fund`, `Cash`).
+4. **`By Account Type`**: Tax-wrapper breakdown (`TFSA`, `RRSP`, `Taxable`, `Roth IRA`, etc.).
+5. **`By Account & Platform`**: Distribution across individual brokerage accounts and custodians.
 
 ---
 
-### 🔬 Portfolio X-Ray Holding Decomposition Card
+### 🔬 On-Demand Portfolio X-Ray Decomposition (`SectorBreakdownCard`)
 
-When viewing in **Macro X-Ray** or **All Dimensions**, selecting any sector (or viewing the primary exposure sector) reveals the **Portfolio X-Ray Decomposition Card**:
+When inspecting **`By Sector`** or **`By Geography`**, clicking any slice opens the **On-Demand Portfolio X-Ray** panel right beside/below the explorer:
 
-* **Aggregate Exposure Metrics**:
-  * Total dollar valuation in the chosen currency and percentage of total portfolio NAV.
-* **Direct Equity vs. ETF Look-Through Dual Split**:
-  * Quantifies the exact split between direct company stocks and indirect ETF holdings.
-  * Visual dual-segmented progress bar clearly shows what portion is held directly versus fund decomposition.
-* **Sector Selector Pills**:
-  * Quick-access horizontal pill bar allowing users to switch between any portfolio sector without touching the chart.
-* **Comprehensive Contributor Overlap Table**:
-  * **Holding**: Symbol ticker and company/fund name.
-  * **Source Type**: Visual badge distinguishing `Direct Equity` from `ETF Decomposition`.
-  * **Holding Value**: Total value of the position in your portfolio.
-  * **Weight in Holding**: Percentage of the holding allocated to this sector (e.g., 100% for direct equities, or 30.5% for an S&P 500 ETF).
-  * **Sector Exposure**: Dollar contribution of this security to the active sector.
-  * **Share of Sector**: Percentage contribution to this sector's total exposure with a visual progress bar.
-* **Interactive Cross-Filtering**:
-  * Clicking on any sector or country donut slice immediately filters the **Constituents Grid** below, isolating all holdings with exposure to that dimension.
+* **Aggregate Exposure Metrics**: Total dollar valuation and percentage weight of that sector or country across your entire filtered portfolio.
+* **Direct Equity vs. ETF Look-Through Dual Split**: Dual-segmented progress bar quantifying how much exposure comes from direct stock picks versus underlying ETF decomposition.
+* **Contributor Overlap Table**: Breaks down every security contributing to the active sector/country with:
+  * **Source Type Badge**: `Direct Equity` vs. `ETF Decomposition`.
+  * **Holding Value**, **Weight in Holding %**, **Allocated Exposure ($)**, and **Share of Dimension %**.
 
+---
 
 ### Deep Constituents Grid (`ConstituentsGrid`)
 
-The table beneath the charts provides granular metrics for every security in the portfolio:
-
 | Column | Description |
 | :--- | :--- |
-| **Symbol & Name** | Security ticker and company name. Clicking navigates directly to the **[Asset Deep-Dive](#2-asset-deep-dive-analysissymbol)**. |
-| **Price & Avg Price** | Current market price alongside your volume-weighted average purchase price (cost basis per share). |
-| **Quantity** | Exact shares held, formatted with fractional share precision. |
-| **Book Value** | Total cumulative capital invested in native currency and target base currency. |
-| **Market Value & Weight** | Current market valuation and percentage weight within the portfolio. |
-| **Performance Columns** | Returns across **1D, 1W, 1M, 1Y, YTD, and Inception**. An interactive toggle switches between **Percentage Return (%)** and **Absolute Dollar Profit/Loss ($)**. |
-| **Holding XIRR** | Individual dollar-weighted annualized return calculated specifically for that position's cash flows. |
-| **Dividends** | Current dividend yield (%), Year-To-Date dividends, and Lifetime cumulative dividends received. |
-| **Realized Gains** | Capital gains or losses realized from historical sales of this asset. |
+| **Symbol & Name** | Security ticker and company name (links directly to `/analysis/[symbol]`). |
+| **Price & Avg Price** | Current market price alongside volume-weighted average cost basis per share. |
+| **Quantity** | Fractional share precision up to 6 decimal places. |
+| **Book Value** | Total cumulative cost basis in native currency and display currency. |
+| **Market Value & Weight** | Live valuation and portfolio weight percentage. |
+| **Performance Columns** | Returns across **1D, 1W, 1M, 1Y, YTD, and Inception**, toggleable between **Percentage (%)** and **Dollar P&L ($)**. |
+| **Holding XIRR** | Position-specific annualized dollar-weighted return (with `<1Y` guard). |
+| **Dividends** | Current yield (%), YTD dividends, and lifetime distributions received. |
+| **Realized Gains** | Capital gains or losses locked in from historical sales. |
 
-#### Active Assets vs. Sold Assets
-* **Active Assets**: Holdings with current quantity $> 0$.
-* **Sold Assets Drawer**: Assets that have been completely sold off (quantity $= 0$) are neatly grouped in a collapsible drawer at the bottom of the table. This allows you to audit historical realized gains, lifetime dividends, and total historical return for closed positions.
+* **Active Assets vs. Sold Assets Drawer**: Closed positions (`quantity = 0`) collapse neatly into a toggleable drawer for auditing historical realized gains and lifetime dividends.
 
 ---
 
 ## 🔍 2. Asset Deep-Dive (`/analysis/[symbol]`)
 
-Clicking on any symbol from the Dashboard, Constituents Grid, or Dividend widget opens the **Asset Deep-Dive** page.
+The redesigned individual symbol page provides complete lifecycle diagnostics for any security:
 
-### Key Features
-* **Summary Hero Card**: Current Market Price, Average Purchase Price, Total Quantity Held, Total Capital Invested, Current Valuation, Absolute Dollar Return, and Percentage Return.
-* **Investment Horizon & Trading Stats**:
-  * **Investment Age**: Time elapsed since your very first purchase of this security.
-  * **Activity Count**: Total number of ledger transactions recorded for this asset.
-  * **Total Fees**: Cumulative brokerage fees and commissions paid.
-  * **52-Week Range**: Current price plotted against the 52-week high and 52-week low.
-* **Cost Basis Overlay Chart (`StockChart`)**:
-  * Plots daily historical market prices over time.
-  * Overlays your **Average Purchase Price History (`avgPriceHistory`)** as a dynamic baseline, clearly visualizing when your position was in profit or loss across its holding lifecycle.
-* **Account Distribution Breakdown**:
-  * Visualizes which accounts hold this symbol, share counts per account, and the platform custodying the asset.
-* **ETF Sector & Country Allocations**:
-  * For ETFs and index funds, Ascend parses underlying fund holdings from market feeds.
-  * Displays percentage weights by industry sector (Technology, Financial Services, Healthcare, etc.) and geographic exposure (US, Canada, International, Emerging Markets).
-* **Dividend Intelligence**:
-  * Total lifetime dividends received for this asset.
-  * Current declared dividend rate, forward dividend yield, and historical distribution history.
-* **Dedicated Transaction Ledger**:
-  * Complete, filterable chronological activity ledger for this symbol.
-  * Filter by Activity Type, Account, or Platform.
-  * Export symbol history directly to CSV.
+* **Hero & Summary KPI Strip**: Live market price, day change, position market value, cost basis (`Avg Purchase Price`), total shares held, unrealized/realized P&L, and **Holding XIRR**.
+* **Investment Horizon & Trading Stats**: Investment age, total activity count, cumulative brokerage fees, **DRIP Reinvested Shares & Amount**, and 52-week price range bar.
+* **Interactive Cost Basis Overlay Chart (`StockChart`)**:
+  * Daily price history (`1M`, `3M`, `6M`, `YTD`, `1Y`, `3Y`, `5Y`, `ALL`) with responsive skeleton loading (`SymbolSkeleton`).
+  * Overlays your historical **`Average Purchase Price (avgPriceHistory)`** step line so you can see exactly when your position traded above or below your cost basis.
+  * Plots buy/sell/DRIP execution context directly alongside price action.
+* **Account Distribution Breakdown**: Per-account share counts, market values, cost bases, and custodian platforms holding the symbol.
+* **ETF Look-Through Breakdown**: Displays underlying sector and geographic country weights parsed from market data feeds.
+* **Dividend Intelligence**: Lifetime cash + reinvested dividends, declared forward rate/yield, and distribution history.
+* **Filterable Symbol Ledger & CSV Export**: Filter chronological transactions by Activity Type, Account, or Platform and export directly to CSV.
 
 ---
 
 ## ⚖️ 3. Benchmark Comparison
 
-Located at `/analysis/comparison`, this page benchmarks your portfolio's performance against broader financial markets.
-
-### Key Capabilities
-* **Dynamic Benchmark Selection**: Compare against default system indices (S&P 500 `^GSPC`, Nasdaq 100 `^IXIC`) or **custom user-defined benchmarks** added via **Settings > General > Benchmarks** (e.g., TSX `^GSPTSE`, Total Stock Market `VTI`, All-World `VT`).
-* **Normalized Performance Chart**: Both your portfolio NAV and the benchmark are normalized to $0.00\%$ at the start date of the selected timeframe, enabling a fair apples-to-apples comparison.
-* **Supported Time Horizons**: `1M`, `6M`, `YTD`, `1Y`, `2Y`, `3Y`, `5Y`, and `ALL`.
-* **Outperformance Metrics**: Clear summary displaying your net alpha (excess return over the benchmark).
-* **Leaderboards (Top & Bottom Performers)**:
-  * Identifies the best and worst performing individual assets within your portfolio over the selected window, displaying invested capital, ending value, and percentage gain/loss.
+Located at `/analysis/comparison`:
+* **Dynamic Benchmark Selection**: Compare portfolio TWR against pre-seeded system indices (`^GSPC` S&P 500, `^IXIC` Nasdaq 100) or **custom benchmarks** added in **Settings > General** (e.g., `^GSPTSE`, `VTI`, `VT`).
+* **Normalized Return Curve**: Both portfolio NAV and benchmark series normalize to `0.00%` at the start of the selected horizon (`1M`, `6M`, `YTD`, `1Y`, `2Y`, `3Y`, `5Y`, `ALL`).
+* **Alpha & Performer Leaderboards**: Displays net excess return (alpha) alongside top and bottom contributing portfolio holdings over the exact comparison window.
 
 ---
 
 ## 📈 4. Wealth Evolution, Contributions & Dividends
 
-Located at `/analysis/evolution`, this page provides historical insight into wealth accumulation and cash flows.
-
-### 1. Portfolio NAV Evolution Chart
-* A historical line chart tracking your total Net Asset Value over time in your Base Currency.
-* Unlike percentage comparison charts, this displays true nominal wealth growth.
-* Filter-aware: Scope the evolution chart by specific account types or asset classes.
-
-### 2. Contribution Flow Chart (`ContributionChart`)
-* Visualizes your **Net Savings Rate & Capital Inflows** over time.
-* Toggle between **Weekly**, **Monthly**, and **Yearly** aggregation intervals.
-* Visualizes net additions vs net withdrawals, illustrating how much of your portfolio growth is driven by savings versus compound market growth.
-
-### 3. Dividend Growth Chart (`DividendChart`)
-* Tracks cumulative and periodic passive dividend income.
-* Toggle between **Monthly** and **Yearly** views.
-* Demonstrates passive income compounding and annual distribution trends.
+Located at `/analysis/evolution`:
+1. **Portfolio NAV Evolution Chart**: Nominal monetary portfolio valuation curve over time, aligned strictly with Dashboard live Net Worth on the terminal point and scoped by active Report Filters.
+2. **Contribution Flow Chart (`ContributionChart`)**: Plots net additions vs. withdrawals across **Weekly**, **Monthly**, and **Yearly** intervals. First-class `DRIP` entries are cleanly excluded from fresh investor out-of-pocket contributions so savings rate calculations stay exact.
+3. **Dividend Growth Chart (`DividendChart`)**: Tracks **Monthly** and **Yearly** passive distributions, distinguishing **Cash Dividends** from **`DRIP` Reinvested Dividends**.

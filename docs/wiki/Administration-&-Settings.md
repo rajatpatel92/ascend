@@ -1,18 +1,16 @@
 # Administration & Settings
 
-The **Settings** module allows administrators and users to customize workspace preferences, manage users and roles, control currency conversion rates, configure benchmarks, and maintain foundational master taxonomy data.
+The **Settings** module lets administrators and household members customize interface appearance, reporting currency, FX overrides, brokerage accounts, user RBAC permissions, benchmarks, and master taxonomy data.
 
 ---
 
-## 🧭 Settings Navigation Hub
+## 🧭 Contextual Settings Navigation & Responsive UI
 
-Settings are organized across five dedicated sections accessible from the sub-navigation sidebar (`/settings/layout.tsx`):
+Ascend uses a streamlined **Contextual Sidebar + Single-Column Workspace** pattern (`src/lib/settings-nav.ts`):
 
-1. **[General](#1-general-preferences--benchmarks)**: Interface themes, date formats, default currency, benchmark indices, and AI credentials.
-2. **[Currency](#2-currency-management--exchange-rates)**: Active currency rates, automated FX polling, and manual rate overrides.
-3. **[Accounts](#3-account-management)**: Account configuration, active/inactive toggling, and platform associations.
-4. **[Users](#4-user-management--rbac)**: User provisioning, role assignments, password management, and individual AI opt-in.
-5. **[Master Data](#5-master-data--taxonomy)**: System taxonomies including Platforms, Investment Types, Activity Types, and Account Types.
+* **Contextual Main Sidebar Swap (`Sidebar.tsx`)**: Navigating into `/settings` or `/settings/*` replaces the main app links with a **`Back to App`** button and role-filtered Settings sections (`General`, `Currency & FX`, `Accounts`, `Users`, `Master Data`). Because main links and settings links never nest side by side, both the **Owner Net Worth Snapshot** tiles and footer controls fit cleanly without crowding.
+* **Mobile Section Picker Sheet**: On mobile (`<= 768px`), a compact **`Sections ▾`** button in the header opens a vertical bottom-sheet picker for 1-tap switching without horizontal pill scrolling.
+* **Linear-Style Row Layout & Obsidian Carbon Theme**: Preferences render as hairline-divided key-value rows across a neutral **Obsidian Carbon** (`#09090b` canvas, `#050506` sidebar, `#121215` cards) dark palette alongside crisp light mode.
 
 ---
 
@@ -21,109 +19,72 @@ Settings are organized across five dedicated sections accessible from the sub-na
 Located at `/settings`:
 
 ### User Interface Preferences
-* **Theme**: Select between **Light Mode** and **Dark Mode**. Persisted locally in your browser to prevent layout flickering.
-* **Date Format (`DateContext`)**: Customize how dates appear across all tables, charts, and transaction ledgers:
+* **Appearance**: Toggle cleanly between **Light** and **Dark (Obsidian Carbon)** modes, persisted locally (`ThemeContext`) to prevent FOUC on load.
+* **Date Format (`DateContext`)**: Customize date formatting across tables, tooltips, and ledgers with live preview:
   * `MM/DD/YYYY` (US Standard)
-  * `DD/MM/YYYY` (UK, Europe, India, International)
-  * `YYYY-MM-DD` (ISO 8601 Standard)
-  * `MMM DD, YYYY` (Medium Form: "Jan 15, 2025")
-* **Default Base Currency**: Select your primary currency for consolidating net worth and dashboard analytics.
+  * `DD/MM/YYYY` (UK, Europe, India)
+  * `YYYY-MM-DD` (ISO 8601)
+  * `MMM DD, YYYY` (Medium Form)
+* **Default Display Currency**: Select the base currency used across dashboard KPIs and charts with live numeric preview.
 
 ### Benchmark Index Configuration (`BenchmarkSettings`)
-Customize the benchmark comparison list available in **Analysis > Comparison**:
-* **System Benchmarks**: Pre-seeded indices including the S&P 500 (`^GSPC`) and Nasdaq 100 (`^IXIC`).
-* **Custom Benchmarks**: Add any global index or ETF tracked by Yahoo Finance (e.g., TSX Composite `^GSPTSE`, All-Country World Index `ACWI`, Vanguard Total Stock Market `VTI`).
-* Benchmarks are stored in the database (`Benchmark` model) and updated during automated cron refreshes.
-
-### AI Engine Configuration (`AISettings`)
-Administrators can input API credentials for Google Gemini, OpenAI, and Claude, and toggle the global platform-wide AI switch.
+Manage indices selectable inside **Analysis > Comparison**:
+* **System Benchmarks**: Pre-seeded indices including S&P 500 (`^GSPC`) and Nasdaq 100 (`^IXIC`).
+* **Custom Benchmarks**: Add any Yahoo Finance index or ETF (e.g., TSX Composite `^GSPTSE`, `VTI`, `VT`). Stored in the `Benchmark` table and refreshed by market-data syncs.
 
 ---
 
-## 💱 2. Currency Management & Exchange Rates
+## 💱 2. Currency & FX
 
 Located at `/settings/currency`:
 
-Ascend natively supports 11 major global currencies:
-
-| Code | Name | Symbol |
-| :--- | :--- | :--- |
-| `USD` | US Dollar | `$` |
-| `CAD` | Canadian Dollar | `C$` |
-| `EUR` | Euro | `€` |
-| `GBP` | British Pound | `£` |
-| `INR` | Indian Rupee | `₹` |
-| `JPY` | Japanese Yen | `¥` |
-| `AUD` | Australian Dollar | `A$` |
-| `CHF` | Swiss Franc | `Fr` |
-| `CNY` | Chinese Yuan | `¥` |
-| `NZD` | New Zealand Dollar | `NZ$` |
-| `SGD` | Singapore Dollar | `S$` |
-
-### Exchange Rate Mechanics
-* **Automated Sync**: The system queries real-time currency exchange rates from Yahoo Finance (e.g., `CAD=X`, `EUR=X`, `INR=X`).
-* **Reverse Pair Inversion**: If a direct currency cross is unavailable, Ascend automatically checks and computes the mathematical reciprocal ($1 / \text{Rate}$).
-* **Manual Override**: Administrators can manually override exchange rates directly in the interface.
+Ascend supports 11 major currencies (`USD`, `CAD`, `EUR`, `GBP`, `INR`, `JPY`, `AUD`, `CHF`, `CNY`, `NZD`, `SGD`) with one-tap **Quick Switch** chips and a sticky **Exchange Rate Matrix** table:
+* **Automated FX Polling**: Fetches live spot crosses via Yahoo Finance (`CAD=X`, `EUR=X`, `INR=X`, etc.), cached across the platform and refreshed every 8 hours.
+* **Reverse Pair Inversion**: Automatically computes mathematical reciprocals ($1 / \text{Rate}$) whenever only the inverted cross exists.
 
 ---
 
-## 🏦 3. Account Management
+## 🏦 3. Accounts *(ADMIN / EDITOR)*
 
 Located at `/settings/accounts`:
-
-* **Create Account**: Define a descriptive name, select the account type (e.g., TFSA, RRSP, Taxable), assign the native currency, and associate it with a Platform.
-* **Active / Inactive Status (`isActive`)**: Toggle accounts active or inactive. Inactive accounts are hidden from current Net Worth and Rebalancer tables while retaining all historical activities for audit accuracy.
-* **Account Deletion Safeguards**: Accounts containing active transactions cannot be deleted until all transactions are transferred or removed.
+* **Create & Edit Accounts**: Assign an account name, tax container type (`TFSA`, `RRSP`, `Roth IRA`, `Taxable`, `Demat`), native currency, and brokerage Platform.
+* **Active / Inactive Toggling (`isActive`)**: Deactivating an account excludes it from current Net Worth and Rebalancer scope while keeping historical activities auditable and selectable when editing past entries.
+* **Deletion Safeguards**: Accounts with existing transactions cannot be deleted until activities are transferred or removed.
 
 ---
 
-## 👥 4. User Management & RBAC
+## 👥 4. Users & Role-Based Access Control (RBAC)
 
 Located at `/settings/users`:
 
-Ascend features strict **Role-Based Access Control (RBAC)** enforced at both the API layer (`requireAuth`) and UI layer:
-
-### Role Permissions Matrix
+Strict RBAC is enforced at both API (`requireAuth`) and UI layers:
 
 | Capability | ADMIN | EDITOR | VIEWER |
 | :--- | :---: | :---: | :---: |
-| View Dashboards & Reports | ✅ | ✅ | ✅ |
-| View Constituents & Ledgers | ✅ | ✅ | ✅ |
-| Use AI Portfolio Assistant | ✅ *(if enabled)* | ✅ *(if enabled)* | ✅ *(if enabled)* |
-| Add & Edit Activities / CSV Import | ✅ | ✅ | ❌ |
-| Run Rebalancer & Configure Targets | ✅ | ✅ | ❌ |
+| View Dashboards, Owner Snapshots & Reports | ✅ | ✅ | ✅ |
+| Add, Edit, Import & Migrate Activities (`DRIP`) | ✅ | ✅ | ❌ |
+| Run Rebalancer & Save FIRE / Rebalance Profiles | ✅ | ✅ | ❌ |
 | Manage Accounts & Platforms | ✅ | ✅ | ❌ |
-| Manage Master Taxonomy Data | ✅ | ❌ | ❌ |
+| Manage Master Taxonomy Data & Market Sync | ✅ | ❌ | ❌ |
 | Manage Users & Reset Passwords | ✅ | ❌ | ❌ |
-| Configure LLM API Keys & System Secrets | ✅ | ❌ | ❌ |
-| Programmatic API Key Access (`MCP_API_KEY`) | ✅ | ❌ | ❌ |
+| Programmatic MCP Access (`MCP_API_KEY`) | ✅ | ❌ | ❌ |
 
-### User Security
-* Passwords are encrypted using salted `bcryptjs` hashing.
-* Individual users can be toggled to enable or disable access to conversational AI (`aiEnabled`).
+* Passwords are salted and hashed using `bcryptjs`.
 
 ---
 
-## 🗄️ 5. Master Data & Taxonomy
+## 🗄️ 5. Master Data *(ADMIN)*
 
 Located at `/settings/data`:
-
-This section defines the foundational domain models of your portfolio:
-
-* **Platforms**: Brokerage institutions and crypto custodians (e.g., Interactive Brokers, Questrade, Coinbase).
-* **Asset Classes / Investment Types**:
-  * Define asset classes (e.g., Equity, ETF, Mutual Fund, Crypto, Fixed Income).
-  * **Yahoo Investment Types Mapping**: Maps native Yahoo Finance security types to your local asset classes for seamless categorization during imports.
-* **Activity Types**:
-  * System transaction types (`BUY`, `SELL`, `DIVIDEND`, `STOCK_SPLIT`, `DEPOSIT`, `WITHDRAWAL`, `TRANSFER_IN`, `TRANSFER_OUT`).
-  * Behavioral flags: `ADD` (increases balance), `REMOVE` (decreases balance), `NEUTRAL` (no change to balance).
-* **Account Types**: Global account categories (e.g., RRSP, TFSA, Taxable, 401(k), Roth IRA, HSA, Demat).
+* **Platforms**: Brokerage custodians (`Interactive Brokers`, `Questrade`, `Wealthsimple`, `Zerodha`).
+* **Investment Types & Yahoo Mapping**: Local asset classes (`Equity`, `ETF`, `Mutual Fund`, `Crypto`, `Fixed Income`) mapped cleanly to upstream Yahoo security types for CSV import auto-categorization.
+* **Activity Types**: Transaction definitions (`BUY`, `SELL`, `DIVIDEND`, `DRIP`, `STOCK_SPLIT`, `DEPOSIT`, `WITHDRAWAL`, `TRANSFER_IN`, `TRANSFER_OUT`) with behavioral flags (`ADD`, `REMOVE`, `NEUTRAL`, `SPLIT`).
+* **Account Types**: Reusable tax/currency container templates (`TFSA`, `RRSP`, `Taxable`, `401(k)`, etc.).
+* **Manual Market Sync**: Trigger full or incremental price refreshes with live terminal stream output.
 
 ---
 
 ## 🔐 6. Environment Configuration & Secrets
-
-Ascend is configured via environment variables in `.env`:
 
 ```env
 # Database
@@ -138,11 +99,11 @@ AUTH_TRUST_HOST=true
 # Initial Seed Credentials
 ADMIN_PASSWORD="your_secure_admin_password"
 
-# Programmatic API & Agent Integration
+# Programmatic API & MCP Integration
 MCP_API_KEY="your_secure_mcp_api_key_for_external_agents"
 
 # Background Automation Secret
 CRON_SECRET="your_secure_cron_webhook_secret"
 ```
 
-* **Timing Attack Prevention**: Secret tokens (`MCP_API_KEY` and `CRON_SECRET`) are evaluated using `crypto.timingSafeEqual` constant-time comparisons (`src/lib/api-auth.ts`), eliminating timing side-channel exploits.
+* **Timing-Safe Validation**: `MCP_API_KEY` and `CRON_SECRET` are verified with `crypto.timingSafeEqual` (`src/lib/api-auth.ts`) to prevent timing side-channel leaks.
