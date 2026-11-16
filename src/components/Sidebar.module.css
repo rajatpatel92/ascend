@@ -14,9 +14,9 @@
 }
 
 :global([data-theme='dark']) .sidebar {
-    background-color: #0b1120;
-    color: #f8fafc;
-    border-right-color: #1e293b;
+    background-color: #050506;
+    color: #fafafa;
+    border-right-color: #1f1f23;
 }
 
 .brandHeader {
@@ -69,12 +69,12 @@
 }
 
 :global([data-theme='dark']) .collapseBtn {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 :global([data-theme='dark']) .collapseBtn:hover {
-    background-color: #1e293b;
-    color: #f8fafc;
+    background-color: #18181b;
+    color: #fafafa;
 }
 
 .nav {
@@ -105,7 +105,7 @@
 }
 
 :global([data-theme='dark']) .sectionTitle {
-    color: #64748b;
+    color: #71717a;
 }
 
 .link {
@@ -153,12 +153,12 @@
 }
 
 :global([data-theme='dark']) .link {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 :global([data-theme='dark']) .link:hover {
-    background-color: #162033;
-    color: #f8fafc;
+    background-color: #141418;
+    color: #fafafa;
 }
 
 :global([data-theme='dark']) .link.active {
@@ -193,7 +193,7 @@
 }
 
 :global([data-theme='dark']) .footer {
-    border-top-color: #1e293b;
+    border-top-color: #1f1f23;
 }
 
 .controls {
@@ -229,15 +229,15 @@
 }
 
 :global([data-theme='dark']) .currencySelect {
-    background-color: #111827;
-    border-color: #1f2937;
-    color: #f8fafc;
+    background-color: #121215;
+    border-color: #27272a;
+    color: #fafafa;
     color-scheme: dark;
 }
 
 :global([data-theme='dark']) .currencySelect:hover {
-    background-color: #1e293b;
-    border-color: #334155;
+    background-color: #18181b;
+    border-color: #3f3f46;
 }
 
 .themeToggle {
@@ -267,15 +267,15 @@
 }
 
 :global([data-theme='dark']) .themeToggle {
-    background-color: #111827;
-    border-color: #1f2937;
-    color: #cbd5e1;
+    background-color: #121215;
+    border-color: #27272a;
+    color: #d4d4d8;
 }
 
 :global([data-theme='dark']) .themeToggle:hover {
-    background-color: #1e293b;
-    color: #f8fafc;
-    border-color: #334155;
+    background-color: #18181b;
+    color: #fafafa;
+    border-color: #3f3f46;
 }
 
 .userCard {
@@ -294,7 +294,7 @@
 }
 
 :global([data-theme='dark']) .userCard:hover {
-    background-color: #111827;
+    background-color: #121215;
 }
 
 .userIdentity {
@@ -345,11 +345,11 @@
 }
 
 :global([data-theme='dark']) .userName {
-    color: #f8fafc;
+    color: #fafafa;
 }
 
 :global([data-theme='dark']) .userRole {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 .logoutButton {
@@ -378,7 +378,7 @@
 }
 
 :global([data-theme='dark']) .logoutButton {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 :global([data-theme='dark']) .logoutButton:hover {
@@ -413,7 +413,7 @@
     }
 
     :global([data-theme='dark']) .sidebar.collapsed .navSection + .navSection {
-        border-top-color: #1e293b;
+        border-top-color: #1f1f23;
     }
 
     .sidebar.collapsed .link {
@@ -502,7 +502,7 @@
         left: 0;
         right: 0;
         bottom: 0;
-        background-color: rgba(15, 23, 42, 0.45);
+        background-color: rgba(9, 9, 11, 0.55);
         z-index: 1100;
         backdrop-filter: blur(2px);
     }
@@ -526,10 +526,10 @@
     }
 
     :global([data-theme='dark']) .mobileToggle {
-        background-color: #0b1120;
-        color: #f8fafc;
-        border-color: #1e293b;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+        background-color: #050506;
+        color: #fafafa;
+        border-color: #1f1f23;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
     }
 
     .closeButton {
@@ -551,11 +551,11 @@
     }
 
     :global([data-theme='dark']) .closeButton {
-        color: #94a3b8;
+        color: #a1a1aa;
     }
 
     :global([data-theme='dark']) .closeButton:hover {
-        background-color: #1e293b;
-        color: #f8fafc;
+        background-color: #18181b;
+        color: #fafafa;
     }
 }

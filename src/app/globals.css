@@ -43,44 +43,30 @@
 }
 
 [data-theme='dark'] {
-  /* Dark Mode */
-  --background: #0f172a;
-  /* Slate 900 */
-  --foreground: #f8fafc;
-  /* Slate 50 */
+  /* Dark Mode — Obsidian Carbon */
+  --background: #09090b;
+  --foreground: #fafafa;
 
   --primary: #3b82f6;
-  /* Blue 500 */
   --primary-hover: #60a5fa;
-  /* Blue 400 */
 
-  --card-bg: #1e293b;
-  /* Slate 800 */
-  --card-border: #334155;
-  /* Slate 700 */
+  --card-bg: #121215;
+  --card-border: #27272a;
 
-  --text-primary: #f8fafc;
-  /* Slate 50 */
-  --text-secondary: #94a3b8;
-  /* Slate 400 */
-  --text-tertiary: #64748b;
-  /* Slate 500 */
-  --text-muted: #475569;
-  /* Slate 600 */
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --text-muted: #52525b;
 
   --success: #34d399;
-  /* Emerald 400 */
   --danger: #f87171;
-  /* Red 400 */
   --warning: #fbbf24;
-  /* Amber 400 */
 
-  --nav-bg: rgba(15, 23, 42, 0.9);
-  --nav-border: #334155;
+  --nav-bg: rgba(9, 9, 11, 0.9);
+  --nav-border: #27272a;
 
-  --input-bg: #1e293b;
-  --hover-bg: #334155;
-  /* Slate 700 */
+  --input-bg: #121215;
+  --hover-bg: #27272a;
 }
 
 * {

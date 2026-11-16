@@ -641,7 +641,7 @@
 }
 
 :global([data-theme='dark']) .loadingOverlay {
-    background: rgba(15, 23, 42, 0.72);
+    background: rgba(9, 9, 11, 0.74);
 }
 
 .tooltipBox {

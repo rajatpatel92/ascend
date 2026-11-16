@@ -8,7 +8,7 @@
 }
 
 :global([data-theme='dark']) .wrapper {
-    border-top-color: #1e293b;
+    border-top-color: #1f1f23;
 }
 
 .wrapperLoading {
@@ -42,7 +42,7 @@
 }
 
 :global([data-theme='dark']) .title {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 .rangeSelect {
@@ -70,15 +70,15 @@
 }
 
 :global([data-theme='dark']) .rangeSelect {
-    background-color: #111827;
-    border-color: #1f2937;
-    color: #f8fafc;
+    background-color: #121215;
+    border-color: #27272a;
+    color: #fafafa;
     color-scheme: dark;
 }
 
 :global([data-theme='dark']) .rangeSelect:hover {
     border-color: var(--primary);
-    background-color: #1e293b;
+    background-color: #18181b;
 }
 
 .totalToggle {
@@ -109,7 +109,7 @@
 }
 
 :global([data-theme='dark']) .totalToggle {
-    color: #f8fafc;
+    color: #fafafa;
 }
 
 :global([data-theme='dark']) .totalToggle:hover {
@@ -123,7 +123,7 @@
 }
 
 :global([data-theme='dark']) .chevron {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 .ownersList {
@@ -151,12 +151,12 @@
 }
 
 :global([data-theme='dark']) .ownerCard {
-    background-color: #111827;
-    border-color: #1f2937;
+    background-color: #121215;
+    border-color: #27272a;
 }
 
 :global([data-theme='dark']) .ownerCard:hover {
-    border-color: #334155;
+    border-color: #3f3f46;
 }
 
 .ownerMain {
@@ -182,7 +182,7 @@
 }
 
 :global([data-theme='dark']) .ownerName {
-    color: #cbd5e1;
+    color: #d4d4d8;
 }
 
 .ownerNetWorth {
@@ -194,7 +194,7 @@
 }
 
 :global([data-theme='dark']) .ownerNetWorth {
-    color: #f8fafc;
+    color: #fafafa;
 }
 
 .sparkWrap {
@@ -228,7 +228,7 @@
 }
 
 :global([data-theme='dark']) .hoverRow {
-    color: #f8fafc;
+    color: #fafafa;
 }
 
 .hoverLabel {
@@ -240,7 +240,7 @@
 }
 
 :global([data-theme='dark']) .hoverLabel {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 .positive {
@@ -266,8 +266,8 @@
 }
 
 :global([data-theme='dark']) .collapsedSummaryCard {
-    background-color: #111827;
-    border-color: #1f2937;
+    background-color: #121215;
+    border-color: #27272a;
 }
 
 .collapsedLabel {
@@ -276,7 +276,7 @@
 }
 
 :global([data-theme='dark']) .collapsedLabel {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 .skeletonCard {
@@ -288,7 +288,7 @@
 }
 
 :global([data-theme='dark']) .skeletonCard {
-    background: linear-gradient(90deg, #111827 25%, #1e293b 50%, #111827 75%);
+    background: linear-gradient(90deg, #121215 25%, #1e1e24 50%, #121215 75%);
     background-size: 200% 100%;
 }
 
@@ -311,7 +311,7 @@
 }
 
 :global([data-theme='dark']) .railWrap {
-    border-top-color: #1e293b;
+    border-top-color: #1f1f23;
 }
 
 .railPill {
@@ -339,13 +339,13 @@
 }
 
 :global([data-theme='dark']) .railPill {
-    background-color: #111827;
-    border-color: #1f2937;
+    background-color: #121215;
+    border-color: #27272a;
 }
 
 :global([data-theme='dark']) .railPill:hover {
     border-color: var(--primary);
-    background-color: #1e293b;
+    background-color: #18181b;
 }
 
 .railRangeTag {
@@ -358,7 +358,7 @@
 }
 
 :global([data-theme='dark']) .railRangeTag {
-    color: #94a3b8;
+    color: #a1a1aa;
 }
 
 .railPct {

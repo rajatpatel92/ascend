@@ -1,7 +1,7 @@
 .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(15, 23, 42, 0.72);
+    background: rgba(9, 9, 11, 0.74);
     backdrop-filter: blur(4px);
     display: flex;
     justify-content: center;
@@ -22,7 +22,7 @@
     flex-direction: column;
     overflow: hidden;
     color: var(--text-primary);
-    box-shadow: 0 24px 48px -12px rgba(15, 23, 42, 0.35);
+    box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.45);
     animation: slideUp 0.22s ease-out;
 }
 

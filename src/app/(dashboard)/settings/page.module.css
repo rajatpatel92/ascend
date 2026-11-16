@@ -763,11 +763,11 @@
 
 /* Terminal Stream Output */
 .terminalBox {
-    background: #0f172a;
+    background: #09090b;
     color: #34d399;
     padding: 1rem;
     border-radius: 0.75rem;
-    border: 1px solid #1e293b;
+    border: 1px solid #27272a;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-size: 0.78rem;
     line-height: 1.5;
