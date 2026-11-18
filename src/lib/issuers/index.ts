@@ -1,3 +1,4 @@
+import { formatErrorDetails } from './http.ts';
 import { isharesAdapter } from './ishares.ts';
 import type { EtfIssuerAdapter, IssuerAllocationResult, IssuerLookupContext } from './types.ts';
 
@@ -30,7 +31,7 @@ async function executeAdapterChain(
                 return result;
             }
         } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
+            const msg = formatErrorDetails(error);
             const diag = `[IssuerAdapter:${adapter.id}] Failed to resolve ${ctx.symbol}: ${msg}`;
             console.warn(diag);
             ctx.onDiagnostic?.(diag);

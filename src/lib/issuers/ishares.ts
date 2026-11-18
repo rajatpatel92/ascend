@@ -1,4 +1,5 @@
 import { normalizeCountryName, normalizeSectorName } from '../look-through.ts';
+import { fetchViaNodeHttp, formatErrorDetails } from './http.ts';
 import type {
     AllocationWeightEntry,
     EtfIssuerAdapter,
@@ -621,6 +622,43 @@ export const isharesAdapter: EtfIssuerAdapter = {
         const timeoutMs = ctx.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const config = REGION_CONFIGS[regionInfo.region];
         const cookieJar = new Map<string, string>();
+        const nodeFallbackImpl = ctx.nodeHttpFn ?? fetchViaNodeHttp;
+        const isMockedGlobalFetch = Boolean((globalThis.fetch as unknown as { mock?: unknown })?.mock);
+        const canUseNodeFallback = Boolean(ctx.nodeHttpFn) || (!ctx.fetchFn && !isMockedGlobalFetch);
+        let preferNodeHttp = false;
+
+        const sendRequest = async (url: string, headers: Record<string, string>): Promise<Response> => {
+            if (preferNodeHttp && canUseNodeFallback) {
+                return nodeFallbackImpl(url, { headers, timeoutMs, family: 4 });
+            }
+
+            try {
+                return await fetchImpl(url, {
+                    cache: 'no-store',
+                    headers,
+                    signal: AbortSignal.timeout(timeoutMs),
+                });
+            } catch (fetchErr) {
+                if (!canUseNodeFallback) {
+                    throw fetchErr;
+                }
+                const fetchDetails = formatErrorDetails(fetchErr);
+                warnDiagnostic(
+                    ctx,
+                    `[IssuerAdapter:ishares] fetch error for ${ctx.symbol} (${fetchDetails}); retrying via IPv4 node:https`
+                );
+                try {
+                    const fallbackRes = await nodeFallbackImpl(url, { headers, timeoutMs, family: 4 });
+                    preferNodeHttp = true;
+                    return fallbackRes;
+                } catch (nodeErr) {
+                    throw new Error(
+                        `fetch failed (${fetchDetails}); node:https fallback failed (${formatErrorDetails(nodeErr)})`,
+                        { cause: nodeErr }
+                    );
+                }
+            }
+        };
 
         let candidate: { productId: string; label?: string } | null = null;
         let matchedTerm = regionInfo.searchTerms[0];
@@ -630,11 +668,7 @@ export const isharesAdapter: EtfIssuerAdapter = {
                 `${config.baseUrl}/autoComplete.search?type=autocomplete` +
                 `&term=${encodeURIComponent(term)}&siteEntryPassthrough=true`;
 
-            const acResponse = await fetchImpl(acUrl, {
-                cache: 'no-store',
-                headers: buildRequestHeaders(cookieJar, `${config.baseUrl}/`),
-                signal: AbortSignal.timeout(timeoutMs),
-            });
+            const acResponse = await sendRequest(acUrl, buildRequestHeaders(cookieJar, `${config.baseUrl}/`));
             mergeResponseCookies(cookieJar, acResponse);
 
             if (!acResponse.ok) {
@@ -673,11 +707,7 @@ export const isharesAdapter: EtfIssuerAdapter = {
         const holdingsUrl = config.buildHoldingsUrl(candidate.productId, matchedTerm);
 
         const fetchCsvAttempt = async (): Promise<{ status: number; ok: boolean; text: string }> => {
-            const csvResponse = await fetchImpl(holdingsUrl, {
-                cache: 'no-store',
-                headers: buildRequestHeaders(cookieJar, productPageUrl),
-                signal: AbortSignal.timeout(timeoutMs),
-            });
+            const csvResponse = await sendRequest(holdingsUrl, buildRequestHeaders(cookieJar, productPageUrl));
             mergeResponseCookies(cookieJar, csvResponse);
             if (!csvResponse.ok) {
                 await csvResponse.body?.cancel().catch(() => {});
@@ -695,13 +725,12 @@ export const isharesAdapter: EtfIssuerAdapter = {
 
         if (needsSessionWarmup) {
             try {
-                const warmupRes = await fetchImpl(productPageUrl, {
-                    cache: 'no-store',
-                    headers: buildRequestHeaders(cookieJar, `${config.baseUrl}/`, {
+                const warmupRes = await sendRequest(
+                    productPageUrl,
+                    buildRequestHeaders(cookieJar, `${config.baseUrl}/`, {
                         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    }),
-                    signal: AbortSignal.timeout(timeoutMs),
-                });
+                    })
+                );
                 mergeResponseCookies(cookieJar, warmupRes);
                 await warmupRes.body?.cancel().catch(() => {});
                 csvAttempt = await fetchCsvAttempt();

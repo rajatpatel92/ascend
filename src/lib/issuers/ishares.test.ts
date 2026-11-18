@@ -1,6 +1,9 @@
+import http from 'node:http';
+import { gzipSync } from 'node:zlib';
 import { describe, test } from 'node:test';
 import assert from 'node:assert';
 import { calculateLookThrough } from '../look-through.ts';
+import { fetchViaNodeHttp, formatErrorDetails } from './http.ts';
 import {
     aggregateIsharesHoldings,
     extractHoldingsTables,
@@ -482,6 +485,197 @@ describe('iShares direct-issuer adapter', () => {
             });
             assert.strictEqual(blockedRes, null);
             assert.ok(diagnostics.some((m) => m.includes('Autocomplete HTTP 403')));
+        });
+
+        test('falls back to IPv4 node:https on fetch network failure and logs full error cause', async () => {
+            const diagnostics: string[] = [];
+            let fetchCalls = 0;
+            let nodeCalls = 0;
+
+            const failingFetch: typeof fetch = async () => {
+                fetchCalls++;
+                const osErr = Object.assign(new Error('connect ETIMEDOUT 23.45.67.89:443'), {
+                    code: 'ETIMEDOUT',
+                    syscall: 'connect',
+                    address: '23.45.67.89',
+                    port: 443,
+                });
+                throw new TypeError('fetch failed', { cause: osErr });
+            };
+
+            const fallbackNodeHttp = async (url: string) => {
+                nodeCalls++;
+                if (url.includes('/autoComplete.search')) {
+                    const res = mockResponse(
+                        JSON.stringify([
+                            {
+                                category: 'productAutocomplete',
+                                id: '/ca/investors/en/products/309480/ishares-core-equity-etf-portfolio',
+                                label: 'iShares Core Equity ETF Portfolio',
+                            },
+                        ])
+                    );
+                    res.headers.append('set-cookie', 'ak_bmsc=node_cookie; Path=/');
+                    return res;
+                }
+                if (url.includes('/products/309480/fund/')) {
+                    return mockResponse(
+                        [
+                            'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Location',
+                            'AAPL,APPLE INC,Information Technology,Equity,750000,75.00,United States',
+                            'RY,ROYAL BANK OF CANADA,Financials,Equity,250000,25.00,Canada',
+                        ].join('\n')
+                    );
+                }
+                return mockResponse('Not Found', 404);
+            };
+
+            const res = await isharesAdapter.fetchAllocations({
+                symbol: 'XEQT.TO',
+                quoteType: 'ETF',
+                fundName: 'iShares Core Equity ETF Portfolio',
+                fetchFn: failingFetch,
+                nodeHttpFn: fallbackNodeHttp,
+                onDiagnostic: (msg) => diagnostics.push(msg),
+            });
+
+            assert.ok(res);
+            // # Reason: Once autocomplete falls back to node:https, preferNodeHttp reuses it for CSV.
+            assert.strictEqual(fetchCalls, 1);
+            assert.strictEqual(nodeCalls, 2);
+            assert.ok(
+                diagnostics.some(
+                    (m) => m.includes('ETIMEDOUT') && m.includes('retrying via IPv4 node:https')
+                )
+            );
+            assert.deepStrictEqual(res.countryAllocations, [
+                { 'United States': 0.75 },
+                { Canada: 0.25 },
+            ]);
+
+            // Verify combined error diagnostics when both fetchFn and nodeHttpFn fail
+            const bothFailDiagnostics: string[] = [];
+            const bothFailResult = await resolveIssuerAllocations({
+                symbol: 'XEQT.TO',
+                quoteType: 'ETF',
+                fundName: 'iShares Core Equity ETF Portfolio',
+                fetchFn: failingFetch,
+                nodeHttpFn: async () => {
+                    throw Object.assign(new Error('Client network socket disconnected before secure TLS connection was established'), {
+                        code: 'ECONNRESET',
+                        syscall: 'read',
+                    });
+                },
+                onDiagnostic: (msg) => bothFailDiagnostics.push(msg),
+            });
+
+            assert.strictEqual(bothFailResult, null);
+            const failureDiag = bothFailDiagnostics.find((m) =>
+                m.includes('[IssuerAdapter:ishares] Failed to resolve XEQT.TO:')
+            );
+            assert.ok(failureDiag);
+            assert.ok(failureDiag.includes('ETIMEDOUT'));
+            assert.ok(failureDiag.includes('ECONNRESET'));
+        });
+    });
+
+    describe('formatErrorDetails & fetchViaNodeHttp', () => {
+        test('formatErrorDetails unwraps nested causes and AggregateError entries', () => {
+            const innerV6 = Object.assign(new Error('connect ENETUNREACH 2600:1400::1:443'), {
+                code: 'ENETUNREACH',
+                syscall: 'connect',
+                address: '2600:1400::1',
+                port: 443,
+            });
+            const innerV4 = Object.assign(new Error('connect ETIMEDOUT 23.1.2.3:443'), {
+                code: 'ETIMEDOUT',
+                syscall: 'connect',
+                address: '23.1.2.3',
+                port: 443,
+            });
+            const agg = new AggregateError([innerV6, innerV4], 'AggregateError');
+            Object.assign(agg, { code: 'ETIMEDOUT', hostname: 'www.blackrock.com' });
+            const top = new TypeError('fetch failed', { cause: agg });
+
+            const formatted = formatErrorDetails(top);
+            assert.ok(formatted.includes('fetch failed'));
+            assert.ok(formatted.includes('host=www.blackrock.com'));
+            assert.ok(formatted.includes('code=ENETUNREACH'));
+            assert.ok(formatted.includes('addr=2600:1400::1:443'));
+            assert.ok(formatted.includes('code=ETIMEDOUT'));
+            assert.ok(formatted.includes('addr=23.1.2.3:443'));
+        });
+
+        test('fetchViaNodeHttp handles redirects, multi-value set-cookie headers, gzip decoding, and timeouts', async () => {
+            const receivedCookiesOnFinalHop: string[] = [];
+
+            const server = http.createServer((req, res) => {
+                if (req.url === '/start') {
+                    res.statusCode = 302;
+                    res.setHeader('Location', '/final');
+                    res.setHeader('Set-Cookie', [
+                        'ak_bmsc=redirect_cookie; Path=/; HttpOnly',
+                        'locale=en_CA; Path=/',
+                    ]);
+                    res.end();
+                    return;
+                }
+
+                if (req.url === '/final') {
+                    receivedCookiesOnFinalHop.push(req.headers.cookie || '');
+                    res.statusCode = 200;
+                    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                    res.setHeader('Content-Encoding', 'gzip');
+                    res.setHeader('Set-Cookie', 'bm_sv=final_cookie; Path=/');
+                    res.end(gzipSync(Buffer.from('Ticker,Weight\nAAPL,100', 'utf8')));
+                    return;
+                }
+
+                if (req.url === '/slow') {
+                    setTimeout(() => {
+                        if (!res.writableEnded) {
+                            res.statusCode = 200;
+                            res.end('too late');
+                        }
+                    }, 300).unref();
+                    return;
+                }
+
+                res.statusCode = 404;
+                res.end('Not found');
+            });
+
+            await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+            const address = server.address();
+            assert.ok(address && typeof address === 'object');
+            const baseUrl = `http://127.0.0.1:${address.port}`;
+
+            try {
+                const response = await fetchViaNodeHttp(`${baseUrl}/start`, {
+                    headers: { Cookie: 'initial=1' },
+                    timeoutMs: 2000,
+                });
+
+                assert.strictEqual(response.status, 200);
+                assert.strictEqual(await response.text(), 'Ticker,Weight\nAAPL,100');
+                assert.strictEqual(receivedCookiesOnFinalHop.length, 1);
+                assert.ok(receivedCookiesOnFinalHop[0].includes('initial=1'));
+                assert.ok(receivedCookiesOnFinalHop[0].includes('ak_bmsc=redirect_cookie'));
+                assert.ok(receivedCookiesOnFinalHop[0].includes('locale=en_CA'));
+
+                const responseCookies = response.headers.getSetCookie();
+                assert.ok(responseCookies.some((c) => c.startsWith('ak_bmsc=redirect_cookie')));
+                assert.ok(responseCookies.some((c) => c.startsWith('bm_sv=final_cookie')));
+
+                await assert.rejects(
+                    () => fetchViaNodeHttp(`${baseUrl}/slow`, { timeoutMs: 80 }),
+                    /timed out/i
+                );
+            } finally {
+                await new Promise<void>((resolve, reject) =>
+                    server.close((err) => (err ? reject(err) : resolve()))
+                );
+            }
         });
     });
 });
