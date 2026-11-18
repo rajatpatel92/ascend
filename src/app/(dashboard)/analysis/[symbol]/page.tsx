@@ -225,6 +225,32 @@ function AnalysisContent() {
         )
         .sort((a, b) => b.value - a.value) || [];
 
+    const rawCountryAllocations = data.stats.countryAllocations
+        ?.flatMap(obj =>
+            obj && typeof obj === 'object'
+                ? Object.entries(obj).map(([key, value]) => ({
+                      name: key,
+                      value: (value as number) * 100,
+                  }))
+                : []
+        )
+        .filter(item => Number.isFinite(item.value) && item.value > 0)
+        .sort((a, b) => b.value - a.value) || [];
+
+    const MAX_VISIBLE_COUNTRIES = 8;
+    const countryAllocations =
+        rawCountryAllocations.length > MAX_VISIBLE_COUNTRIES
+            ? [
+                  ...rawCountryAllocations.slice(0, MAX_VISIBLE_COUNTRIES),
+                  {
+                      name: `Other Regions (${rawCountryAllocations.length - MAX_VISIBLE_COUNTRIES})`,
+                      value: rawCountryAllocations
+                          .slice(MAX_VISIBLE_COUNTRIES)
+                          .reduce((sum, entry) => sum + entry.value, 0),
+                  },
+              ]
+            : rawCountryAllocations;
+
     const totalAllocValue = data.allocation.accounts.reduce((sum, acc) => sum + acc.value, 0);
     const accountAllocations = data.allocation.accounts
         .map(acc => {
@@ -651,7 +677,7 @@ function AnalysisContent() {
                             )}
                         </section>
 
-                        {sectorAllocations.length > 0 ? (
+                        {sectorAllocations.length > 0 && (
                             <section className={styles.detailCard}>
                                 <div className={styles.detailCardHeader}>
                                     <h2 className={styles.detailCardTitle}>Sector Exposure</h2>
@@ -696,7 +722,56 @@ function AnalysisContent() {
                                     })}
                                 </ul>
                             </section>
-                        ) : (
+                        )}
+
+                        {countryAllocations.length > 0 && (
+                            <section className={styles.detailCard}>
+                                <div className={styles.detailCardHeader}>
+                                    <h2 className={styles.detailCardTitle}>Geographic Exposure</h2>
+                                    <span className={styles.kpiTag}>{rawCountryAllocations.length} {rawCountryAllocations.length === 1 ? 'Country' : 'Countries'}</span>
+                                </div>
+
+                                <div className={styles.stackedBar} aria-hidden="true">
+                                    {countryAllocations.map((item, idx) => (
+                                        <div
+                                            key={item.name}
+                                            className={styles.stackedSegment}
+                                            style={{
+                                                width: `${item.value}%`,
+                                                backgroundColor: ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length],
+                                            }}
+                                        />
+                                    ))}
+                                </div>
+
+                                <ul className={styles.allocList}>
+                                    {countryAllocations.map((item, idx) => {
+                                        const color = ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length];
+                                        return (
+                                            <li key={item.name} className={styles.allocRow}>
+                                                <div className={styles.allocRowTop}>
+                                                    <div className={styles.allocNameWrap}>
+                                                        <span className={styles.allocDot} style={{ backgroundColor: color }} />
+                                                        <span className={styles.allocName}>{item.name}</span>
+                                                    </div>
+                                                    <div className={styles.allocStats}>
+                                                        <span className={styles.allocPct}>{item.value.toFixed(2)}%</span>
+                                                    </div>
+                                                </div>
+                                                <div className={styles.allocBarTrack}>
+                                                    <div
+                                                        className={styles.allocBarFill}
+                                                        style={{ width: `${item.value}%`, backgroundColor: color }}
+                                                    />
+                                                </div>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </section>
+                        )}
+
+                        {sectorAllocations.length === 0 && countryAllocations.length === 0 && (
                             <section className={styles.detailCard}>
                                 <div className={styles.detailCardHeader}>
                                     <h2 className={styles.detailCardTitle}>Security Fundamentals</h2>

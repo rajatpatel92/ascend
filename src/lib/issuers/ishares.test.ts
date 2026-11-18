@@ -344,10 +344,12 @@ describe('iShares direct-issuer adapter', () => {
                 null
             );
 
-            // Coalesce concurrent default-fetch calls per symbol
+            // Coalesce concurrent default-fetch calls per symbol and verify browser-like request options
             let fetchCalls = 0;
-            subT.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+            const observedOptions: RequestInit[] = [];
+            subT.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
                 fetchCalls++;
+                if (init) observedOptions.push(init);
                 await new Promise((r) => setTimeout(r, 10));
                 if (String(input).includes('autoComplete.search')) {
                     return mockResponse(JSON.stringify([
@@ -366,6 +368,13 @@ describe('iShares direct-issuer adapter', () => {
                 resolveIssuerAllocations({ symbol: 'IVV', quoteType: 'ETF', fundName: 'iShares Core S&P 500 ETF' }),
             ]);
             assert.strictEqual(fetchCalls, 2);
+            assert.strictEqual(observedOptions.length, 2);
+            for (const opt of observedOptions) {
+                assert.strictEqual(opt.cache, 'no-store');
+                const hdrs = opt.headers as Record<string, string>;
+                assert.ok(hdrs['User-Agent']?.includes('Mozilla/5.0'));
+                assert.ok(hdrs.Accept?.includes('text/csv'));
+            }
             assert.deepStrictEqual(r1?.countryAllocations, [{ 'United States': 1 }]);
             assert.deepStrictEqual(r2, r1);
             assert.deepStrictEqual(r3, r1);

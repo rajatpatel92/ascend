@@ -30,7 +30,13 @@ export interface ParsedIsharesHoldingRow {
     weightPercent?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+const DEFAULT_REQUEST_HEADERS: Record<string, string> = {
+    Accept: 'application/json, text/csv, text/plain, */*',
+    'Accept-Language': 'en-CA,en-US;q=0.9,en;q=0.8',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+};
 
 const REGION_CONFIGS: Record<IsharesRegion, RegionConfig> = {
     ca: {
@@ -583,20 +589,27 @@ export const isharesAdapter: EtfIssuerAdapter = {
                 `&term=${encodeURIComponent(term)}&siteEntryPassthrough=true`;
 
             const acResponse = await fetchImpl(acUrl, {
+                cache: 'no-store',
+                headers: DEFAULT_REQUEST_HEADERS,
                 signal: AbortSignal.timeout(timeoutMs),
             });
             if (!acResponse.ok) {
+                console.warn(`[IssuerAdapter:ishares] Autocomplete HTTP ${acResponse.status} for ${ctx.symbol} (term=${term})`);
                 await acResponse.body?.cancel().catch(() => {});
                 continue;
             }
 
             const acText = await acResponse.text();
-            if (acText.trimStart().startsWith('<')) continue;
+            if (acText.trimStart().startsWith('<')) {
+                console.warn(`[IssuerAdapter:ishares] Autocomplete returned HTML/WAF response for ${ctx.symbol} (term=${term})`);
+                continue;
+            }
 
             let acJson: unknown;
             try {
                 acJson = JSON.parse(acText);
             } catch {
+                console.warn(`[IssuerAdapter:ishares] Autocomplete returned invalid JSON for ${ctx.symbol} (term=${term})`);
                 continue;
             }
 
@@ -607,30 +620,39 @@ export const isharesAdapter: EtfIssuerAdapter = {
             }
         }
 
-        if (!candidate) return null;
+        if (!candidate) {
+            console.warn(`[IssuerAdapter:ishares] No matching autocomplete candidate for ${ctx.symbol} (fundName=${ctx.fundName ?? 'none'})`);
+            return null;
+        }
 
         const holdingsUrl = config.buildHoldingsUrl(candidate.productId, matchedTerm);
         const csvResponse = await fetchImpl(holdingsUrl, {
+            cache: 'no-store',
+            headers: DEFAULT_REQUEST_HEADERS,
             signal: AbortSignal.timeout(timeoutMs),
         });
         if (!csvResponse.ok) {
+            console.warn(`[IssuerAdapter:ishares] Holdings CSV HTTP ${csvResponse.status} for ${ctx.symbol} (productId=${candidate.productId})`);
             await csvResponse.body?.cancel().catch(() => {});
             return null;
         }
 
         const csvText = await csvResponse.text();
         if (!csvText || csvText.trimStart().startsWith('<')) {
+            console.warn(`[IssuerAdapter:ishares] Holdings CSV returned empty or HTML response for ${ctx.symbol} (productId=${candidate.productId})`);
             return null;
         }
 
         const { tables, asOfDate, aggregateTableIndex } = extractHoldingsTables(csvText);
         if (tables.length === 0) {
+            console.warn(`[IssuerAdapter:ishares] No holdings tables parsed for ${ctx.symbol} (productId=${candidate.productId})`);
             return null;
         }
 
         const targetTable = selectPrimaryHoldingsTable(tables, aggregateTableIndex);
         const aggregated = aggregateIsharesHoldings(targetTable);
         if (aggregated.countryAllocations.length === 0) {
+            console.warn(`[IssuerAdapter:ishares] Parsed ${targetTable.length} rows for ${ctx.symbol} but yielded 0 country weights`);
             return null;
         }
 

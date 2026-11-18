@@ -398,7 +398,24 @@ export class MarketDataService {
         try {
             // 1. Check Cache (unless forcing full synchronous refresh)
             const cached = await prisma.marketDataCache.findUnique({
-                where: { symbol }
+                where: { symbol },
+                select: {
+                    symbol: true,
+                    price: true,
+                    change: true,
+                    changePercent: true,
+                    currency: true,
+                    sector: true,
+                    country: true,
+                    sectorAllocations: true,
+                    countryAllocations: true,
+                    dividendRate: true,
+                    dividendYield: true,
+                    exDividendDate: true,
+                    estNextDividendAmount: true,
+                    marketTime: true,
+                    lastUpdated: true,
+                },
             });
 
             const hasUsableCached = Boolean(cached && cached.price > 0);
@@ -946,7 +963,8 @@ export class MarketDataService {
         const promise = (async (): Promise<Record<string, number>> => {
             try {
                 const cached = await prisma.marketDataCache.findUnique({
-                    where: { symbol }
+                    where: { symbol },
+                    select: { history: true },
                 });
 
                 if (!forceRefresh && cached?.history) {
@@ -1237,6 +1255,18 @@ export class MarketDataService {
                                   currency,
                               })
                             : null;
+
+                        if (issuerAllocations) {
+                            console.log(
+                                `[MarketData] Resolved ${issuerAllocations.providerId} allocations for ${symbol}: ` +
+                                `${issuerAllocations.countryAllocations.length} countries`
+                            );
+                        } else if (isFundLike && fundName && /\b(ishares|blackrock)\b/i.test(fundName)) {
+                            console.warn(
+                                `[MarketData] No issuer allocations resolved for ${symbol} ` +
+                                `(name="${fundName}", quoteType="${quoteType ?? ''}")`
+                            );
+                        }
 
                         const yahooSectorAllocations = Array.isArray(holdings.sectorWeightings)
                             ? holdings.sectorWeightings

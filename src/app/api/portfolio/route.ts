@@ -553,7 +553,7 @@ export async function GET(request: NextRequest) {
 
         const holdingsEntries = Array.from(holdingsMap.entries());
         const results: any[] = [];
-        const batchSize = 5;
+        const batchSize = 15;
 
         // Execute Batches
         for (let i = 0; i < holdingsEntries.length; i += batchSize) {
