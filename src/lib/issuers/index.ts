@@ -31,7 +31,9 @@ async function executeAdapterChain(
             }
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
-            console.warn(`[IssuerAdapter:${adapter.id}] Failed to resolve ${ctx.symbol}: ${msg}`);
+            const diag = `[IssuerAdapter:${adapter.id}] Failed to resolve ${ctx.symbol}: ${msg}`;
+            console.warn(diag);
+            ctx.onDiagnostic?.(diag);
         }
     }
 

@@ -543,9 +543,12 @@ export async function runFullMarketSync(
     const customSymbols = options.symbols
         ? Array.from(new Set(options.symbols.map((s) => s.trim()).filter(Boolean)))
         : null;
-    const flightKey = customSymbols && customSymbols.length > 0
+    const scopeKey = customSymbols && customSymbols.length > 0
         ? `symbols:${customSymbols.slice().sort().join(',')}`
         : '__ALL__';
+    // # Reason: A forced admin sync (Settings -> Run Full Sync) must never coalesce onto a
+    // non-forced onlyStaleMetadata startup boot pass that skips recently updated rows.
+    const flightKey = `force:${Boolean(options.force)}|staleOnly:${Boolean(options.onlyStaleMetadata)}|${scopeKey}`;
 
     const existingFlight = inFlightMap.get(flightKey);
     if (existingFlight) {
@@ -642,8 +645,12 @@ export async function runFullMarketSync(
 
                 while (!completed && retryCount <= maxRetries) {
                     try {
+                        let refreshedData: Awaited<ReturnType<typeof MarketDataService.getPrice>> = null;
                         if (metadataDue) {
-                            await MarketDataService.getPrice(symbol, true);
+                            refreshedData = await MarketDataService.getPrice(symbol, {
+                                forceRefresh: true,
+                                onDiagnostic: (msg) => log(`[Look-Through] ${msg}`),
+                            });
                         }
                         if (historyDue) {
                             if (typeof MarketDataService.getDailyHistory === 'function') {
@@ -657,7 +664,16 @@ export async function runFullMarketSync(
                         stats.success++;
                         updatedPhaseBSymbols.push(symbol);
                         completed = true;
-                        log(`[Context] ${symbol} updated successfully.`);
+                        const countryCount = Array.isArray(refreshedData?.countryAllocations)
+                            ? refreshedData.countryAllocations.length
+                            : 0;
+                        const sectorCount = Array.isArray(refreshedData?.sectorAllocations)
+                            ? refreshedData.sectorAllocations.length
+                            : 0;
+                        const allocSummary = metadataDue && (countryCount > 0 || sectorCount > 0)
+                            ? ` (${countryCount} countries, ${sectorCount} sectors)`
+                            : '';
+                        log(`[Context] ${symbol} updated successfully.${allocSummary}`);
                         await new Promise((r) => setTimeout(r, 200));
                     } catch (e: unknown) {
                         const msg = e instanceof Error ? e.message : String(e || '');
@@ -714,8 +730,8 @@ export async function runFullMarketSync(
             log(`[Critical] Failure: ${msg}`);
             throw error;
         } finally {
-            state.isFullSyncRunning = false;
             inFlightMap.delete(flightKey);
+            state.isFullSyncRunning = inFlightMap.size > 0;
         }
     })();
 

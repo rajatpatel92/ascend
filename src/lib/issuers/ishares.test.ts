@@ -403,5 +403,85 @@ describe('iShares direct-issuer adapter', () => {
             assert.strictEqual(recovered.providerId, 'fallback');
             assert.deepStrictEqual(recovered.countryAllocations, [{ Canada: 1 }]);
         });
+
+        test('forwards Set-Cookie & Referer, warms up product page on CSV 403/HTML challenge, and emits onDiagnostic messages', async () => {
+            const requests: Array<{ url: string; cookie: string | undefined; referer: string | undefined }> = [];
+            let csvAttempts = 0;
+
+            const warmupFetch: typeof fetch = async (input, init) => {
+                const url = String(input);
+                const hdrs = (init?.headers ?? {}) as Record<string, string>;
+                requests.push({ url, cookie: hdrs.Cookie, referer: hdrs.Referer });
+
+                if (url.includes('autoComplete.search')) {
+                    const res = mockResponse(
+                        JSON.stringify([
+                            {
+                                category: 'productAutocomplete',
+                                id: '/ca/investors/en/products/309480/ishares-core-equity-etf-portfolio',
+                                label: 'iShares Core Equity ETF Portfolio',
+                            },
+                        ])
+                    );
+                    res.headers.append('set-cookie', 'ak_bmsc=cookie1; Path=/; HttpOnly');
+                    res.headers.append('set-cookie', 'ts-ca-one-locale=en_CA; Path=/');
+                    return res;
+                }
+
+                if (url.includes('/products/309480/fund/')) {
+                    csvAttempts++;
+                    if (csvAttempts === 1) {
+                        return mockResponse('<html>Access Denied</html>', 403);
+                    }
+                    assert.ok(hdrs.Cookie?.includes('ak_bmsc=cookie1'));
+                    assert.ok(hdrs.Cookie?.includes('bm_sv=warmed_token'));
+                    assert.strictEqual(
+                        hdrs.Referer,
+                        'https://www.blackrock.com/ca/investors/en/products/309480/'
+                    );
+                    return mockResponse(
+                        [
+                            'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Location',
+                            'AAPL,APPLE INC,Information Technology,Equity,600000,60.00,United States',
+                            'RY,ROYAL BANK OF CANADA,Financials,Equity,400000,40.00,Canada',
+                        ].join('\n')
+                    );
+                }
+
+                if (url === 'https://www.blackrock.com/ca/investors/en/products/309480/') {
+                    const res = mockResponse('<html>Product Landing</html>', 200);
+                    res.headers.append('set-cookie', 'bm_sv=warmed_token; Path=/');
+                    return res;
+                }
+
+                return mockResponse('Not Found', 404);
+            };
+
+            const res = await isharesAdapter.fetchAllocations({
+                symbol: 'XEQT.TO',
+                quoteType: 'ETF',
+                fundName: 'iShares Core Equity ETF Portfolio',
+                fetchFn: warmupFetch,
+            });
+
+            assert.ok(res);
+            assert.strictEqual(csvAttempts, 2);
+            assert.strictEqual(requests.length, 4);
+            assert.deepStrictEqual(res.countryAllocations, [
+                { 'United States': 0.6 },
+                { Canada: 0.4 },
+            ]);
+
+            const diagnostics: string[] = [];
+            const blockedRes = await resolveIssuerAllocations({
+                symbol: 'IVV',
+                quoteType: 'ETF',
+                fundName: 'iShares Core S&P 500 ETF',
+                onDiagnostic: (msg) => diagnostics.push(msg),
+                fetchFn: async () => mockResponse('<html>Access Denied</html>', 403),
+            });
+            assert.strictEqual(blockedRes, null);
+            assert.ok(diagnostics.some((m) => m.includes('Autocomplete HTTP 403')));
+        });
     });
 });

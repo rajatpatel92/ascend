@@ -499,6 +499,65 @@ test('market-sync orchestrator', async (t) => {
         }
     });
 
+    await t.test('runFullMarketSync does not coalesce force=true admin sync onto in-flight onlyStaleMetadata startup sync and logs look-through diagnostics', async () => {
+        const originalLog = console.log;
+        console.log = () => {};
+
+        try {
+            const now = new Date();
+            g.__mockSyncPrisma.investment.findMany = async () => [{ symbol: 'XEQT.TO', currencyCode: 'CAD' }];
+            g.__mockSyncPrisma.marketDataCache.findMany = async () => {
+                await new Promise((r) => setTimeout(r, 40));
+                return [
+                    {
+                        symbol: 'XEQT.TO',
+                        metadataUpdatedAt: now,
+                        historyUpdatedAt: now,
+                        history: { '2026-01-01': 36 },
+                    },
+                ];
+            };
+
+            let getPriceCalls = 0;
+            g.__mockSyncMarketData = {
+                refreshPriceOnly: async (batch: string[]) => {
+                    await new Promise((r) => setTimeout(r, 40));
+                    return batch.length;
+                },
+                getPrice: async (sym: string, opts: any) => {
+                    getPriceCalls++;
+                    opts?.onDiagnostic?.(`[MarketData] Resolved ishares allocations for ${sym}: 2 countries, 2 sectors`);
+                    return {
+                        price: 36,
+                        countryAllocations: [{ 'United States': 0.5 }, { Canada: 0.5 }],
+                        sectorAllocations: [{ Technology: 0.6 }, { 'Financial Services': 0.4 }],
+                    };
+                },
+                getDailyHistory: async () => ({}),
+                getHistoricalPrices: async () => ({}),
+            };
+
+            const startupLogs: string[] = [];
+            const adminLogs: string[] = [];
+
+            const [startupRes, adminRes] = await Promise.all([
+                runFullMarketSync({ force: false, onlyStaleMetadata: true }, (m) => startupLogs.push(m)),
+                runFullMarketSync({ force: true }, (m) => adminLogs.push(m)),
+            ]);
+
+            assert.strictEqual(startupRes.coalesced, false);
+            assert.strictEqual(startupRes.stats.skipped, 1);
+            assert.strictEqual(adminRes.coalesced, false);
+            assert.strictEqual(adminRes.stats.skipped, 0);
+            assert.strictEqual(adminRes.stats.success, adminRes.stats.total);
+            assert.strictEqual(getPriceCalls, 1);
+            assert.ok(adminLogs.some((l) => l.includes('[Look-Through] [MarketData] Resolved ishares allocations for XEQT.TO')));
+            assert.ok(adminLogs.some((l) => l.includes('[Context] XEQT.TO updated successfully. (2 countries, 2 sectors)')));
+        } finally {
+            console.log = originalLog;
+        }
+    });
+
     await t.test('flushBackgroundPriceSync retains lastSyncError if an earlier chunk fails and a later chunk succeeds', async () => {
         const {
             enqueueBackgroundPriceSync,

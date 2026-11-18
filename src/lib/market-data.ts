@@ -151,6 +151,7 @@ export interface GetPriceOptions {
     forceRefresh?: boolean;
     mode?: 'swr' | 'blocking';
     includeMetadata?: boolean;
+    onDiagnostic?: (message: string) => void;
 }
 
 function getInFlightMap<T>(key: string): Map<string, Promise<T>> {
@@ -394,6 +395,7 @@ export class MarketDataService {
                 ? forceRefreshOrOptions.mode
                 : 'swr');
         const includeMetadata = forceRefresh || (typeof forceRefreshOrOptions === 'object' && Boolean(forceRefreshOrOptions?.includeMetadata));
+        const onDiagnostic = typeof forceRefreshOrOptions === 'object' ? forceRefreshOrOptions?.onDiagnostic : undefined;
 
         try {
             // 1. Check Cache (unless forcing full synchronous refresh)
@@ -484,7 +486,7 @@ export class MarketDataService {
                         try {
                             quoteSummary = await apiThrottler.add(() => yahooFinance.quoteSummary(
                                 symbol,
-                                { modules: ['summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] },
+                                { modules: ['price', 'summaryProfile', 'summaryDetail', 'topHoldings', 'calendarEvents', 'defaultKeyStatistics'] },
                                 { validateResult: false }
                             )) as any;
                         } catch (e: any) {
@@ -552,8 +554,36 @@ export class MarketDataService {
                                   fundName: nameVal,
                                   quoteType,
                                   currency: currencyVal,
+                                  onDiagnostic,
                               })
                             : null;
+
+                    if (includeMetadata && supportsMetadata) {
+                        if (isFundLike) {
+                            if (issuerAllocations) {
+                                const msg =
+                                    `[MarketData] Resolved ${issuerAllocations.providerId} allocations for ${symbol}: ` +
+                                    `${issuerAllocations.countryAllocations.length} countries` +
+                                    (issuerAllocations.sectorAllocations?.length
+                                        ? `, ${issuerAllocations.sectorAllocations.length} sectors`
+                                        : '');
+                                console.log(msg);
+                                onDiagnostic?.(msg);
+                            } else if (nameVal && /\b(ishares|blackrock)\b/i.test(nameVal)) {
+                                const msg =
+                                    `[MarketData] No issuer allocations resolved for ${symbol} ` +
+                                    `(name="${nameVal}", quoteType="${quoteType ?? ''}")`;
+                                console.warn(msg);
+                                onDiagnostic?.(msg);
+                            }
+                        } else if (nameVal && /\b(ishares|blackrock)\b/i.test(nameVal)) {
+                            const msg =
+                                `[MarketData] Skipped issuer allocations for ${symbol}: ` +
+                                `isFundLike=false (name="${nameVal}", quoteType="${quoteType ?? ''}", profileCountry="${profile.country ?? ''}")`;
+                            console.warn(msg);
+                            onDiagnostic?.(msg);
+                        }
+                    }
 
                     const cachedSectorAllocations = Array.isArray(cached?.sectorAllocations)
                         ? (cached.sectorAllocations as any[])

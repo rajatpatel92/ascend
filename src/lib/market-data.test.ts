@@ -902,6 +902,68 @@ test('MarketDataService.getPrice', async (t) => {
         assert.deepStrictEqual(upsertedArgs.update.countryAllocations, [{ 'United States': 0.5 }, { Canada: 0.5 }]);
         assert.ok(!('sectorAllocations' in upsertedArgs.update));
     });
+
+    await t.test('falls back to quoteSummary price module when quote() omits fields and emits onDiagnostic look-through logs', async (subT) => {
+        let requestedModules: string[] = [];
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: unknown) => args);
+        subT.mock.method(yahooFinance, 'quote', async () => {
+            throw new Error('quote endpoint unavailable');
+        });
+        subT.mock.method(yahooFinance, 'quoteSummary', async (_sym: string, opts: { modules?: string[] }) => {
+            requestedModules = opts?.modules ?? [];
+            return {
+                price: {
+                    regularMarketPrice: 37.5,
+                    regularMarketChange: 0.25,
+                    regularMarketChangePercent: 0.67,
+                    currency: 'CAD',
+                    quoteType: 'ETF',
+                    longName: 'iShares Core Equity ETF Portfolio',
+                },
+                summaryProfile: {},
+                summaryDetail: { dividendRate: 0.75, dividendYield: 0.02 },
+                topHoldings: { sectorWeightings: [] },
+                calendarEvents: { exDividendDate: new Date(Date.now() + 86400000).toISOString() },
+                defaultKeyStatistics: {},
+            };
+        });
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            events: { dividends: [{ date: new Date().toISOString(), amount: 0.19 }] },
+        }));
+        subT.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('autoComplete.search')) {
+                return new Response(JSON.stringify([
+                    {
+                        category: 'productAutocomplete',
+                        id: '/ca/investors/en/products/309480/ishares-core-equity-etf-portfolio',
+                        label: 'iShares Core Equity ETF Portfolio',
+                    },
+                ]), { status: 200 });
+            }
+            return new Response([
+                'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Location',
+                'NVDA,NVIDIA CORP,Information Technology,Equity,700000,70.00,United States',
+                'RY,ROYAL BANK OF CANADA,Financials,Equity,300000,30.00,Canada',
+            ].join('\n'), { status: 200 });
+        });
+
+        const diagnostics: string[] = [];
+        const result = await MarketDataService.getPrice('XEQT.TO', {
+            forceRefresh: true,
+            onDiagnostic: (msg) => diagnostics.push(msg),
+        });
+
+        assert.ok(requestedModules.includes('price'));
+        assert.ok(result);
+        assert.strictEqual(result.price, 37.5);
+        assert.deepStrictEqual(result.countryAllocations, [
+            { 'United States': 0.7 },
+            { Canada: 0.3 },
+        ]);
+        assert.ok(diagnostics.some((m) => m.includes('Resolved ishares allocations for XEQT.TO: 2 countries')));
+    });
 });
 
 test('MarketDataService.getExchangeRate', async (t) => {

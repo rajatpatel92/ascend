@@ -724,7 +724,7 @@ function AnalysisContent() {
                             </section>
                         )}
 
-                        {countryAllocations.length > 0 && (
+                        {countryAllocations.length > 0 ? (
                             <section className={styles.detailCard}>
                                 <div className={styles.detailCardHeader}>
                                     <h2 className={styles.detailCardTitle}>Geographic Exposure</h2>
@@ -768,6 +768,18 @@ function AnalysisContent() {
                                         );
                                     })}
                                 </ul>
+                            </section>
+                        ) : (sectorAllocations.length > 0 || /\b(etf|ishares|vanguard|bmo|index|fund|trust)\b/i.test(data.name || '')) && (
+                            <section className={styles.detailCard}>
+                                <div className={styles.detailCardHeader}>
+                                    <h2 className={styles.detailCardTitle}>Geographic Exposure</h2>
+                                    <span className={styles.kpiTag}>{data.stats.country || 'Pending Sync'}</span>
+                                </div>
+                                <div className={styles.emptyState}>
+                                    No look-through geographic breakdown cached yet.
+                                    {data.stats.country ? ` Domicile fallback: ${data.stats.country}. ` : ' '}
+                                    Run <strong>Refresh Quote</strong> above or <strong>Settings &rarr; Data Management &rarr; Run Full Metadata &amp; History Sync</strong> (check <code>[Look-Through]</code> / <code>[IssuerAdapter:*]</code> logs if still empty).
+                                </div>
                             </section>
                         )}
 

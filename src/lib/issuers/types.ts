@@ -7,6 +7,7 @@ export interface IssuerLookupContext {
     currency?: string | null;
     fetchFn?: typeof fetch;
     timeoutMs?: number;
+    onDiagnostic?: (message: string) => void;
 }
 
 export interface IssuerAllocationResult {
