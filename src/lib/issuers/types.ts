@@ -1,0 +1,25 @@
+export type AllocationWeightEntry = { [category: string]: number };
+
+export interface IssuerLookupContext {
+    symbol: string;
+    fundName?: string | null;
+    quoteType?: string | null;
+    currency?: string | null;
+    fetchFn?: typeof fetch;
+    timeoutMs?: number;
+}
+
+export interface IssuerAllocationResult {
+    providerId: string;
+    productId?: string;
+    countryAllocations: AllocationWeightEntry[];
+    sectorAllocations?: AllocationWeightEntry[];
+    holdingsCount: number;
+    asOfDate?: string;
+}
+
+export interface EtfIssuerAdapter {
+    readonly id: string;
+    canHandle(ctx: IssuerLookupContext): boolean;
+    fetchAllocations(ctx: IssuerLookupContext): Promise<IssuerAllocationResult | null>;
+}

@@ -10,6 +10,7 @@ import {
     setThrottlerSnapshot,
     type ThrottlerStatusSnapshot,
 } from './sync-state.ts';
+import { resolveIssuerAllocations } from './issuers/index.ts';
 
 export const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey', 'ripHistorical'],
@@ -175,6 +176,17 @@ function shouldEstimateDividends(symbol: string, quoteType?: string): boolean {
         return false;
     }
     return true;
+}
+
+function isFundLikeAsset(quoteType?: string, profileCountry?: string, name?: string): boolean {
+    const upperQuoteType = typeof quoteType === 'string' ? quoteType.toUpperCase() : '';
+    if (upperQuoteType === 'ETF' || upperQuoteType === 'MUTUALFUND') {
+        return true;
+    }
+    if (upperQuoteType && upperQuoteType !== 'ETF' && upperQuoteType !== 'MUTUALFUND') {
+        return false;
+    }
+    return !profileCountry && Boolean(name && /\b(etf|ishares)\b/i.test(name));
 }
 
 function parseOptionalMarketDate(raw: unknown): Date | undefined {
@@ -515,6 +527,59 @@ export class MarketDataService {
                         dividendYield = dividendRate / priceVal;
                     }
 
+                    const isFundLike = isFundLikeAsset(quoteType, profile.country, nameVal);
+                    const issuerAllocations =
+                        includeMetadata && supportsMetadata && isFundLike
+                            ? await resolveIssuerAllocations({
+                                  symbol,
+                                  fundName: nameVal,
+                                  quoteType,
+                                  currency: currencyVal,
+                              })
+                            : null;
+
+                    const cachedSectorAllocations = Array.isArray(cached?.sectorAllocations)
+                        ? (cached.sectorAllocations as any[])
+                        : [];
+                    const cachedCountryAllocations = Array.isArray(cached?.countryAllocations)
+                        ? (cached.countryAllocations as any[])
+                        : [];
+
+                    const yahooSectorAllocations = Array.isArray(holdings.sectorWeightings)
+                        ? holdings.sectorWeightings
+                        : [];
+                    const hasIssuerSectors = Boolean(
+                        issuerAllocations?.sectorAllocations && issuerAllocations.sectorAllocations.length > 0
+                    );
+                    const hasIssuerCountries = Boolean(
+                        issuerAllocations?.countryAllocations && issuerAllocations.countryAllocations.length > 0
+                    );
+
+                    const resolvedSectorAllocations =
+                        yahooSectorAllocations.length > 0
+                            ? yahooSectorAllocations
+                            : quoteSummary
+                              ? hasIssuerSectors
+                                ? issuerAllocations!.sectorAllocations
+                                : isFundLike && cachedSectorAllocations.length > 0
+                                  ? cachedSectorAllocations
+                                  : []
+                              : cachedSectorAllocations.length > 0
+                                ? (cached?.sectorAllocations as any[])
+                                : hasIssuerSectors
+                                  ? issuerAllocations!.sectorAllocations
+                                  : (cached?.sectorAllocations as any[] | undefined);
+
+                    // # Reason: Yahoo quoteSummary omits ETF country weightings; preserve previously cached
+                    // direct-issuer breakdown if an issuer lookup fails transiently on refresh.
+                    const resolvedCountryAllocations = hasIssuerCountries
+                        ? issuerAllocations!.countryAllocations
+                        : isFundLike && cachedCountryAllocations.length > 0
+                          ? cachedCountryAllocations
+                          : quoteSummary
+                            ? []
+                            : (cached?.countryAllocations as any[] | undefined);
+
                     const data: MarketData = {
                         symbol,
                         price: priceVal,
@@ -526,8 +591,8 @@ export class MarketDataService {
                         country: profile.country ?? cached?.country ?? undefined,
                         fiftyTwoWeekHigh: detail.fiftyTwoWeekHigh,
                         fiftyTwoWeekLow: detail.fiftyTwoWeekLow,
-                        sectorAllocations: quoteSummary ? (holdings.sectorWeightings || []) : (cached?.sectorAllocations as any[] | undefined),
-                        countryAllocations: quoteSummary ? [] : (cached?.countryAllocations as any[] | undefined),
+                        sectorAllocations: resolvedSectorAllocations,
+                        countryAllocations: resolvedCountryAllocations,
                         dividendRate,
                         dividendYield,
                         exDividendDate: parseOptionalMarketDate(calendar.exDividendDate) ?? parseOptionalMarketDate(quoteRealtime?.exDividendDate),
@@ -591,8 +656,19 @@ export class MarketDataService {
                     if (quoteSummary) {
                         updatePayload.sector = data.sector;
                         updatePayload.country = data.country;
-                        updatePayload.sectorAllocations = data.sectorAllocations;
-                        updatePayload.countryAllocations = data.countryAllocations;
+                        if (yahooSectorAllocations.length > 0 || hasIssuerSectors || !isFundLike) {
+                            updatePayload.sectorAllocations = data.sectorAllocations ?? [];
+                        }
+                        if (hasIssuerCountries || !isFundLike) {
+                            updatePayload.countryAllocations = data.countryAllocations ?? [];
+                        }
+                    } else {
+                        if (hasIssuerSectors && cachedSectorAllocations.length === 0) {
+                            updatePayload.sectorAllocations = data.sectorAllocations;
+                        }
+                        if (hasIssuerCountries) {
+                            updatePayload.countryAllocations = data.countryAllocations;
+                        }
                     }
                     if (metadataResolved) {
                         updatePayload.metadataUpdatedAt = now;
@@ -1087,6 +1163,7 @@ export class MarketDataService {
                 type SymbolProcessSuccess = {
                     ok: true;
                     symbol: string;
+                    isFundLike: boolean;
                     priceData: {
                         price: number;
                         change: number;
@@ -1094,8 +1171,8 @@ export class MarketDataService {
                         currency: string;
                         sector: string | undefined;
                         country: string | undefined;
-                        sectorAllocations: any;
-                        countryAllocations: any;
+                        sectorAllocations: any[];
+                        countryAllocations: any[];
                         dividendRate: number | undefined;
                         dividendYield: number | undefined;
                         exDividendDate: Date | undefined;
@@ -1130,6 +1207,8 @@ export class MarketDataService {
                         const detail = quote.summaryDetail || {};
                         const keyStats = quote.defaultKeyStatistics || {};
                         const quoteType: string | undefined = p.quoteType;
+                        const fundName: string | undefined = p.longName || p.shortName;
+                        const currency: string = p.currency || 'USD';
 
                         let dividendRate = firstPositive(
                             detail.dividendRate,
@@ -1149,15 +1228,34 @@ export class MarketDataService {
                             dividendYield = dividendRate / rawPrice;
                         }
 
+                        const isFundLike = isFundLikeAsset(quoteType, profile.country, fundName);
+                        const issuerAllocations = isFundLike
+                            ? await resolveIssuerAllocations({
+                                  symbol,
+                                  fundName,
+                                  quoteType,
+                                  currency,
+                              })
+                            : null;
+
+                        const yahooSectorAllocations = Array.isArray(holdings.sectorWeightings)
+                            ? holdings.sectorWeightings
+                            : [];
+                        const resolvedSectorAllocations =
+                            yahooSectorAllocations.length > 0
+                                ? yahooSectorAllocations
+                                : (issuerAllocations?.sectorAllocations ?? []);
+                        const resolvedCountryAllocations = issuerAllocations?.countryAllocations ?? [];
+
                         const priceData: SymbolProcessSuccess['priceData'] = {
                             price: rawPrice,
                             change: typeof p.regularMarketChange === 'number' && Number.isFinite(p.regularMarketChange) ? p.regularMarketChange : 0,
                             changePercent: typeof p.regularMarketChangePercent === 'number' && Number.isFinite(p.regularMarketChangePercent) ? p.regularMarketChangePercent : 0,
-                            currency: p.currency || 'USD',
+                            currency,
                             sector: profile.sector,
                             country: profile.country,
-                            sectorAllocations: holdings.sectorWeightings || [],
-                            countryAllocations: [],
+                            sectorAllocations: resolvedSectorAllocations,
+                            countryAllocations: resolvedCountryAllocations,
                             dividendRate,
                             dividendYield,
                             exDividendDate: parseOptionalMarketDate(calendar.exDividendDate),
@@ -1201,7 +1299,7 @@ export class MarketDataService {
                         const quotes = chartResult?.quotes || [];
                         const history = this.processHistory(quotes);
 
-                        return { ok: true, symbol, priceData, history };
+                        return { ok: true, symbol, isFundLike, priceData, history };
                     } catch (error) {
                         console.error(`Error processing market data for ${symbol}:`, error);
                         return { ok: false, symbol, error };
@@ -1213,28 +1311,34 @@ export class MarketDataService {
                 const failedResults = results.filter((r): r is SymbolProcessFailure => !r.ok);
 
                 if (validResults.length > 0) {
-                    const upserts = validResults.map(({ symbol, priceData, history }) =>
-                        prisma.marketDataCache.upsert({
+                    const upserts = validResults.map(({ symbol, isFundLike, priceData, history }) => {
+                        const updateFields: Record<string, any> = {
+                            price: priceData.price,
+                            change: priceData.change,
+                            changePercent: priceData.changePercent,
+                            currency: priceData.currency,
+                            sector: priceData.sector,
+                            country: priceData.country,
+                            dividendRate: priceData.dividendRate,
+                            dividendYield: priceData.dividendYield,
+                            exDividendDate: priceData.exDividendDate,
+                            estNextDividendAmount: priceData.estNextDividendAmount,
+                            history: history,
+                            marketTime: priceData.marketTime,
+                            metadataUpdatedAt: now,
+                            historyUpdatedAt: now,
+                            lastUpdated: now
+                        };
+                        if (priceData.sectorAllocations.length > 0 || !isFundLike) {
+                            updateFields.sectorAllocations = priceData.sectorAllocations;
+                        }
+                        if (priceData.countryAllocations.length > 0 || !isFundLike) {
+                            updateFields.countryAllocations = priceData.countryAllocations;
+                        }
+
+                        return prisma.marketDataCache.upsert({
                             where: { symbol },
-                            update: {
-                                price: priceData.price,
-                                change: priceData.change,
-                                changePercent: priceData.changePercent,
-                                currency: priceData.currency,
-                                sector: priceData.sector,
-                                country: priceData.country,
-                                sectorAllocations: priceData.sectorAllocations,
-                                countryAllocations: priceData.countryAllocations,
-                                dividendRate: priceData.dividendRate,
-                                dividendYield: priceData.dividendYield,
-                                exDividendDate: priceData.exDividendDate,
-                                estNextDividendAmount: priceData.estNextDividendAmount,
-                                history: history,
-                                marketTime: priceData.marketTime,
-                                metadataUpdatedAt: now,
-                                historyUpdatedAt: now,
-                                lastUpdated: now
-                            } as any,
+                            update: updateFields as any,
                             create: {
                                 symbol,
                                 price: priceData.price,
@@ -1255,8 +1359,8 @@ export class MarketDataService {
                                 historyUpdatedAt: now,
                                 lastUpdated: now
                             } as any
-                        })
-                    );
+                        });
+                    });
 
                     await prisma.$transaction(upserts);
                     invalidateMarketCaches({

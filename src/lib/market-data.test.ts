@@ -690,6 +690,218 @@ test('MarketDataService.getPrice', async (t) => {
         startOfToday.setUTCHours(0, 0, 0, 0);
         assert.ok(result.exDividendDate >= startOfToday);
     });
+
+    await t.test('populates and persists iShares countryAllocations and fallback sectorAllocations on ETF metadata fetch', async (subT) => {
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 36,
+            regularMarketChange: 0.4,
+            regularMarketChangePercent: 1.1,
+            currency: 'CAD',
+            quoteType: 'ETF',
+            longName: 'iShares Core Equity ETF Portfolio'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: { dividendRate: 0.72, dividendYield: 0.02 },
+            topHoldings: { sectorWeightings: [] },
+            calendarEvents: { exDividendDate: new Date(Date.now() + 86400000).toISOString() },
+            defaultKeyStatistics: {}
+        }));
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            events: { dividends: [{ date: new Date().toISOString(), amount: 0.18 }] }
+        }));
+
+        subT.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('autoComplete.search')) {
+                return new Response(JSON.stringify([
+                    {
+                        category: 'productAutocomplete',
+                        id: '/ca/investors/en/products/309480/ishares-core-equity-etf-portfolio',
+                        label: 'iShares Core Equity ETF Portfolio'
+                    }
+                ]), { status: 200 });
+            }
+            if (url.includes('/products/309480/fund/1464253357814.ajax')) {
+                return new Response([
+                    'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Location',
+                    'MSFT,MICROSOFT CORP,Information Technology,Equity,500000,50.00,United States',
+                    'RY,ROYAL BANK OF CANADA,Financials,Equity,300000,30.00,Canada',
+                    'NESN,NESTLE SA,Consumer Staples,Equity,200000,20.00,Switzerland'
+                ].join('\n'), { status: 200 });
+            }
+            return new Response('Not Found', { status: 404 });
+        });
+
+        let upsertedArgs: any = null;
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: any) => {
+            upsertedArgs = args;
+            return args;
+        });
+
+        const result = await MarketDataService.getPrice('XEQT.TO', true);
+
+        assert.ok(result);
+        assert.deepStrictEqual(result.countryAllocations, [
+            { 'United States': 0.5 },
+            { Canada: 0.3 },
+            { Switzerland: 0.2 }
+        ]);
+        assert.deepStrictEqual(result.sectorAllocations, [
+            { Technology: 0.5 },
+            { 'Financial Services': 0.3 },
+            { 'Consumer Defensive': 0.2 }
+        ]);
+        assert.ok(upsertedArgs);
+        assert.deepStrictEqual(upsertedArgs.create.countryAllocations, result.countryAllocations);
+        assert.deepStrictEqual(upsertedArgs.update.countryAllocations, result.countryAllocations);
+        assert.deepStrictEqual(upsertedArgs.update.sectorAllocations, result.sectorAllocations);
+    });
+
+    await t.test('preserves cached ETF countryAllocations and sectorAllocations when issuer lookup fails transiently', async (subT) => {
+        const cachedCountries = [{ 'United States': 0.45 }, { Canada: 0.25 }, { Japan: 0.06 }];
+        const cachedSectors = [{ Technology: 0.25 }, { 'Financial Services': 0.2 }];
+
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => ({
+            symbol: 'XEQT.TO',
+            price: 35,
+            currency: 'CAD',
+            lastUpdated: new Date(Date.now() - 86400000),
+            marketTime: new Date(Date.now() - 86400000),
+            change: 0,
+            changePercent: 0,
+            sector: null,
+            country: null,
+            sectorAllocations: cachedSectors,
+            countryAllocations: cachedCountries,
+            dividendRate: 0.7,
+            dividendYield: 0.02,
+            exDividendDate: new Date(Date.now() + 86400000),
+            estNextDividendAmount: 0.17
+        }));
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 36,
+            regularMarketChange: 0.5,
+            regularMarketChangePercent: 1.4,
+            currency: 'CAD',
+            quoteType: 'ETF',
+            longName: 'iShares Core Equity ETF Portfolio'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: { dividendRate: 0.7, dividendYield: 0.02 },
+            topHoldings: { sectorWeightings: [] },
+            calendarEvents: { exDividendDate: new Date(Date.now() + 86400000).toISOString() },
+            defaultKeyStatistics: {}
+        }));
+        subT.mock.method(globalThis, 'fetch', async () => new Response('Access Denied', { status: 403 }));
+
+        let upsertedArgs: any = null;
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: any) => {
+            upsertedArgs = args;
+            return args;
+        });
+
+        const result = await MarketDataService.getPrice('XEQT.TO', true);
+
+        assert.ok(result);
+        assert.deepStrictEqual(result.countryAllocations, cachedCountries);
+        assert.deepStrictEqual(result.sectorAllocations, cachedSectors);
+        assert.ok(upsertedArgs);
+        assert.ok(!('countryAllocations' in upsertedArgs.update));
+        assert.ok(!('sectorAllocations' in upsertedArgs.update));
+    });
+
+    await t.test('skips issuer HTTP lookup when includeMetadata is false on ETF cold miss', async (subT) => {
+        let fetchCalled = 0;
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 36,
+            regularMarketChange: 0.1,
+            regularMarketChangePercent: 0.28,
+            currency: 'CAD',
+            quoteType: 'ETF',
+            longName: 'iShares Core Equity ETF Portfolio'
+        }));
+        subT.mock.method(globalThis, 'fetch', async () => {
+            fetchCalled++;
+            return new Response('[]', { status: 200 });
+        });
+        subT.mock.method(prisma.marketDataCache, 'upsert', async () => ({}));
+
+        const result = await MarketDataService.getPrice('XEQT.TO', { mode: 'blocking', includeMetadata: false });
+        assert.ok(result);
+        assert.strictEqual(result.price, 36);
+        assert.strictEqual(fetchCalled, 0);
+    });
+
+    await t.test('keeps returned and persisted sectorAllocations consistent when quoteSummary fails and cached sectors exist', async (subT) => {
+        const cachedSectors = [{ technology: 0.30 }, { financial_services: 0.22 }];
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => ({
+            symbol: 'XEQT.TO',
+            price: 35,
+            currency: 'CAD',
+            lastUpdated: new Date(Date.now() - 86400000),
+            marketTime: new Date(Date.now() - 86400000),
+            change: 0,
+            changePercent: 0,
+            sector: null,
+            country: null,
+            sectorAllocations: cachedSectors,
+            countryAllocations: [],
+            dividendRate: 0.7,
+            dividendYield: 0.02,
+            exDividendDate: new Date(Date.now() + 86400000),
+            estNextDividendAmount: 0.17
+        }));
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 36,
+            regularMarketChange: 0.4,
+            regularMarketChangePercent: 1.1,
+            currency: 'CAD',
+            quoteType: 'ETF',
+            longName: 'iShares Core Equity ETF Portfolio'
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => {
+            throw new Error('Yahoo quoteSummary timeout');
+        });
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            events: { dividends: [{ date: new Date().toISOString(), amount: 0.18 }] }
+        }));
+        subT.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('autoComplete.search')) {
+                return new Response(JSON.stringify([
+                    {
+                        category: 'productAutocomplete',
+                        id: '/ca/investors/en/products/309480/ishares-core-equity-etf-portfolio',
+                        label: 'iShares Core Equity ETF Portfolio'
+                    }
+                ]), { status: 200 });
+            }
+            return new Response([
+                'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Location',
+                'MSFT,MICROSOFT CORP,Information Technology,Equity,500000,50.00,United States',
+                'RY,ROYAL BANK OF CANADA,Financials,Equity,500000,50.00,Canada'
+            ].join('\n'), { status: 200 });
+        });
+
+        let upsertedArgs: any = null;
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: any) => {
+            upsertedArgs = args;
+            return args;
+        });
+
+        const result = await MarketDataService.getPrice('XEQT.TO', { mode: 'blocking', includeMetadata: true });
+
+        assert.ok(result);
+        assert.deepStrictEqual(result.countryAllocations, [{ 'United States': 0.5 }, { Canada: 0.5 }]);
+        assert.deepStrictEqual(result.sectorAllocations, cachedSectors);
+        assert.ok(upsertedArgs);
+        assert.deepStrictEqual(upsertedArgs.update.countryAllocations, [{ 'United States': 0.5 }, { Canada: 0.5 }]);
+        assert.ok(!('sectorAllocations' in upsertedArgs.update));
+    });
 });
 
 test('MarketDataService.getExchangeRate', async (t) => {
@@ -807,6 +1019,7 @@ test('MarketDataService.refreshMarketData', async (t) => {
     });
 
     await t.test('recovers and persists ETF trailing dividendRate and estNextDividendAmount when summaryDetail omits them', async (subT) => {
+        subT.mock.method(globalThis, 'fetch', async () => new Response('Not Found', { status: 404 }));
         subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
             price: { regularMarketPrice: 25, regularMarketChange: 0.1, regularMarketChangePercent: 0.4, currency: 'CAD', quoteType: 'ETF' },
             summaryProfile: {},
@@ -846,6 +1059,79 @@ test('MarketDataService.refreshMarketData', async (t) => {
         assert.strictEqual(capturedUpsert.update.estNextDividendAmount, 0.25);
         assert.strictEqual(capturedUpsert.create.estNextDividendAmount, 0.25);
         assert.ok(capturedUpsert.update.exDividendDate instanceof Date);
+        assert.ok(!('countryAllocations' in capturedUpsert.update));
+        assert.ok(!('sectorAllocations' in capturedUpsert.update));
+        assert.deepStrictEqual(capturedUpsert.create.countryAllocations, []);
+    });
+
+    await t.test('populates iShares countryAllocations in refreshMarketData while preferring Yahoo sectorWeightings when present', async (subT) => {
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            price: {
+                regularMarketPrice: 36,
+                regularMarketChange: 0.2,
+                regularMarketChangePercent: 0.5,
+                currency: 'CAD',
+                quoteType: 'ETF',
+                longName: 'iShares Core Equity ETF Portfolio'
+            },
+            summaryProfile: {},
+            summaryDetail: { dividendRate: 0.72, dividendYield: 0.02 },
+            topHoldings: { sectorWeightings: [{ technology: 0.28 }, { financial_services: 0.19 }] },
+            calendarEvents: { exDividendDate: new Date(Date.now() + 86400000).toISOString() },
+            defaultKeyStatistics: {}
+        }));
+        subT.mock.method(yahooFinance, 'chart', async () => ({
+            quotes: [{ date: '2026-01-01T00:00:00.000Z', close: 36 }],
+            events: { dividends: [{ date: new Date().toISOString(), amount: 0.18 }] }
+        }));
+        subT.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('autoComplete.search')) {
+                return new Response(JSON.stringify([
+                    {
+                        category: 'productAutocomplete',
+                        id: '/ca/investors/en/products/309480/ishares-core-equity-etf-portfolio',
+                        label: 'iShares Core Equity ETF Portfolio'
+                    }
+                ]), { status: 200 });
+            }
+            if (url.includes('/products/309480/fund/1464253357814.ajax')) {
+                return new Response([
+                    'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Location',
+                    'AAPL,APPLE INC,Information Technology,Equity,450000,45.00,United States',
+                    'RY,ROYAL BANK OF CANADA,Financials,Equity,300000,30.00,Canada',
+                    '7203,TOYOTA MOTOR CORP,Consumer Discretionary,Equity,250000,25.00,Japan'
+                ].join('\n'), { status: 200 });
+            }
+            return new Response('Not Found', { status: 404 });
+        });
+
+        let capturedUpsert: {
+            update: Record<string, unknown>;
+            create: Record<string, unknown>;
+        } | null = null;
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: {
+            update: Record<string, unknown>;
+            create: Record<string, unknown>;
+        }) => {
+            capturedUpsert = args;
+            return args;
+        });
+        subT.mock.method(prisma, '$transaction', async (updates: unknown[]) => updates);
+
+        await MarketDataService.refreshMarketData('XEQT.TO');
+
+        assert.ok(capturedUpsert);
+        assert.deepStrictEqual(capturedUpsert.update.countryAllocations, [
+            { 'United States': 0.45 },
+            { Canada: 0.3 },
+            { Japan: 0.25 }
+        ]);
+        assert.deepStrictEqual(capturedUpsert.create.countryAllocations, capturedUpsert.update.countryAllocations);
+        assert.deepStrictEqual(capturedUpsert.update.sectorAllocations, [
+            { technology: 0.28 },
+            { financial_services: 0.19 }
+        ]);
     });
 });
 

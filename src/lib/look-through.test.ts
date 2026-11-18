@@ -46,6 +46,20 @@ describe('look-through utility', () => {
             assert.strictEqual(normalizeCountryName('in'), 'India');
         });
 
+        test('normalizes direct issuer CSV country aliases and ISO codes', () => {
+            assert.strictEqual(normalizeCountryName('Korea (South)'), 'South Korea');
+            assert.strictEqual(normalizeCountryName('Republic of Korea'), 'South Korea');
+            assert.strictEqual(normalizeCountryName('kr'), 'South Korea');
+            assert.strictEqual(normalizeCountryName('Russian Federation'), 'Russia');
+            assert.strictEqual(normalizeCountryName('Taiwan, Province of China'), 'Taiwan');
+            assert.strictEqual(normalizeCountryName('Hong Kong SAR'), 'Hong Kong');
+            assert.strictEqual(normalizeCountryName('Turkiye'), 'Turkey');
+            assert.strictEqual(normalizeCountryName('se'), 'Sweden');
+            assert.strictEqual(normalizeCountryName('ie'), 'Ireland');
+            assert.strictEqual(normalizeCountryName('sg'), 'Singapore');
+            assert.strictEqual(normalizeCountryName('uae'), 'United Arab Emirates');
+        });
+
         test('handles empty or null country', () => {
             assert.strictEqual(normalizeCountryName(''), 'Unspecified');
             assert.strictEqual(normalizeCountryName(null), 'Unspecified');
