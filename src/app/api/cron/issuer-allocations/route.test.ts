@@ -406,6 +406,7 @@ test('/api/cron/issuer-allocations endpoint & push script', async (t) => {
             ISSUER_TIMEOUT_MS: '15000',
         });
 
+        const logs: string[] = [];
         const summary = await runPushIssuerAllocations(config, {
             fetchFn: mockFetch,
             resolveFn: async (ctx) => ({
@@ -417,7 +418,7 @@ test('/api/cron/issuer-allocations endpoint & push script', async (t) => {
                 holdingsCount: 2,
                 productId: ctx.symbol === 'XEQT.TO' ? '309480' : undefined,
             }),
-            logFn: () => {},
+            logFn: (msg) => logs.push(msg),
         });
 
         assert.deepStrictEqual(summary, { discovered: 1, resolved: 1, pushed: 1 });
@@ -426,5 +427,9 @@ test('/api/cron/issuer-allocations endpoint & push script', async (t) => {
         assert.strictEqual(requests[1].method, 'POST');
         assert.strictEqual(requests[1].body.allocations[0].symbol, 'XEQT.TO');
         assert.strictEqual(requests[1].body.allocations[0].topHoldings.length, 1);
+        // Mock server omitted results[].topHoldings and hasTopHoldings -> warns about stale server
+        assert.ok(logs.some((m) => m.includes('omits hasTopHoldings')));
+        assert.ok(logs.some((m) => m.includes('serverHoldingsSaved=0')));
+        assert.ok(logs.some((m) => m.includes('server acknowledged 0 topHoldings')));
     });
 });

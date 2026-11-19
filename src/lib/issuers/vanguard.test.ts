@@ -543,5 +543,91 @@ describe('Vanguard direct-issuer adapter', () => {
             assert.strictEqual(vgroRes.topHoldings[1].ticker, 'MSFT');
             assert.ok(Math.abs(vgroRes.topHoldings[1].weight - 0.06) < 1e-6);
         });
+
+        test('looks through Vanguard CA wrapper ETF (VFV.TO) to underlying Vanguard US ETF (VOO) holdings', async () => {
+            const mockFetch: typeof fetch = async (input, init) => {
+                const url = String(input);
+                if (url.includes('investor.vanguard.com/irr/funds/profile/VOO-AdditionalFundData')) {
+                    return jsonResponse({
+                        holdingDetails: {
+                            asOfDate: '2026-10-31',
+                            equityHoldings: [
+                                {
+                                    ticker: 'NVDA',
+                                    issuerName: 'NVIDIA Corp.',
+                                    isin: 'US67066G1040',
+                                    gicsSectorDescription: 'Information Technology',
+                                    securityType: 'EQ.CS',
+                                    marketValuePercentage: '7.5',
+                                },
+                                {
+                                    ticker: 'AAPL',
+                                    issuerName: 'Apple Inc.',
+                                    isin: 'US0378331005',
+                                    gicsSectorDescription: 'Information Technology',
+                                    securityType: 'EQ.CS',
+                                    marketValuePercentage: '6.5',
+                                },
+                            ],
+                        },
+                    });
+                }
+
+                const parsed = JSON.parse(String(init?.body)) as { query: string };
+                if (parsed.query.includes('FundAllocations')) {
+                    return jsonResponse({
+                        data: {
+                            funds: [
+                                {
+                                    profile: { portId: '9563', assetClassificationLevel1: 'Equity' },
+                                    marketAllocation: [
+                                        { countryCode: 'US', countryName: 'United States', fundMktPercent: 100 },
+                                    ],
+                                    sectorDiversification: [
+                                        { sectorName: 'Technology', fundPercent: 32 },
+                                    ],
+                                },
+                            ],
+                        },
+                    });
+                }
+
+                return jsonResponse({
+                    data: {
+                        borHoldings: [
+                            {
+                                holdings: {
+                                    items: [
+                                        {
+                                            ticker: 'VOO',
+                                            issuerName: 'Vanguard S&P 500 ETF',
+                                            securityType: 'EQ.ETF',
+                                            marketValuePercentage: 100,
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    },
+                });
+            };
+
+            const res = await vanguardAdapter.fetchAllocations({
+                symbol: 'VFV.TO',
+                quoteType: 'ETF',
+                fundName: 'Vanguard S&P 500 Index ETF',
+                fetchFn: mockFetch,
+            });
+
+            assert.ok(res);
+            assert.strictEqual(res.providerId, 'vanguard');
+            assert.deepStrictEqual(res.countryAllocations, [{ 'United States': 1 }]);
+            assert.ok(res.topHoldings);
+            assert.strictEqual(res.topHoldings.length, 2);
+            assert.strictEqual(res.topHoldings[0].ticker, 'NVDA');
+            assert.ok(Math.abs(res.topHoldings[0].weight - 0.075) < 1e-6);
+            assert.strictEqual(res.topHoldings[1].ticker, 'AAPL');
+            assert.ok(Math.abs(res.topHoldings[1].weight - 0.065) < 1e-6);
+        });
     });
 });

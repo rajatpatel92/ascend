@@ -9,6 +9,8 @@ export interface DiscoveredSymbol {
     currency?: string | null;
     isFundCandidate?: boolean;
     hasCountryAllocations?: boolean;
+    hasTopHoldings?: boolean;
+    topHoldingsCount?: number;
 }
 
 export interface PushJobConfig {
@@ -121,6 +123,13 @@ export async function runPushIssuerAllocations(
         targets = serverSymbols.filter((s) => s.isFundCandidate !== false);
     }
 
+    const candidatesOnServer = serverSymbols.filter((s) => s.isFundCandidate !== false);
+    if (candidatesOnServer.length > 0 && typeof candidatesOnServer[0]?.hasTopHoldings !== 'boolean') {
+        log(
+            '[IssuerPush] WARNING: Server GET discovery response omits hasTopHoldings — Ascend web container may be running an older build.'
+        );
+    }
+
     log(`[IssuerPush] Processing ${targets.length} candidate fund/ETF symbol(s)...`);
 
     const resolvedPayloads: PushAllocationRecord[] = [];
@@ -180,12 +189,46 @@ export async function runPushIssuerAllocations(
         updated?: number;
         skipped?: number;
         failed?: number;
+        results?: Array<{
+            symbol?: string;
+            status?: string;
+            countries?: number;
+            topHoldings?: number;
+            reason?: string;
+        }>;
     };
     const updatedCount = postBody.updated ?? 0;
 
-    log(
-        `[IssuerPush] Push complete: updated=${updatedCount}, skipped=${postBody.skipped ?? 0}, failed=${postBody.failed ?? 0}`
+    const clientFundsWithHoldings = resolvedPayloads.filter(
+        (p) => (p.topHoldings?.length ?? 0) > 0
+    ).length;
+    const clientHoldingsTotal = resolvedPayloads.reduce(
+        (sum, p) => sum + (p.topHoldings?.length ?? 0),
+        0
     );
+
+    const serverResults = Array.isArray(postBody.results) ? postBody.results : [];
+    const resultsIncludeTopHoldingsField = serverResults.some(
+        (r) => typeof r?.topHoldings === 'number'
+    );
+    const serverHoldingsSaved = serverResults.reduce(
+        (sum, r) => sum + (typeof r?.topHoldings === 'number' ? r.topHoldings : 0),
+        0
+    );
+
+    log(
+        `[IssuerPush] Push complete: updated=${updatedCount}, skipped=${postBody.skipped ?? 0}, failed=${postBody.failed ?? 0}, serverHoldingsSaved=${serverHoldingsSaved}`
+    );
+
+    if (
+        clientFundsWithHoldings > 0 &&
+        (!resultsIncludeTopHoldingsField || serverHoldingsSaved === 0)
+    ) {
+        log(
+            `[IssuerPush] WARNING: Client resolved ${clientHoldingsTotal} holding(s) across ${clientFundsWithHoldings} fund(s), ` +
+                `but server acknowledged ${serverHoldingsSaved} topHoldings. Verify the Ascend web deployment is updated and Prisma migrations are applied.`
+        );
+    }
 
     return {
         discovered: targets.length,

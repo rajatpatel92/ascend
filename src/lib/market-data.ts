@@ -1297,8 +1297,8 @@ export class MarketDataService {
                                 existingHoldingsMap.set(row.symbol, sanitizeStoredHoldings(row.topHoldings));
                             }
                         }
-                    } catch {
-                        // Non-fatal fallback
+                    } catch (err) {
+                        console.warn('[MarketData] Failed to inspect existing topHoldings before refresh:', err);
                     }
                 }
 
@@ -1476,7 +1476,11 @@ export class MarketDataService {
                         const cachedHasDirectIssuer = isDirectIssuerHoldingsList(existingHoldings);
                         if (hasIssuerTopHoldings) {
                             updateFields.topHoldings = priceData.topHoldings;
-                        } else if (!cachedHasDirectIssuer && priceData.topHoldings.length > 0) {
+                        } else if (cachedHasDirectIssuer) {
+                            console.log(
+                                `[MarketData] Preserving ${existingHoldings.length} cached direct-issuer holdings for ${symbol} (skipping Yahoo Top 10 overwrite)`
+                            );
+                        } else if (priceData.topHoldings.length > 0) {
                             updateFields.topHoldings = priceData.topHoldings;
                         } else if (!isFundLike) {
                             updateFields.topHoldings = [];

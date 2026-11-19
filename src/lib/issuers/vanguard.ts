@@ -687,10 +687,17 @@ export async function aggregateCaBorHoldings(
         }
 
         const isUnderlyingFund =
-            secType === 'EQ.ETF' || secType.startsWith('MF.');
+            secType === 'EQ.ETF' ||
+            secType === 'FI.ETF' ||
+            secType === 'ETF' ||
+            secType.startsWith('MF.') ||
+            secType.endsWith('.ETF');
         if (isUnderlyingFund && typeof item.ticker === 'string' && options.resolveUnderlying) {
             const subResult = await options.resolveUnderlying(item.ticker);
-            if (subResult && subResult.countryAllocations.length > 0) {
+            if (
+                subResult &&
+                (subResult.countryAllocations.length > 0 || (subResult.topHoldings?.length ?? 0) > 0)
+            ) {
                 for (const entry of subResult.countryAllocations) {
                     for (const [country, w] of Object.entries(entry)) {
                         const weighted = rawWeight * w;
@@ -1181,15 +1188,38 @@ async function fetchVanguardCaAllocations(
     }
 
     const subCache = new Map<string, Promise<IssuerAllocationResult | null>>();
+    const resolveUsFallback = async (rawTicker: string): Promise<IssuerAllocationResult | null> => {
+        const trimmed = rawTicker.trim();
+        if (!trimmed || /\.(TO|NE|V|CN|L|DE|PA|SW|AS|T|HK|AX|NS|BO)$/i.test(trimmed)) {
+            return null;
+        }
+        const cleanUsTicker = trimmed.toUpperCase().split(/\s+/)[0];
+        if (!/^[A-Z]{2,5}$/.test(cleanUsTicker)) {
+            return null;
+        }
+        const cacheKey = `us:${cleanUsTicker}`;
+        const existing = subCache.get(cacheKey);
+        if (existing) return existing;
+
+        const usPromise = fetchVanguardUsAllocations(ctx, requester, cleanUsTicker).catch(() => null);
+        subCache.set(cacheKey, usPromise);
+        return usPromise;
+    };
+
     const borAggregated = await aggregateCaBorHoldings(borItems, {
         resolveUnderlying: async (subTicker: string) => {
             if (!catalogue) {
                 catalogue = await discoverVanguardCaCatalogue(ctx, requester).catch(() => new Map());
             }
             const subPortId = resolveVanguardCaTickerToPortId(subTicker, catalogue);
-            if (!subPortId || subPortId === portId) return null;
+            if (subPortId === portId) return null;
 
-            const existing = subCache.get(subPortId);
+            if (!subPortId) {
+                return resolveUsFallback(subTicker);
+            }
+
+            const cacheKey = `ca:${subPortId}`;
+            const existing = subCache.get(cacheKey);
             if (existing) return existing;
 
             const promise = (async (): Promise<IssuerAllocationResult | null> => {
@@ -1203,7 +1233,10 @@ async function fetchVanguardCaAllocations(
                 if (!parsedSub.isFixedIncome || parsedSummary?.isFixedIncome) {
                     const subBor = await fetchCaBorHoldings(requester, subPortId).catch(() => []);
                     if (subBor.length > 0) {
-                        const subAgg = await aggregateCaBorHoldings(subBor, { maxTopHoldings: 500 });
+                        const subAgg = await aggregateCaBorHoldings(subBor, {
+                            maxTopHoldings: 500,
+                            resolveUnderlying: resolveUsFallback,
+                        });
                         subTopHoldings = subAgg.topHoldings;
                     }
                 }
@@ -1220,7 +1253,7 @@ async function fetchVanguardCaAllocations(
                     holdingsCount: parsedSub.countryAllocations.length,
                 };
             })();
-            subCache.set(subPortId, promise);
+            subCache.set(cacheKey, promise);
             return promise;
         },
     });
@@ -1274,18 +1307,25 @@ async function fetchVanguardUsAllocations(
     if (addRes.ok) {
         const text = await addRes.text();
         if (text && !text.trimStart().startsWith('<')) {
-            const payload = JSON.parse(text) as unknown;
-            const aggregated = aggregateVanguardUsAdditionalFundData(payload);
-            if (aggregated.countryAllocations.length > 0) {
-                return {
-                    providerId: 'vanguard',
-                    productId: ticker,
-                    countryAllocations: aggregated.countryAllocations,
-                    topHoldings:
-                        aggregated.topHoldings.length > 0 ? aggregated.topHoldings : undefined,
-                    holdingsCount: aggregated.holdingsCount,
-                    asOfDate: aggregated.asOfDate,
-                };
+            let payload: unknown = null;
+            try {
+                payload = JSON.parse(text) as unknown;
+            } catch {
+                payload = null;
+            }
+            if (payload) {
+                const aggregated = aggregateVanguardUsAdditionalFundData(payload);
+                if (aggregated.countryAllocations.length > 0) {
+                    return {
+                        providerId: 'vanguard',
+                        productId: ticker,
+                        countryAllocations: aggregated.countryAllocations,
+                        topHoldings:
+                            aggregated.topHoldings.length > 0 ? aggregated.topHoldings : undefined,
+                        holdingsCount: aggregated.holdingsCount,
+                        asOfDate: aggregated.asOfDate,
+                    };
+                }
             }
         }
     } else {
