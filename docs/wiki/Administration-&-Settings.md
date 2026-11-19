@@ -81,7 +81,7 @@ Located at `/settings/data`:
 * **Investment Types & Yahoo Mapping**: Local asset classes (`Equity`, `ETF`, `Mutual Fund`, `Crypto`, `Fixed Income`) mapped cleanly to upstream Yahoo security types for CSV import auto-categorization.
 * **Activity Types**: Transaction definitions (`BUY`, `SELL`, `DIVIDEND`, `DRIP`, `STOCK_SPLIT`, `DEPOSIT`, `WITHDRAWAL`, `TRANSFER_IN`, `TRANSFER_OUT`) with behavioral flags (`ADD`, `REMOVE`, `NEUTRAL`, `SPLIT`).
 * **Account Types**: Reusable tax/currency container templates (`TFSA`, `RRSP`, `Taxable`, `401(k)`, etc.).
-* **Market Sync Diagnostics & Manual Sync**: Displays live market session status, effective price TTL, active vs. stale symbol counts, last incremental/full run stats, `marketDataVersion`, and throttler cooldown state (`/api/market-data/status`), with **Run Quick Price Sync** and **Run Full Metadata & History Sync** (live streamed output) actions.
+* **Market Sync Diagnostics & Manual Sync**: Displays live market session status, effective price TTL, active vs. stale symbol counts, last incremental/full run stats, `marketDataVersion`, and throttler cooldown state (`/api/market-data/status`), with **Run Quick Price Sync** and **Run Full Metadata & History Sync** (live streamed output) actions. Note that ETF look-through `countryAllocations` and `topHoldings` pushed from direct-issuer cron jobs (`/api/cron/issuer-allocations`) are preserved across Yahoo fallback refreshes.
 
 ---
 
@@ -103,7 +103,8 @@ ADMIN_PASSWORD="your_secure_admin_password"
 # Programmatic API & MCP Integration
 MCP_API_KEY="your_secure_mcp_api_key_for_external_agents"
 
-# Optional External Cron Webhook Secret (in-process crons run automatically without it)
+# External Cron Webhook Secret (required for /api/cron/issuer-allocations & external cron triggers;
+# built-in in-process market sync crons run automatically without it)
 CRON_SECRET="your_secure_cron_webhook_secret"
 
 # Optional Market-Hours & Cache Freshness Tuning
@@ -116,4 +117,5 @@ MANUAL_REFRESH_COOLDOWN_MS=15000
 INCREMENTAL_SYNC_BATCH_SIZE=20
 ```
 
+* **External Direct-Issuer Cron (`scripts/push-issuer-allocations.ts` & `deploy/k8s/issuer-allocations-cronjob.yaml`)**: Runs direct-issuer ETF adapters (**iShares**, **Vanguard**, **BMO**, **TD**) from a residential/cluster job and pushes gzip-batched fund exposures & underlying holdings to `/api/cron/issuer-allocations` using `ASCEND_URL` and `CRON_SECRET`.
 * **Timing-Safe Validation**: `MCP_API_KEY` and `CRON_SECRET` are verified with `crypto.timingSafeEqual` (`src/lib/api-auth.ts`) to prevent timing side-channel leaks.

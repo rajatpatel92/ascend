@@ -25,10 +25,14 @@ A comprehensive, self-hosted, multi-currency portfolio management platform desig
   - **Drift Tolerance Bands & Whole-Share Sizing**: Keep turnover disciplined and respect exact cash budgets.
   - **Ticker & Asset-Type Targets**: Rebalance by individual holding or asset category, backed by **Saved Rebalance Profiles** and automated **Glide-Step** lifecycle scheduling.
   - **Tax-Aware Account Routing**: Prioritizes `Tax-Free` and `Tax-Deferred` containers ahead of `Taxable` accounts for sells, surfacing capital-gains warnings.
-- **Allocation X-Ray, Comparison & Asset Deep-Dive**:
-  - **Unified Allocation Explorer**: Switch across Sector, Geography, Investment Type, Account Type, and Account & Platform with on-demand **Portfolio X-Ray** decomposing direct equity vs. ETF look-through weights.
+- **Allocation X-Ray, World Map, Comparison & Asset Deep-Dive**:
+  - **Unified 6-Dimension Allocation Explorer (`/analysis/allocation`)**: Switch seamlessly across **Sector**, **Geography** (interactive dark-to-bright **Choropleth World Map**), **Holdings** (portfolio-wide underlying equity X-Ray across direct stocks and full ETF constituent weights), **Asset Type**, **Account Type**, and **Account**.
+  - **Unified Holdings & Scope/X-Ray Grid**: Selecting any chart segment, country, or stock embeds a unified Scope Banner (with Direct vs. ETF Look-Through split bar, `Weight`, `Exposure ($)`, and `Share` columns or bucket `Share` %) directly inside the **Holdings** table with zero duplicate rows and a context-aware Return Column selector.
   - **Benchmark Comparison & Wealth Evolution**: Normalized index comparisons (custom benchmarks supported) plus net contribution and dividend growth charts.
-  - **Asset Deep-Dive (`/analysis/[symbol]`)**: Cost-basis average price overlay (`avgPriceHistory`), account distribution, ETF sector/country breakdown, DRIP reinvestment stats, and per-symbol CSV export.
+  - **Asset Deep-Dive (`/analysis/[symbol]`)**: Cost-basis average price overlay (`avgPriceHistory`), account distribution, side-by-side ETF **Geographic Exposure** and **Underlying Holdings** cards (both `$` and `%`), DRIP reinvestment stats, and per-symbol CSV export.
+- **Direct-Issuer ETF Look-Through Engine**:
+  - Dedicated adapters for **iShares**, **Vanguard** (with CA-to-US wrapper fallback), **BMO**, and **TD Asset Management** fetch fund sector, country, and full constituent holdings (up to `15,000` positions per fund, keeping dual-class shares separate).
+  - Supports external gzip-batched ingestion via `/api/cron/issuer-allocations`, `scripts/push-issuer-allocations.ts`, and `deploy/k8s/issuer-allocations-cronjob.yaml`.
 - **FIRE Independence Planner**:
   - Dual mathematical simulation modes (`FIXED_RATE` & `FIXED_HORIZON`), monthly compound inflation, lifestyle sustainability checks, **Saved FIRE Profiles**, and collapsible simulation studio.
 - **Modern UI, Obsidian Carbon & Contextual Settings**:
