@@ -7,12 +7,15 @@ import {
     emitIssuerDiagnostic,
     type IssuerRequestOptions,
 } from './http.ts';
+import { mergeAndCapHoldings } from './holdings.ts';
 import { parseXlsxFirstSheet } from './xlsx.ts';
-import type {
-    AllocationWeightEntry,
-    EtfIssuerAdapter,
-    IssuerAllocationResult,
-    IssuerLookupContext,
+import {
+    MAX_UNDERLYING_HOLDINGS,
+    type AllocationWeightEntry,
+    type EtfIssuerAdapter,
+    type IssuerAllocationResult,
+    type IssuerLookupContext,
+    type UnderlyingHoldingEntry,
 } from './types.ts';
 
 type RequesterFn = (url: string, opts?: IssuerRequestOptions) => Promise<Response>;
@@ -119,6 +122,7 @@ export interface ParsedBmoHoldingRow {
 interface InternalResolvedBmo {
     countryAllocations: AllocationWeightEntry[];
     sectorAllocations: AllocationWeightEntry[];
+    topHoldings: UnderlyingHoldingEntry[];
     isPredominantlyFixedIncome: boolean;
     holdingsCount: number;
     asOfDate?: string;
@@ -302,10 +306,12 @@ export async function aggregateBmoHoldings(
     rows: ParsedBmoHoldingRow[],
     options: {
         resolveUnderlying?: (ticker: string) => Promise<InternalResolvedBmo | null>;
+        maxTopHoldings?: number;
     } = {}
 ): Promise<{
     countryAllocations: AllocationWeightEntry[];
     sectorAllocations: AllocationWeightEntry[];
+    topHoldings: UnderlyingHoldingEntry[];
     isPredominantlyFixedIncome: boolean;
     holdingsCount: number;
 }> {
@@ -330,6 +336,7 @@ export async function aggregateBmoHoldings(
         return {
             countryAllocations: [],
             sectorAllocations: [],
+            topHoldings: [],
             isPredominantlyFixedIncome: false,
             holdingsCount: 0,
         };
@@ -337,6 +344,8 @@ export async function aggregateBmoHoldings(
 
     const countryTotals = new Map<string, number>();
     const sectorTotals = new Map<string, number>();
+    const rawEquityHoldings: UnderlyingHoldingEntry[] = [];
+    const rawBondHoldings: UnderlyingHoldingEntry[] = [];
     let totalPositivePortfolioWeight = 0;
     let countryAllocatedSum = 0;
     let sectorAllocatedSum = 0;
@@ -379,11 +388,24 @@ export async function aggregateBmoHoldings(
                         sectorAllocatedSum += weighted;
                     }
                 }
+                for (const h of sub.topHoldings) {
+                    const weightedHolding: UnderlyingHoldingEntry = {
+                        ...h,
+                        weight: rawWeight * h.weight,
+                        source: h.source ?? 'bmo',
+                    };
+                    if (sub.isPredominantlyFixedIncome || h.assetClass === 'BOND') {
+                        rawBondHoldings.push(weightedHolding);
+                    } else {
+                        rawEquityHoldings.push(weightedHolding);
+                    }
+                }
                 continue;
             }
         }
 
-        if (assetClassLower.includes('fixed income') || assetClassLower === 'bond') {
+        const isBond = assetClassLower.includes('fixed income') || assetClassLower === 'bond';
+        if (isBond) {
             fixedIncomeWeight += rawWeight;
         }
 
@@ -396,11 +418,31 @@ export async function aggregateBmoHoldings(
 
         const rawSector = (row.sector || '').trim();
         const sectorLower = rawSector.toLowerCase();
+        let normalizedSector: string | undefined;
         if (rawSector && !IGNORED_SECTORS.has(sectorLower)) {
             const sector = normalizeSectorName(rawSector);
             if (sector !== 'Other / Unclassified') {
                 sectorTotals.set(sector, (sectorTotals.get(sector) ?? 0) + rawWeight);
                 sectorAllocatedSum += rawWeight;
+                normalizedSector = sector;
+            }
+        }
+
+        const isCommodity = assetClassLower.includes('commodit');
+        if (!isCommodity && row.name.trim()) {
+            const holdingEntry: UnderlyingHoldingEntry = {
+                name: row.name.trim(),
+                isin: row.isin?.trim().toUpperCase() || undefined,
+                country: country ?? undefined,
+                sector: !isBond ? normalizedSector : undefined,
+                assetClass: isBond ? 'BOND' : 'EQUITY',
+                weight: rawWeight,
+                source: 'bmo',
+            };
+            if (isBond) {
+                rawBondHoldings.push(holdingEntry);
+            } else {
+                rawEquityHoldings.push(holdingEntry);
             }
         }
     }
@@ -440,9 +482,23 @@ export async function aggregateBmoHoldings(
                   .map((e) => ({ [e.sector]: e.weight }))
             : [];
 
+    const selectedRawHoldings = isPredominantlyFixedIncome ? rawBondHoldings : rawEquityHoldings;
+    const capLimit = options.maxTopHoldings ?? MAX_UNDERLYING_HOLDINGS;
+    const topHoldings =
+        totalPositivePortfolioWeight > 0
+            ? mergeAndCapHoldings(
+                  selectedRawHoldings.map((h) => ({
+                      ...h,
+                      weight: h.weight / totalPositivePortfolioWeight,
+                  })),
+                  capLimit
+              )
+            : [];
+
     return {
         countryAllocations,
         sectorAllocations,
+        topHoldings,
         isPredominantlyFixedIncome,
         holdingsCount: rows.length,
     };
@@ -543,6 +599,7 @@ async function resolveBmoRecursive(
         }
 
         const aggregated = await aggregateBmoHoldings(parsed.holdings, {
+            maxTopHoldings: depth === 0 ? MAX_UNDERLYING_HOLDINGS : 500,
             resolveUnderlying:
                 depth < MAX_FOF_DEPTH
                     ? (subTicker) =>
@@ -565,6 +622,7 @@ async function resolveBmoRecursive(
         return {
             countryAllocations: aggregated.countryAllocations,
             sectorAllocations: aggregated.sectorAllocations,
+            topHoldings: aggregated.topHoldings,
             isPredominantlyFixedIncome: aggregated.isPredominantlyFixedIncome,
             holdingsCount: aggregated.holdingsCount,
             asOfDate: parsed.asOfDate ?? download.isoDate,
@@ -611,6 +669,7 @@ export async function fetchBmoAllocationsWithDate(
         countryAllocations: resolved.countryAllocations,
         sectorAllocations:
             resolved.sectorAllocations.length > 0 ? resolved.sectorAllocations : undefined,
+        topHoldings: resolved.topHoldings.length > 0 ? resolved.topHoldings : undefined,
         holdingsCount: resolved.holdingsCount,
         asOfDate: resolved.asOfDate,
     };

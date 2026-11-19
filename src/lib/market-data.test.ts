@@ -963,6 +963,86 @@ test('MarketDataService.getPrice', async (t) => {
             { Canada: 0.3 },
         ]);
         assert.ok(diagnostics.some((m) => m.includes('Resolved ishares allocations for XEQT.TO: 2 countries')));
+        assert.strictEqual(result.topHoldings?.length, 2);
+        assert.strictEqual(result.topHoldings?.[0].ticker, 'NVDA');
+    });
+
+    await t.test('falls back to Yahoo topHoldings when direct-issuer adapter returns null and preserves cached direct-issuer holdings over Yahoo Top 10', async (subT) => {
+        // Part 1: Uncovered fund falls back to Yahoo quoteSummary.topHoldings.holdings
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => null);
+        subT.mock.method(yahooFinance, 'quote', async () => ({
+            regularMarketPrice: 42,
+            regularMarketChange: 0.3,
+            regularMarketChangePercent: 0.7,
+            currency: 'CAD',
+            quoteType: 'ETF',
+            longName: 'Mackenzie US Large Cap Equity Index ETF',
+        }));
+        subT.mock.method(yahooFinance, 'quoteSummary', async () => ({
+            summaryProfile: {},
+            summaryDetail: { dividendRate: 0.5, dividendYield: 0.012 },
+            topHoldings: {
+                sectorWeightings: [{ technology: 0.32 }],
+                holdings: [
+                    { symbol: 'AAPL', holdingName: 'Apple Inc.', holdingPercent: 0.071 },
+                    { symbol: 'MSFT', holdingName: 'Microsoft Corp', holdingPercent: 0.065 },
+                ],
+            },
+            calendarEvents: { exDividendDate: new Date(Date.now() + 86400000).toISOString() },
+            defaultKeyStatistics: {},
+        }));
+        subT.mock.method(yahooFinance, 'chart', async () => ({ events: {} }));
+
+        let uncoveredUpsert: any = null;
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: any) => {
+            uncoveredUpsert = args;
+            return args;
+        });
+
+        const uncoveredResult = await MarketDataService.getPrice('QUU.TO', true);
+        assert.ok(uncoveredResult);
+        assert.strictEqual(uncoveredResult.topHoldings?.length, 2);
+        assert.strictEqual(uncoveredResult.topHoldings?.[0].ticker, 'AAPL');
+        assert.strictEqual(uncoveredResult.topHoldings?.[0].source, 'yahoo');
+        assert.strictEqual(uncoveredUpsert?.update?.topHoldings?.length, 2);
+
+        // Part 2: Fund with cached direct-issuer holdings must NEVER be overwritten by Yahoo Top 10
+        const cachedIssuerHoldings = [
+            { name: 'Apple Inc', ticker: 'AAPL', weight: 0.05, assetClass: 'EQUITY', source: 'ishares' },
+            { name: 'Royal Bank of Canada', ticker: 'RY', weight: 0.03, assetClass: 'EQUITY', source: 'ishares' },
+        ];
+        subT.mock.method(prisma.marketDataCache, 'findUnique', async () => ({
+            symbol: 'XEQT.TO',
+            price: 35,
+            currency: 'CAD',
+            lastUpdated: new Date(Date.now() - 86400000),
+            marketTime: new Date(Date.now() - 86400000),
+            change: 0,
+            changePercent: 0,
+            sector: null,
+            country: null,
+            sectorAllocations: [{ Technology: 0.25 }],
+            countryAllocations: [{ 'United States': 0.45 }],
+            topHoldings: cachedIssuerHoldings,
+            dividendRate: 0.7,
+            dividendYield: 0.02,
+            exDividendDate: new Date(Date.now() + 86400000),
+            estNextDividendAmount: 0.17,
+        }));
+        subT.mock.method(globalThis, 'fetch', async () => new Response('Timed Out', { status: 504 }));
+
+        let protectedUpsert: any = null;
+        subT.mock.method(prisma.marketDataCache, 'upsert', async (args: any) => {
+            protectedUpsert = args;
+            return args;
+        });
+
+        const protectedResult = await MarketDataService.getPrice('XEQT.TO', true);
+        assert.ok(protectedResult);
+        assert.strictEqual(protectedResult.topHoldings?.length, 2);
+        assert.strictEqual(protectedResult.topHoldings?.[1].ticker, 'RY');
+        assert.strictEqual(protectedResult.topHoldings?.[0].source, 'ishares');
+        assert.ok(!('topHoldings' in (protectedUpsert?.update ?? {})));
     });
 });
 
@@ -1194,6 +1274,73 @@ test('MarketDataService.refreshMarketData', async (t) => {
             { technology: 0.28 },
             { financial_services: 0.19 }
         ]);
+        assert.strictEqual((capturedUpsert.update.topHoldings as any[])?.length, 3);
+    });
+
+    await t.test('preserves cached direct-issuer topHoldings in refreshMarketData while allowing Yahoo Top 10 fallback for uncovered ETFs', async (subT) => {
+        const cacheRepo = prisma.marketDataCache as unknown as Record<string, unknown>;
+        const prevFindMany = cacheRepo.findMany;
+        cacheRepo.findMany = async () => [
+            {
+                symbol: 'VGRO.TO',
+                topHoldings: [
+                    { name: 'Apple Inc', ticker: 'AAPL', weight: 0.04, assetClass: 'EQUITY', source: 'vanguard' },
+                ],
+            },
+            {
+                symbol: 'QUU.TO',
+                topHoldings: [],
+            },
+        ];
+
+        try {
+            subT.mock.method(globalThis, 'fetch', async () => new Response('Timeout', { status: 504 }));
+            subT.mock.method(yahooFinance, 'quoteSummary', async (sym: string) => ({
+                price: {
+                    regularMarketPrice: sym === 'VGRO.TO' ? 38 : 42,
+                    regularMarketChange: 0.1,
+                    regularMarketChangePercent: 0.2,
+                    currency: 'CAD',
+                    quoteType: 'ETF',
+                    longName: sym === 'VGRO.TO' ? 'Vanguard Growth ETF Portfolio' : 'Mackenzie US Large Cap ETF',
+                },
+                summaryProfile: {},
+                summaryDetail: { dividendRate: 0.5, dividendYield: 0.015 },
+                topHoldings: {
+                    sectorWeightings: [],
+                    holdings: [{ symbol: 'NVDA', holdingName: 'NVIDIA Corp', holdingPercent: 0.08 }],
+                },
+                calendarEvents: { exDividendDate: new Date(Date.now() + 86400000).toISOString() },
+                defaultKeyStatistics: {},
+            }));
+            subT.mock.method(yahooFinance, 'chart', async () => ({
+                quotes: [{ date: '2026-01-01T00:00:00.000Z', close: 38 }],
+                events: { dividends: [{ date: new Date().toISOString(), amount: 0.1 }] },
+            }));
+
+            const captured = new Map<string, Record<string, unknown>>();
+            subT.mock.method(prisma.marketDataCache, 'upsert', async (args: {
+                where: { symbol: string };
+                update: Record<string, unknown>;
+            }) => {
+                captured.set(args.where.symbol, args.update);
+                return args;
+            });
+            subT.mock.method(prisma, '$transaction', async (updates: unknown[]) => updates);
+
+            await MarketDataService.refreshMarketData(['VGRO.TO', 'QUU.TO']);
+
+            const vgroUpdate = captured.get('VGRO.TO');
+            const quuUpdate = captured.get('QUU.TO');
+            assert.ok(vgroUpdate);
+            assert.ok(quuUpdate);
+            assert.ok(!('topHoldings' in vgroUpdate));
+            assert.strictEqual((quuUpdate.topHoldings as any[])?.length, 1);
+            assert.strictEqual((quuUpdate.topHoldings as any[])?.[0].ticker, 'NVDA');
+            assert.strictEqual((quuUpdate.topHoldings as any[])?.[0].source, 'yahoo');
+        } finally {
+            cacheRepo.findMany = prevFindMany;
+        }
     });
 });
 

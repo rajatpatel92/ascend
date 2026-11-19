@@ -745,6 +745,115 @@
     color: var(--text-secondary);
 }
 
+/* Underlying Holdings Card */
+.holdingsHeaderRight {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.holdingsToolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.holdingsSearch {
+    flex: 1 1 240px;
+    max-width: 360px;
+    padding: 0.45rem 0.85rem;
+    border-radius: 0.55rem;
+    border: 1px solid var(--card-border);
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.8125rem;
+}
+
+.holdingsSearch:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.holdingsTrackedSummary {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.holdingsTrackedSummary strong {
+    color: var(--text-primary);
+}
+
+.holdingsScrollable {
+    max-height: 440px;
+    overflow-y: auto;
+    padding-right: 0.35rem;
+}
+
+.holdingsRank {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    min-width: 1.75rem;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+.holdingTickerPill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.08rem 0.4rem;
+    border-radius: 0.35rem;
+    background: var(--hover-bg);
+    border: 1px solid var(--card-border);
+    color: var(--text-primary);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+}
+
+.holdingMetaTag {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.holdingsFooter {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.holdingsToggleBtn {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    color: var(--text-primary);
+    padding: 0.32rem 0.75rem;
+    border-radius: 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.holdingsToggleBtn:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--hover-bg);
+}
+
 /* Activities Tab */
 .tableCard {
     background: var(--card-bg);

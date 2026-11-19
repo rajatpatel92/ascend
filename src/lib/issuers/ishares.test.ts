@@ -79,6 +79,15 @@ describe('iShares direct-issuer adapter', () => {
             assert.ok(Math.abs(sectorMap['Technology'] - 0.65) < 1e-6);
             assert.ok(Math.abs(sectorMap['Financial Services'] - 0.25) < 1e-6);
             assert.ok(Math.abs(sectorMap['Consumer Cyclical'] - 0.10) < 1e-6);
+
+            assert.strictEqual(aggregated.topHoldings.length, 4);
+            assert.strictEqual(aggregated.topHoldings[0].ticker, 'NVDA');
+            assert.ok(Math.abs(aggregated.topHoldings[0].weight - 0.45) < 1e-6);
+            assert.strictEqual(aggregated.topHoldings[0].assetClass, 'EQUITY');
+            assert.strictEqual(aggregated.topHoldings[1].ticker, 'RY');
+            assert.ok(Math.abs(aggregated.topHoldings[1].weight - 0.25) < 1e-6);
+            assert.strictEqual(aggregated.topHoldings[2].ticker, '005930');
+            assert.strictEqual(aggregated.topHoldings[2].country, 'South Korea');
         });
 
         test('supports US Market Weight column header when Market Value is omitted', () => {

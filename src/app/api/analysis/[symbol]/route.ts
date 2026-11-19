@@ -360,6 +360,7 @@ export async function GET(request: Request, props: { params: Promise<{ symbol: s
                 country: marketData?.country,
                 sectorAllocations: (marketData as any)?.sectorAllocations,
                 countryAllocations: (marketData as any)?.countryAllocations,
+                topHoldings: (marketData as any)?.topHoldings,
                 dividendRate: effectiveDividendRate,
                 dividendYield: effectiveDividendYield
             },

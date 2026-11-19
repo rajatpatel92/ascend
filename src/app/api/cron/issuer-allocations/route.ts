@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { isValidApiKey, isValidCronSecret } from '@/lib/api-auth';
 import { invalidateMarketCaches } from '@/lib/cache-invalidation';
+import { mergeAndCapHoldings, sanitizeStoredHoldings } from '@/lib/issuers/holdings';
+import { MAX_UNDERLYING_HOLDINGS, type UnderlyingHoldingEntry } from '@/lib/issuers/types';
 import { normalizeCountryName, normalizeSectorName } from '@/lib/look-through';
 import { collectSyncSymbols } from '@/lib/market-sync';
 import { prisma } from '@/lib/prisma';
@@ -16,6 +18,7 @@ interface PushAllocationItem {
     productId?: unknown;
     countryAllocations?: unknown;
     sectorAllocations?: unknown;
+    topHoldings?: unknown;
     holdingsCount?: unknown;
     asOfDate?: unknown;
 }
@@ -78,6 +81,7 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const onlyMissingCountries = searchParams.get('onlyMissingCountries') === 'true';
+    const onlyMissingTopHoldings = searchParams.get('onlyMissingTopHoldings') === 'true';
 
     const { allSymbols } = await collectSyncSymbols();
     const candidateSymbols = allSymbols.filter((s) => !s.endsWith('=X') && !s.startsWith('^'));
@@ -103,6 +107,7 @@ export async function GET(request: Request) {
                       currency: true,
                       countryAllocations: true,
                       sectorAllocations: true,
+                      topHoldings: true,
                       metadataUpdatedAt: true,
                   },
               })
@@ -124,7 +129,11 @@ export async function GET(request: Request) {
             const sectorCount = Array.isArray(cache?.sectorAllocations)
                 ? cache.sectorAllocations.length
                 : 0;
+            const topHoldingsCount = Array.isArray(cache?.topHoldings)
+                ? cache.topHoldings.length
+                : 0;
             const hasCountryAllocations = countryCount > 0;
+            const hasTopHoldings = topHoldingsCount > 0;
             const investmentType = inv?.type ?? null;
             const name = inv?.name ?? benchmark?.name ?? null;
             const currency = cache?.currency ?? inv?.currencyCode ?? null;
@@ -142,13 +151,19 @@ export async function GET(request: Request) {
                 hasCountryAllocations,
                 countryCount,
                 sectorCount,
+                hasTopHoldings,
+                topHoldingsCount,
                 isCached: Boolean(cache),
                 metadataUpdatedAt: cache?.metadataUpdatedAt
                     ? new Date(cache.metadataUpdatedAt).toISOString()
                     : null,
             };
         })
-        .filter((item) => !onlyMissingCountries || !item.hasCountryAllocations);
+        .filter((item) => {
+            if (onlyMissingCountries && item.hasCountryAllocations) return false;
+            if (onlyMissingTopHoldings && item.hasTopHoldings) return false;
+            return true;
+        });
 
     return NextResponse.json({
         symbols: items,
@@ -216,11 +231,23 @@ export async function POST(request: Request) {
             entry?.sectorAllocations,
             normalizeSectorName
         );
+        const sanitizedHoldings = sanitizeStoredHoldings(entry?.topHoldings, MAX_UNDERLYING_HOLDINGS);
+        const topHoldings =
+            sanitizedHoldings.length > 0
+                ? mergeAndCapHoldings(
+                      sanitizedHoldings.map((h) => ({
+                          ...h,
+                          source: h.source ?? providerId,
+                      })),
+                      MAX_UNDERLYING_HOLDINGS
+                  )
+                : [];
         return {
             symbol,
             providerId,
             countryAllocations,
             sectorAllocations,
+            topHoldings,
         };
     });
 
@@ -247,20 +274,21 @@ export async function POST(request: Request) {
         symbol: string;
         status: 'updated' | 'skipped_not_cached' | 'invalid';
         countries?: number;
+        topHoldings?: number;
         sectorsUpdated?: boolean;
         providerId?: string;
         reason?: string;
     }> = [];
 
     for (const item of parsedItems) {
-        if (!item.symbol || item.countryAllocations.length === 0) {
+        if (!item.symbol || (item.countryAllocations.length === 0 && item.topHoldings.length === 0)) {
             failed++;
             results.push({
                 symbol: item.symbol || '(empty)',
                 status: 'invalid',
                 reason: !item.symbol
                     ? 'Missing symbol'
-                    : 'No valid positive countryAllocations entries provided',
+                    : 'No valid positive countryAllocations or topHoldings entries provided',
             });
             continue;
         }
@@ -285,13 +313,21 @@ export async function POST(request: Request) {
             (overwriteSectors || existingSectorsCount === 0);
 
         const updateData: {
-            countryAllocations: AllocationWeightEntry[];
+            countryAllocations?: AllocationWeightEntry[];
+            topHoldings?: UnderlyingHoldingEntry[];
             metadataUpdatedAt: Date;
             sectorAllocations?: AllocationWeightEntry[];
         } = {
-            countryAllocations: item.countryAllocations,
             metadataUpdatedAt: now,
         };
+
+        if (item.countryAllocations.length > 0) {
+            updateData.countryAllocations = item.countryAllocations;
+        }
+
+        if (item.topHoldings.length > 0) {
+            updateData.topHoldings = item.topHoldings;
+        }
 
         if (shouldUpdateSectors) {
             updateData.sectorAllocations = item.sectorAllocations;
@@ -299,7 +335,7 @@ export async function POST(request: Request) {
 
         await prisma.marketDataCache.update({
             where: { symbol: item.symbol },
-            data: updateData,
+            data: updateData as Record<string, unknown>,
         });
 
         updated++;
@@ -308,6 +344,7 @@ export async function POST(request: Request) {
             symbol: item.symbol,
             status: 'updated',
             countries: item.countryAllocations.length,
+            topHoldings: item.topHoldings.length,
             sectorsUpdated: shouldUpdateSectors,
             providerId: item.providerId,
         });

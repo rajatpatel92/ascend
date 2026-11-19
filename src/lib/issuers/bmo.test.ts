@@ -251,6 +251,19 @@ describe('BMO GAM Canada direct-issuer adapter', () => {
             { 'Financial Services': 0.2 },
             { Healthcare: 0.12 },
         ]);
+
+        // Equity Top Holdings recursively scaled by ZSP/ZCN/ZEA sleeve weights while excluding ZDB fixed-income bonds
+        assert.ok(res.topHoldings);
+        assert.strictEqual(res.topHoldings.length, 4);
+        assert.deepStrictEqual(
+            res.topHoldings.map((h) => ({ name: h.name, weight: h.weight, assetClass: h.assetClass })),
+            [
+                { name: 'ROYAL BANK OF CANADA', weight: 0.2, assetClass: 'EQUITY' },
+                { name: 'APPLE INC', weight: 0.18, assetClass: 'EQUITY' },
+                { name: 'ELI LILLY', weight: 0.12, assetClass: 'EQUITY' },
+                { name: 'ASML HOLDING NV', weight: 0.1, assetClass: 'EQUITY' },
+            ]
+        );
     });
 
     test('handles ZUAG-F variant fallback, omits fixed-income sectors, and fails soft on ZGLD bullion ETF', async () => {

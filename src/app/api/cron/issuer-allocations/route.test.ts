@@ -304,6 +304,76 @@ test('/api/cron/issuer-allocations endpoint & push script', async (t) => {
         assert.ok(getCacheVersions().marketDataVersion > beforeVersion);
     });
 
+    await t.test('POST normalizes topHoldings keeping dual-class shares separate and GET filters onlyMissingTopHoldings', async () => {
+        process.env.CRON_SECRET = 'top-secret';
+        (globalThis as any).__mockIssuerCronPrisma.investment.findMany = async () => [
+            { symbol: 'XEQT.TO', name: 'iShares Core Equity ETF Portfolio', type: 'ETF', currencyCode: 'CAD' },
+            { symbol: 'ZEA.TO', name: 'BMO MSCI EAFE Index ETF', type: 'ETF', currencyCode: 'CAD' },
+        ];
+        (globalThis as any).__mockIssuerCronPrisma.marketDataCache.findMany = async () => [
+            {
+                symbol: 'XEQT.TO',
+                sectorAllocations: [{ Technology: 0.25 }],
+                countryAllocations: [{ 'United States': 0.45 }],
+                topHoldings: [{ name: 'Apple Inc', ticker: 'AAPL', weight: 0.05 }],
+            },
+            {
+                symbol: 'ZEA.TO',
+                sectorAllocations: [{ Financials: 0.2 }],
+                countryAllocations: [{ Japan: 0.22 }],
+                topHoldings: [],
+            },
+        ];
+
+        const missingHoldingsRes = await GET(
+            new Request('http://localhost/api/cron/issuer-allocations?onlyMissingTopHoldings=true', {
+                headers: { Authorization: 'Bearer top-secret' },
+            })
+        );
+        assert.strictEqual(missingHoldingsRes.status, 200);
+        const missingBody = await missingHoldingsRes.json();
+        assert.strictEqual(missingBody.symbols.length, 1);
+        assert.strictEqual(missingBody.symbols[0].symbol, 'ZEA.TO');
+        assert.strictEqual(missingBody.symbols[0].hasTopHoldings, false);
+
+        const postRes = await POST(
+            new Request('http://localhost/api/cron/issuer-allocations', {
+                method: 'POST',
+                headers: { Authorization: 'Bearer top-secret' },
+                body: JSON.stringify({
+                    allocations: [
+                        {
+                            symbol: 'ZEA.TO',
+                            providerId: 'bmo',
+                            countryAllocations: [],
+                            topHoldings: [
+                                { name: 'Alphabet Inc Cl A', ticker: 'GOOGL', weight: 2.5 },
+                                { name: 'Alphabet Inc Cl C', ticker: 'GOOG', weight: 2.1 },
+                                { name: 'NVIDIA CORP', ticker: 'NVDA', weight: 5.0 },
+                                { name: 'Nvidia Corporation', ticker: 'NVDA', weight: 1.0 },
+                            ],
+                        },
+                    ],
+                }),
+            })
+        );
+        assert.strictEqual(postRes.status, 200);
+        const postBody = await postRes.json();
+        assert.strictEqual(postBody.updated, 1);
+        assert.strictEqual(postBody.results[0].topHoldings, 3);
+
+        const zeaUpdate = updatedCalls.find((c) => c.where.symbol === 'ZEA.TO');
+        assert.ok(zeaUpdate);
+        assert.strictEqual(zeaUpdate.data.countryAllocations, undefined);
+        assert.strictEqual(zeaUpdate.data.topHoldings.length, 3);
+        assert.strictEqual(zeaUpdate.data.topHoldings[0].ticker, 'NVDA');
+        assert.ok(Math.abs(zeaUpdate.data.topHoldings[0].weight - 0.06) < 1e-6);
+        assert.strictEqual(zeaUpdate.data.topHoldings[0].source, 'bmo');
+        const tickers = zeaUpdate.data.topHoldings.map((h: any) => h.ticker);
+        assert.ok(tickers.includes('GOOGL'));
+        assert.ok(tickers.includes('GOOG'));
+    });
+
     await t.test('runPushIssuerAllocations discovers candidates, resolves allocations, and POSTs to endpoint', async () => {
         const requests: Array<{ url: string; method: string; body?: any }> = [];
         const mockFetch: typeof fetch = async (input, init) => {
@@ -341,6 +411,9 @@ test('/api/cron/issuer-allocations endpoint & push script', async (t) => {
             resolveFn: async (ctx) => ({
                 providerId: 'ishares',
                 countryAllocations: [{ 'United States': 0.5 }, { Canada: 0.5 }],
+                topHoldings: [
+                    { name: 'Apple Inc', ticker: 'AAPL', weight: 0.05, assetClass: 'EQUITY', source: 'ishares' },
+                ],
                 holdingsCount: 2,
                 productId: ctx.symbol === 'XEQT.TO' ? '309480' : undefined,
             }),
@@ -352,5 +425,6 @@ test('/api/cron/issuer-allocations endpoint & push script', async (t) => {
         assert.strictEqual(requests[0].url, 'https://ascend.internal/api/cron/issuer-allocations');
         assert.strictEqual(requests[1].method, 'POST');
         assert.strictEqual(requests[1].body.allocations[0].symbol, 'XEQT.TO');
+        assert.strictEqual(requests[1].body.allocations[0].topHoldings.length, 1);
     });
 });

@@ -159,6 +159,36 @@ describe('TD Asset Management Canada direct-issuer adapter', () => {
         assert.strictEqual(dynamicRes.sectorAllocations, undefined);
     });
 
+    test('parses Full List of Holdings while keeping dual-class shares separate and excluding currencies', () => {
+        const htmlWithFullHoldings = `
+            <html><body>
+                <h3>Fund Geography</h3>
+                <div>United States</div><div>100.00%</div>
+                <h3>Top Ten Holdings</h3>
+                <div>Apple Inc - Common</div><div>10.00%</div>
+                <h3>Full List of Holdings (4)</h3>
+                <div>Holding Name</div><div>Percentage of Holdings</div>
+                <div>Apple Inc - Common</div><div>13.73%</div>
+                <div>Alphabet Inc - Common Cl A</div><div>4.43%</div>
+                <div>Alphabet Inc - Common Cl C</div><div>3.88%</div>
+                <div>USD Currency</div><div>0.12%</div>
+                <h3>Documents</h3>
+                <div>Some legal disclaimer text</div>
+            </body></html>
+        `;
+
+        const parsed = parseTdFundCardHtml(htmlWithFullHoldings);
+        assert.strictEqual(parsed.topHoldings.length, 3);
+        assert.deepStrictEqual(
+            parsed.topHoldings.map((h) => ({ name: h.name, weight: h.weight, assetClass: h.assetClass })),
+            [
+                { name: 'Apple Inc', weight: 0.1373, assetClass: 'EQUITY' },
+                { name: 'Alphabet Inc Cl A', weight: 0.0443, assetClass: 'EQUITY' },
+                { name: 'Alphabet Inc Cl C', weight: 0.0388, assetClass: 'EQUITY' },
+            ]
+        );
+    });
+
     test('fails soft on HTTP errors or missing Fund Geography table', async () => {
         const diag: string[] = [];
         const res = await tdAdapter.fetchAllocations({

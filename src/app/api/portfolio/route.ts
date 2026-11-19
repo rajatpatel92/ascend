@@ -481,6 +481,7 @@ export async function GET(request: NextRequest) {
                         country: marketData?.country || null,
                         sectorAllocations: marketData?.sectorAllocations || null,
                         countryAllocations: marketData?.countryAllocations || null,
+                        topHoldings: marketData?.topHoldings || null,
                         dayChange: {
                             absolute: dayChange,
                             percent: regularMarketChangePercent

@@ -15,6 +15,8 @@ import StockChart from '@/components/StockChart';
 import SymbolSkeleton from '@/components/SymbolSkeleton';
 import { formatQuantity } from '@/lib/format';
 import { computeActivityNetAmount } from '@/lib/activities-filters';
+import { sanitizeStoredHoldings } from '@/lib/issuers/holdings';
+import type { UnderlyingHoldingEntry } from '@/lib/issuers/types';
 import styles from './page.module.css';
 
 interface AccountAllocation {
@@ -46,6 +48,7 @@ interface AnalysisData {
         country?: string;
         sectorAllocations?: { [key: string]: number }[];
         countryAllocations?: any[];
+        topHoldings?: UnderlyingHoldingEntry[];
         totalDividends?: number;
         totalDripAmount?: number;
         dripCount?: number;
@@ -89,6 +92,10 @@ function AnalysisContent() {
     const [syncTick, setSyncTick] = useState(0);
     const loadedSymbolRef = useRef<string | null>(null);
     const suppressSelfSyncRef = useRef(false);
+
+    // Underlying holdings filters
+    const [holdingsQuery, setHoldingsQuery] = useState('');
+    const [showAllHoldings, setShowAllHoldings] = useState(false);
 
     // Activities tab filters
     const [filterType, setFilterType] = useState('');
@@ -195,6 +202,26 @@ function AnalysisContent() {
             .filter((a: any) => !filterAccountType || a.account?.type === filterAccountType)
             .filter((a: any) => !filterPlatform || a.platform?.name === filterPlatform);
     }, [sortedActivities, filterType, filterAccount, filterAccountType, filterPlatform]);
+
+    const normalizedTopHoldings = useMemo(() => {
+        return sanitizeStoredHoldings(data?.stats?.topHoldings).map((entry, idx) => ({
+            entry,
+            rank: idx + 1,
+        }));
+    }, [data]);
+
+    const filteredTopHoldings = useMemo(() => {
+        const q = holdingsQuery.trim().toLowerCase();
+        if (!q) return normalizedTopHoldings;
+        return normalizedTopHoldings.filter(({ entry }) => {
+            const hay = `${entry.name} ${entry.ticker || ''} ${entry.sector || ''} ${entry.country || ''}`.toLowerCase();
+            return hay.includes(q);
+        });
+    }, [normalizedTopHoldings, holdingsQuery]);
+
+    const trackedHoldingsWeight = useMemo(() => {
+        return normalizedTopHoldings.reduce((sum, { entry }) => sum + entry.weight, 0);
+    }, [normalizedTopHoldings]);
 
     if (!data) return <SymbolSkeleton />;
 
@@ -829,6 +856,161 @@ function AnalysisContent() {
                             </section>
                         )}
                     </div>
+
+                    {/* Tier 4: ETF Underlying Holdings */}
+                    {(normalizedTopHoldings.length > 0 ||
+                        sectorAllocations.length > 0 ||
+                        countryAllocations.length > 0 ||
+                        /\b(etf|ishares|vanguard|bmo|index|fund|trust)\b/i.test(data.name || '')) && (() => {
+                        const isYahooSource =
+                            normalizedTopHoldings.length > 0 &&
+                            normalizedTopHoldings.every(({ entry }) => entry.source === 'yahoo');
+                        const topWeight = normalizedTopHoldings[0]?.entry.weight || 0.01;
+                        const isSearching = Boolean(holdingsQuery.trim());
+                        const visibleHoldings =
+                            showAllHoldings || isSearching
+                                ? filteredTopHoldings
+                                : filteredTopHoldings.slice(0, 50);
+
+                        return (
+                            <section className={styles.detailCard}>
+                                <div className={styles.detailCardHeader}>
+                                    <h2 className={styles.detailCardTitle}>Underlying Holdings</h2>
+                                    <div className={styles.holdingsHeaderRight}>
+                                        {normalizedTopHoldings.length > 0 && (
+                                            <span className={styles.kpiTag}>
+                                                {isYahooSource ? 'Yahoo Top 10' : 'Direct Issuer'}
+                                            </span>
+                                        )}
+                                        <span className={styles.kpiTag}>
+                                            {normalizedTopHoldings.length > 0
+                                                ? `${normalizedTopHoldings.length} ${normalizedTopHoldings.length === 1 ? 'Holding' : 'Holdings'}`
+                                                : 'Pending Sync'}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {normalizedTopHoldings.length > 0 ? (
+                                    <>
+                                        <div className={styles.holdingsToolbar}>
+                                            {normalizedTopHoldings.length > 10 ? (
+                                                <input
+                                                    type="search"
+                                                    className={styles.holdingsSearch}
+                                                    value={holdingsQuery}
+                                                    onChange={(e) => setHoldingsQuery(e.target.value)}
+                                                    placeholder="Search holding name, ticker, sector, or country..."
+                                                    aria-label="Filter underlying holdings"
+                                                />
+                                            ) : (
+                                                <span />
+                                            )}
+
+                                            <div className={styles.holdingsTrackedSummary}>
+                                                Tracked weight:{' '}
+                                                <strong>{(trackedHoldingsWeight * 100).toFixed(1)}%</strong>
+                                                {holdingValueConverted > 0 && (
+                                                    <>
+                                                        {' '}
+                                                        (<strong>{format(holdingValueConverted * trackedHoldingsWeight)}</strong>)
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {visibleHoldings.length === 0 ? (
+                                            <div className={styles.emptyState}>
+                                                No underlying holdings match &ldquo;{holdingsQuery.trim()}&rdquo;.
+                                            </div>
+                                        ) : (
+                                            <ul
+                                                className={`${styles.allocList} ${
+                                                    visibleHoldings.length > 8 ? styles.holdingsScrollable : ''
+                                                }`}
+                                            >
+                                                {visibleHoldings.map(({ entry: item, rank }) => {
+                                                    const color = ALLOCATION_PALETTE[(rank - 1) % ALLOCATION_PALETTE.length];
+                                                    const metaParts = [
+                                                        item.assetClass === 'BOND' ? 'Bond' : undefined,
+                                                        item.sector,
+                                                        item.country,
+                                                    ].filter(Boolean);
+                                                    const pct = item.weight * 100;
+                                                    const barWidth = Math.min(100, (item.weight / topWeight) * 100);
+                                                    const key = `${item.isin || item.ticker || item.name}-${rank}`;
+
+                                                    return (
+                                                        <li key={key} className={styles.allocRow}>
+                                                            <div className={styles.allocRowTop}>
+                                                                <div className={styles.allocNameWrap}>
+                                                                    <span className={styles.holdingsRank}>#{rank}</span>
+                                                                    <span
+                                                                        className={styles.allocDot}
+                                                                        style={{ backgroundColor: color }}
+                                                                    />
+                                                                    <span className={styles.allocName}>{item.name}</span>
+                                                                    {item.ticker && (
+                                                                        <span className={styles.holdingTickerPill}>
+                                                                            {item.ticker}
+                                                                        </span>
+                                                                    )}
+                                                                    {metaParts.length > 0 && (
+                                                                        <span className={styles.holdingMetaTag}>
+                                                                            {metaParts.join(' · ')}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                <div className={styles.allocStats}>
+                                                                    {holdingValueConverted > 0 && (
+                                                                        <span className={styles.allocVal}>
+                                                                            {format(holdingValueConverted * item.weight)}
+                                                                        </span>
+                                                                    )}
+                                                                    <span className={styles.allocPct}>
+                                                                        {pct.toFixed(2)}%
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <div className={styles.allocBarTrack}>
+                                                                <div
+                                                                    className={styles.allocBarFill}
+                                                                    style={{
+                                                                        width: `${barWidth}%`,
+                                                                        backgroundColor: color,
+                                                                    }}
+                                                                />
+                                                            </div>
+                                                        </li>
+                                                    );
+                                                })}
+                                            </ul>
+                                        )}
+
+                                        {!isSearching && filteredTopHoldings.length > 50 && (
+                                            <div className={styles.holdingsFooter}>
+                                                <span>
+                                                    Showing {visibleHoldings.length} of {filteredTopHoldings.length} holdings
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    className={styles.holdingsToggleBtn}
+                                                    onClick={() => setShowAllHoldings(prev => !prev)}
+                                                >
+                                                    {showAllHoldings
+                                                        ? 'Show Top 50'
+                                                        : `Show All ${filteredTopHoldings.length} Holdings`}
+                                                </button>
+                                            </div>
+                                        )}
+                                    </>
+                                ) : (
+                                    <div className={styles.emptyState}>
+                                        No underlying stock holdings cached yet. Run <strong>Refresh Quote</strong> above or your issuer allocations push job to populate Top 250 look-through holdings.
+                                    </div>
+                                )}
+                            </section>
+                        );
+                    })()}
                 </div>
             )}
 

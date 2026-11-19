@@ -134,13 +134,16 @@ export async function runPushIssuerAllocations(
             onDiagnostic: (diag) => log(`[IssuerPush] ${diag}`),
         });
 
-        if (result && result.countryAllocations.length > 0) {
+        if (result && (result.countryAllocations.length > 0 || (result.topHoldings?.length ?? 0) > 0)) {
             const sectorSummary = result.sectorAllocations?.length
                 ? `, ${result.sectorAllocations.length} sectors`
                 : '';
+            const holdingsSummary = result.topHoldings?.length
+                ? `, ${result.topHoldings.length} holdings`
+                : '';
             log(
                 `[IssuerPush] Resolved ${item.symbol} via ${result.providerId}: ` +
-                    `${result.countryAllocations.length} countries${sectorSummary}`
+                    `${result.countryAllocations.length} countries${sectorSummary}${holdingsSummary}`
             );
             resolvedPayloads.push({
                 symbol: item.symbol,

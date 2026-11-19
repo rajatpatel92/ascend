@@ -10,12 +10,15 @@ import {
     recordHostSuccess,
     shouldPreferNodeHttpForHost,
 } from './http.ts';
+import { mergeAndCapHoldings } from './holdings.ts';
 import type {
     AllocationWeightEntry,
     EtfIssuerAdapter,
     IssuerAllocationResult,
     IssuerLookupContext,
+    UnderlyingHoldingEntry,
 } from './types.ts';
+import { MAX_UNDERLYING_HOLDINGS } from './types.ts';
 
 type IsharesRegion = 'ca' | 'us';
 
@@ -373,6 +376,7 @@ function isCashRow(assetClassLower: string, sectorLower: string): boolean {
 export function aggregateIsharesHoldings(rows: ParsedIsharesHoldingRow[]): {
     countryAllocations: AllocationWeightEntry[];
     sectorAllocations: AllocationWeightEntry[];
+    topHoldings: UnderlyingHoldingEntry[];
     holdingsCount: number;
 } {
     let totalMarketValue = 0;
@@ -392,11 +396,13 @@ export function aggregateIsharesHoldings(rows: ParsedIsharesHoldingRow[]): {
 
     const useMarketValue = totalMarketValue > 0;
     if (!useMarketValue && totalWeightPercent <= 0) {
-        return { countryAllocations: [], sectorAllocations: [], holdingsCount: 0 };
+        return { countryAllocations: [], sectorAllocations: [], topHoldings: [], holdingsCount: 0 };
     }
 
     const countryTotals = new Map<string, number>();
     const sectorTotals = new Map<string, number>();
+    const rawEquityHoldings: UnderlyingHoldingEntry[] = [];
+    const rawBondHoldings: UnderlyingHoldingEntry[] = [];
     let countryAllocatedSum = 0;
     let sectorAllocatedSum = 0;
     let fixedIncomeWeight = 0;
@@ -419,26 +425,50 @@ export function aggregateIsharesHoldings(rows: ParsedIsharesHoldingRow[]): {
 
         const sectorLower = (row.sector || '').trim().toLowerCase();
         const isCash = isCashRow(assetClassLower, sectorLower);
+        const isBond = assetClassLower.includes('fixed income') || assetClassLower === 'bond';
 
-        if (assetClassLower.includes('fixed income') || assetClassLower === 'bond') {
+        if (isBond) {
             fixedIncomeWeight += rawWeight;
         }
 
+        let normalizedCountry: string | undefined;
         const rawLocation = (row.location || '').trim();
         if (!isCash && rawLocation && !PLACEHOLDER_LOCATIONS.has(rawLocation.toLowerCase())) {
             const country = normalizeCountryName(rawLocation);
             if (country !== 'Unspecified') {
                 countryTotals.set(country, (countryTotals.get(country) || 0) + rawWeight);
                 countryAllocatedSum += rawWeight;
+                normalizedCountry = country;
             }
         }
 
+        let normalizedSector: string | undefined;
         const rawSector = (row.sector || '').trim();
         if (!isCash && rawSector && !PLACEHOLDER_SECTORS.has(sectorLower)) {
             const sector = normalizeSectorName(rawSector);
             if (sector !== 'Other / Unclassified') {
                 sectorTotals.set(sector, (sectorTotals.get(sector) || 0) + rawWeight);
                 sectorAllocatedSum += rawWeight;
+                normalizedSector = sector;
+            }
+        }
+
+        const displayName = (row.name || row.ticker || '').trim();
+        const isCommodity = assetClassLower.includes('commodit');
+        if (!isCash && !isCommodity && displayName) {
+            const holdingEntry: UnderlyingHoldingEntry = {
+                name: displayName,
+                ticker: row.ticker?.trim() || undefined,
+                sector: !isBond ? normalizedSector : undefined,
+                country: normalizedCountry,
+                assetClass: isBond ? 'BOND' : 'EQUITY',
+                weight: rawWeight,
+                source: 'ishares',
+            };
+            if (isBond) {
+                rawBondHoldings.push(holdingEntry);
+            } else {
+                rawEquityHoldings.push(holdingEntry);
             }
         }
     }
@@ -477,9 +507,22 @@ export function aggregateIsharesHoldings(rows: ParsedIsharesHoldingRow[]): {
                   .map((entry) => ({ [entry.sector]: entry.weight }))
             : [];
 
+    const selectedRawHoldings = isPredominantlyFixedIncome ? rawBondHoldings : rawEquityHoldings;
+    const topHoldings =
+        totalPositivePortfolioWeight > 0
+            ? mergeAndCapHoldings(
+                  selectedRawHoldings.map((h) => ({
+                      ...h,
+                      weight: h.weight / totalPositivePortfolioWeight,
+                  })),
+                  MAX_UNDERLYING_HOLDINGS
+              )
+            : [];
+
     return {
         countryAllocations,
         sectorAllocations,
+        topHoldings,
         holdingsCount: rows.length,
     };
 }
@@ -845,6 +888,7 @@ export const isharesAdapter: EtfIssuerAdapter = {
             countryAllocations: aggregated.countryAllocations,
             sectorAllocations:
                 aggregated.sectorAllocations.length > 0 ? aggregated.sectorAllocations : undefined,
+            topHoldings: aggregated.topHoldings.length > 0 ? aggregated.topHoldings : undefined,
             holdingsCount: aggregated.holdingsCount,
             asOfDate,
         };

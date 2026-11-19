@@ -80,6 +80,7 @@ model MarketDataCache {
   history       Json?    // Historical price data (map of date -> price)
   sectorAllocations Json? // ETF Sector breakdown
   countryAllocations Json? // ETF Country breakdown
+  topHoldings   Json?    // Underlying constituent holdings (capped at Top 250)
   sector        String?
   country       String?
   dividendRate  Float?

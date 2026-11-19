@@ -401,5 +401,147 @@ describe('Vanguard direct-issuer adapter', () => {
             );
             assert.strictEqual(getHostCircuitStatus('investor.vanguard.com').open, true);
         });
+
+        test('extracts Top 250 stock holdings from Vanguard US AdditionalFundData and CA FOF borHoldings', async () => {
+            const usAgg = aggregateVanguardUsAdditionalFundData({
+                holdingDetails: {
+                    asOfDate: '2026-10-31',
+                    equityHoldings: [
+                        {
+                            ticker: 'GOOGL',
+                            issuerName: 'Alphabet Inc.',
+                            securityLongDescription: 'Alphabet Inc. Class A',
+                            isin: 'US02079K3059',
+                            securityType: 'EQ.CS',
+                            marketValuePercentage: '4.5',
+                        },
+                        {
+                            ticker: 'GOOG',
+                            issuerName: 'Alphabet Inc.',
+                            securityLongDescription: 'Alphabet Inc. Class C',
+                            isin: 'US02079K1079',
+                            securityType: 'EQ.CS',
+                            marketValuePercentage: '3.8',
+                        },
+                    ],
+                },
+            });
+            assert.strictEqual(usAgg.topHoldings.length, 2);
+            assert.strictEqual(usAgg.topHoldings[0].ticker, 'GOOGL');
+            assert.strictEqual(usAgg.topHoldings[1].ticker, 'GOOG');
+
+            const mockCaFetch: typeof fetch = async (_input, init) => {
+                const parsed = JSON.parse(String(init?.body)) as {
+                    query: string;
+                    variables: { portIds: string[] };
+                };
+                const pid = parsed.variables.portIds[0];
+
+                if (parsed.query.includes('FundAllocations')) {
+                    if (pid === '9579') {
+                        return jsonResponse({
+                            data: {
+                                funds: [
+                                    {
+                                        profile: { portId: '9579', assetClassificationLevel1: 'Balanced' },
+                                        marketAllocation: [
+                                            { countryCode: 'US', fundMktPercent: 60 },
+                                            { countryCode: 'CA', fundMktPercent: 40 },
+                                        ],
+                                    },
+                                ],
+                            },
+                        });
+                    }
+                    if (pid === '9557') {
+                        return jsonResponse({
+                            data: {
+                                funds: [
+                                    {
+                                        profile: { portId: '9557', assetClassificationLevel1: 'Equity' },
+                                        marketAllocation: [{ countryCode: 'US', fundMktPercent: 100 }],
+                                    },
+                                ],
+                            },
+                        });
+                    }
+                    return jsonResponse({
+                        data: {
+                            funds: [
+                                {
+                                    profile: { portId: '9552', assetClassificationLevel1: 'Fixed Income' },
+                                    marketAllocation: [{ countryCode: 'CA', fundMktPercent: 100 }],
+                                },
+                            ],
+                        },
+                    });
+                }
+
+                if (pid === '9579') {
+                    return jsonResponse({
+                        data: {
+                            borHoldings: [
+                                {
+                                    holdings: {
+                                        items: [
+                                            { ticker: 'VUN', securityType: 'EQ.ETF', marketValuePercentage: 60 },
+                                            { ticker: 'VAB', securityType: 'EQ.ETF', marketValuePercentage: 40 },
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    });
+                }
+
+                if (pid === '9557') {
+                    return jsonResponse({
+                        data: {
+                            borHoldings: [
+                                {
+                                    holdings: {
+                                        items: [
+                                            {
+                                                ticker: 'AAPL',
+                                                issuerName: 'Apple Inc.',
+                                                isin: 'US0378331005',
+                                                securityType: 'EQ.ORD',
+                                                bloombergIsoCountry: 'US',
+                                                gicsSectorDescription: 'Information Technology',
+                                                marketValuePercentage: 90,
+                                            },
+                                            {
+                                                ticker: 'MSFT',
+                                                issuerName: 'Microsoft Corp.',
+                                                isin: 'US5949181045',
+                                                securityType: 'EQ.ORD',
+                                                bloombergIsoCountry: 'US',
+                                                gicsSectorDescription: 'Information Technology',
+                                                marketValuePercentage: 10,
+                                            },
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    });
+                }
+
+                return jsonResponse({ data: { borHoldings: [{ holdings: { items: [] } }] } });
+            };
+
+            const vgroRes = await vanguardAdapter.fetchAllocations({
+                symbol: 'VGRO.TO',
+                quoteType: 'ETF',
+                fundName: 'Vanguard Growth ETF Portfolio',
+                fetchFn: mockCaFetch,
+            });
+            assert.ok(vgroRes?.topHoldings);
+            assert.strictEqual(vgroRes.topHoldings.length, 2);
+            assert.strictEqual(vgroRes.topHoldings[0].ticker, 'AAPL');
+            assert.ok(Math.abs(vgroRes.topHoldings[0].weight - 0.54) < 1e-6);
+            assert.strictEqual(vgroRes.topHoldings[1].ticker, 'MSFT');
+            assert.ok(Math.abs(vgroRes.topHoldings[1].weight - 0.06) < 1e-6);
+        });
     });
 });

@@ -21,11 +21,27 @@ export interface IssuerLookupContext {
     onDiagnostic?: (message: string) => void;
 }
 
+export const MAX_UNDERLYING_HOLDINGS = 250;
+
+export type UnderlyingHoldingAssetClass = 'EQUITY' | 'BOND';
+
+export interface UnderlyingHoldingEntry {
+    name: string;
+    ticker?: string;
+    isin?: string;
+    sector?: string;
+    country?: string;
+    assetClass?: UnderlyingHoldingAssetClass;
+    weight: number;
+    source?: string;
+}
+
 export interface IssuerAllocationResult {
     providerId: string;
     productId?: string;
     countryAllocations: AllocationWeightEntry[];
     sectorAllocations?: AllocationWeightEntry[];
+    topHoldings?: UnderlyingHoldingEntry[];
     holdingsCount: number;
     asOfDate?: string;
 }

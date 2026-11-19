@@ -11,6 +11,8 @@ import {
     type ThrottlerStatusSnapshot,
 } from './sync-state.ts';
 import { resolveIssuerAllocations } from './issuers/index.ts';
+import { extractYahooTopHoldings, sanitizeStoredHoldings } from './issuers/holdings.ts';
+import type { UnderlyingHoldingEntry } from './issuers/types.ts';
 
 export const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey', 'ripHistorical'],
@@ -223,7 +225,15 @@ function parseMarketTime(raw: unknown, fallback: Date): Date {
     return parseOptionalMarketDate(raw) ?? fallback;
 }
 
+function isDirectIssuerHoldingsList(holdings: UnderlyingHoldingEntry[]): boolean {
+    return holdings.length > 10 || holdings.some((h) => Boolean(h.source && h.source !== 'yahoo'));
+}
+
 function mapCachedRowToMarketData(cached: any): MarketData {
+    const cachedTopHoldings = Array.isArray(cached.topHoldings)
+        ? sanitizeStoredHoldings(cached.topHoldings)
+        : undefined;
+
     return {
         symbol: cached.symbol,
         price: cached.price,
@@ -235,6 +245,7 @@ function mapCachedRowToMarketData(cached: any): MarketData {
         country: cached.country || undefined,
         sectorAllocations: cached.sectorAllocations as any[],
         countryAllocations: cached.countryAllocations as any[],
+        topHoldings: cachedTopHoldings,
         dividendRate: cached.dividendRate || undefined,
         dividendYield: cached.dividendYield || undefined,
         exDividendDate: cached.exDividendDate || undefined,
@@ -338,6 +349,7 @@ export interface MarketData {
     fiftyTwoWeekLow?: number;
     sectorAllocations?: any[];
     countryAllocations?: any[];
+    topHoldings?: UnderlyingHoldingEntry[];
     dividendRate?: number;
     dividendYield?: number;
     exDividendDate?: Date;
@@ -411,6 +423,7 @@ export class MarketDataService {
                     country: true,
                     sectorAllocations: true,
                     countryAllocations: true,
+                    topHoldings: true,
                     dividendRate: true,
                     dividendYield: true,
                     exDividendDate: true,
@@ -566,6 +579,9 @@ export class MarketDataService {
                                     `${issuerAllocations.countryAllocations.length} countries` +
                                     (issuerAllocations.sectorAllocations?.length
                                         ? `, ${issuerAllocations.sectorAllocations.length} sectors`
+                                        : '') +
+                                    (issuerAllocations.topHoldings?.length
+                                        ? `, ${issuerAllocations.topHoldings.length} holdings`
                                         : '');
                                 console.log(msg);
                                 onDiagnostic?.(msg);
@@ -591,6 +607,8 @@ export class MarketDataService {
                     const cachedCountryAllocations = Array.isArray(cached?.countryAllocations)
                         ? (cached.countryAllocations as any[])
                         : [];
+                    const cachedTopHoldings = sanitizeStoredHoldings(cached?.topHoldings);
+                    const cachedHasDirectIssuerHoldings = isDirectIssuerHoldingsList(cachedTopHoldings);
 
                     const yahooSectorAllocations = Array.isArray(holdings.sectorWeightings)
                         ? holdings.sectorWeightings
@@ -601,6 +619,8 @@ export class MarketDataService {
                     const hasIssuerCountries = Boolean(
                         issuerAllocations?.countryAllocations && issuerAllocations.countryAllocations.length > 0
                     );
+                    const issuerTopHoldings = issuerAllocations?.topHoldings ?? [];
+                    const yahooTopHoldings = isFundLike ? extractYahooTopHoldings(holdings.holdings) : [];
 
                     const resolvedSectorAllocations =
                         yahooSectorAllocations.length > 0
@@ -627,6 +647,21 @@ export class MarketDataService {
                             ? []
                             : (cached?.countryAllocations as any[] | undefined);
 
+                    // # Reason: Direct-issuer Top-250 holdings take precedence over Yahoo's partial Top 10;
+                    // never overwrite previously cached direct-issuer holdings with Yahoo Top 10 if a scrape fails.
+                    let resolvedTopHoldings: UnderlyingHoldingEntry[] | undefined;
+                    if (issuerTopHoldings.length > 0) {
+                        resolvedTopHoldings = issuerTopHoldings;
+                    } else if (cachedHasDirectIssuerHoldings) {
+                        resolvedTopHoldings = cachedTopHoldings;
+                    } else if (yahooTopHoldings.length > 0) {
+                        resolvedTopHoldings = yahooTopHoldings;
+                    } else if (quoteSummary) {
+                        resolvedTopHoldings = isFundLike && cachedTopHoldings.length > 0 ? cachedTopHoldings : [];
+                    } else if (Array.isArray(cached?.topHoldings)) {
+                        resolvedTopHoldings = cachedTopHoldings;
+                    }
+
                     const data: MarketData = {
                         symbol,
                         price: priceVal,
@@ -640,6 +675,7 @@ export class MarketDataService {
                         fiftyTwoWeekLow: detail.fiftyTwoWeekLow,
                         sectorAllocations: resolvedSectorAllocations,
                         countryAllocations: resolvedCountryAllocations,
+                        topHoldings: resolvedTopHoldings,
                         dividendRate,
                         dividendYield,
                         exDividendDate: parseOptionalMarketDate(calendar.exDividendDate) ?? parseOptionalMarketDate(quoteRealtime?.exDividendDate),
@@ -700,6 +736,11 @@ export class MarketDataService {
                         lastUpdated: now,
                     };
 
+                    const shouldPersistTopHoldings =
+                        issuerTopHoldings.length > 0 ||
+                        (!cachedHasDirectIssuerHoldings && yahooTopHoldings.length > 0) ||
+                        (Boolean(quoteSummary) && !isFundLike);
+
                     if (quoteSummary) {
                         updatePayload.sector = data.sector;
                         updatePayload.country = data.country;
@@ -717,6 +758,9 @@ export class MarketDataService {
                             updatePayload.countryAllocations = data.countryAllocations;
                         }
                     }
+                    if (shouldPersistTopHoldings) {
+                        updatePayload.topHoldings = resolvedTopHoldings ?? [];
+                    }
                     if (metadataResolved) {
                         updatePayload.metadataUpdatedAt = now;
                     }
@@ -731,6 +775,7 @@ export class MarketDataService {
                         country: data.country,
                         sectorAllocations: data.sectorAllocations ?? [],
                         countryAllocations: data.countryAllocations ?? [],
+                        topHoldings: data.topHoldings ?? [],
                         dividendRate: data.dividendRate,
                         dividendYield: data.dividendYield,
                         exDividendDate: data.exDividendDate,
@@ -1212,6 +1257,7 @@ export class MarketDataService {
                     ok: true;
                     symbol: string;
                     isFundLike: boolean;
+                    hasIssuerTopHoldings: boolean;
                     priceData: {
                         price: number;
                         change: number;
@@ -1221,6 +1267,7 @@ export class MarketDataService {
                         country: string | undefined;
                         sectorAllocations: any[];
                         countryAllocations: any[];
+                        topHoldings: UnderlyingHoldingEntry[];
                         dividendRate: number | undefined;
                         dividendYield: number | undefined;
                         exDividendDate: Date | undefined;
@@ -1234,6 +1281,26 @@ export class MarketDataService {
                     symbol: string;
                     error: unknown;
                 };
+
+                const existingHoldingsMap = new Map<string, UnderlyingHoldingEntry[]>();
+                const marketCacheRepo = prisma.marketDataCache as unknown as {
+                    findMany?: (args: any) => Promise<Array<{ symbol: string; topHoldings?: unknown }>>;
+                };
+                if (typeof marketCacheRepo?.findMany === 'function') {
+                    try {
+                        const existingRows = await marketCacheRepo.findMany({
+                            where: { symbol: { in: symbolList } },
+                            select: { symbol: true, topHoldings: true },
+                        });
+                        for (const row of existingRows || []) {
+                            if (row?.symbol && Array.isArray(row.topHoldings)) {
+                                existingHoldingsMap.set(row.symbol, sanitizeStoredHoldings(row.topHoldings));
+                            }
+                        }
+                    } catch {
+                        // Non-fatal fallback
+                    }
+                }
 
                 const processSymbol = async (symbol: string): Promise<SymbolProcessSuccess | SymbolProcessFailure> => {
                     try {
@@ -1289,7 +1356,10 @@ export class MarketDataService {
                         if (issuerAllocations) {
                             console.log(
                                 `[MarketData] Resolved ${issuerAllocations.providerId} allocations for ${symbol}: ` +
-                                `${issuerAllocations.countryAllocations.length} countries`
+                                `${issuerAllocations.countryAllocations.length} countries` +
+                                (issuerAllocations.topHoldings?.length
+                                    ? `, ${issuerAllocations.topHoldings.length} holdings`
+                                    : '')
                             );
                         } else if (isFundLike && fundName && /\b(ishares|blackrock)\b/i.test(fundName)) {
                             console.warn(
@@ -1307,6 +1377,11 @@ export class MarketDataService {
                                 : (issuerAllocations?.sectorAllocations ?? []);
                         const resolvedCountryAllocations = issuerAllocations?.countryAllocations ?? [];
 
+                        const issuerTopHoldings = issuerAllocations?.topHoldings ?? [];
+                        const yahooTopHoldings = isFundLike ? extractYahooTopHoldings(holdings.holdings) : [];
+                        const hasIssuerTopHoldings = issuerTopHoldings.length > 0;
+                        const resolvedTopHoldings = hasIssuerTopHoldings ? issuerTopHoldings : yahooTopHoldings;
+
                         const priceData: SymbolProcessSuccess['priceData'] = {
                             price: rawPrice,
                             change: typeof p.regularMarketChange === 'number' && Number.isFinite(p.regularMarketChange) ? p.regularMarketChange : 0,
@@ -1316,6 +1391,7 @@ export class MarketDataService {
                             country: profile.country,
                             sectorAllocations: resolvedSectorAllocations,
                             countryAllocations: resolvedCountryAllocations,
+                            topHoldings: resolvedTopHoldings,
                             dividendRate,
                             dividendYield,
                             exDividendDate: parseOptionalMarketDate(calendar.exDividendDate),
@@ -1359,7 +1435,7 @@ export class MarketDataService {
                         const quotes = chartResult?.quotes || [];
                         const history = this.processHistory(quotes);
 
-                        return { ok: true, symbol, isFundLike, priceData, history };
+                        return { ok: true, symbol, isFundLike, hasIssuerTopHoldings, priceData, history };
                     } catch (error) {
                         console.error(`Error processing market data for ${symbol}:`, error);
                         return { ok: false, symbol, error };
@@ -1371,7 +1447,7 @@ export class MarketDataService {
                 const failedResults = results.filter((r): r is SymbolProcessFailure => !r.ok);
 
                 if (validResults.length > 0) {
-                    const upserts = validResults.map(({ symbol, isFundLike, priceData, history }) => {
+                    const upserts = validResults.map(({ symbol, isFundLike, hasIssuerTopHoldings, priceData, history }) => {
                         const updateFields: Record<string, any> = {
                             price: priceData.price,
                             change: priceData.change,
@@ -1396,6 +1472,16 @@ export class MarketDataService {
                             updateFields.countryAllocations = priceData.countryAllocations;
                         }
 
+                        const existingHoldings = existingHoldingsMap.get(symbol) ?? [];
+                        const cachedHasDirectIssuer = isDirectIssuerHoldingsList(existingHoldings);
+                        if (hasIssuerTopHoldings) {
+                            updateFields.topHoldings = priceData.topHoldings;
+                        } else if (!cachedHasDirectIssuer && priceData.topHoldings.length > 0) {
+                            updateFields.topHoldings = priceData.topHoldings;
+                        } else if (!isFundLike) {
+                            updateFields.topHoldings = [];
+                        }
+
                         return prisma.marketDataCache.upsert({
                             where: { symbol },
                             update: updateFields as any,
@@ -1409,6 +1495,7 @@ export class MarketDataService {
                                 country: priceData.country,
                                 sectorAllocations: priceData.sectorAllocations,
                                 countryAllocations: priceData.countryAllocations,
+                                topHoldings: priceData.topHoldings,
                                 dividendRate: priceData.dividendRate,
                                 dividendYield: priceData.dividendYield,
                                 exDividendDate: priceData.exDividendDate,

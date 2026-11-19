@@ -21,7 +21,13 @@ import {
     SectorBreakdown,
     CountryBreakdown
 } from '@/lib/look-through';
-import { PieChart, Globe, Layers, Landmark, Wallet } from 'lucide-react';
+import PortfolioHoldingsXRay, { StockContributorsBreakdownCard } from '@/components/PortfolioHoldingsXRay';
+import {
+    calculatePortfolioHoldingsLookThrough,
+    constituentHoldsUnderlyingStock,
+    PortfolioHoldingStock
+} from '@/lib/holdings-look-through';
+import { PieChart, Globe, Layers, Landmark, Wallet, Building2 } from 'lucide-react';
 
 interface SyncStatusInfo {
     syncedAt: string | null;
@@ -45,7 +51,7 @@ interface PortfolioSummary {
     syncStatus?: SyncStatusInfo;
 }
 
-type ActiveDimension = 'sector' | 'country' | 'type' | 'accountType' | 'account';
+type ActiveDimension = 'sector' | 'country' | 'holdings' | 'type' | 'accountType' | 'account';
 
 interface InteractiveFilters {
     investmentType: string | null;
@@ -53,6 +59,7 @@ interface InteractiveFilters {
     accountName: string | null;
     sector: string | null;
     country: string | null;
+    stockKey: string | null;
 }
 
 const EMPTY_INTERACTIVE_FILTERS: InteractiveFilters = {
@@ -60,7 +67,8 @@ const EMPTY_INTERACTIVE_FILTERS: InteractiveFilters = {
     accountType: null,
     accountName: null,
     sector: null,
-    country: null
+    country: null,
+    stockKey: null
 };
 
 const QUANTITY_EPSILON = 0.00001;
@@ -97,6 +105,16 @@ const DIMENSIONS: ReadonlyArray<{
         icon: Globe
     },
     {
+        id: 'holdings',
+        label: 'Holdings',
+        title: 'By Underlying Holdings',
+        subtitle: 'Cumulative individual stock exposure combining direct equities and Top 250 ETF look-through weights.',
+        badgeText: 'Look-Through X-Ray',
+        itemLabel: { singular: 'Holding', plural: 'Holdings' },
+        filterKey: 'stockKey',
+        icon: Building2
+    },
+    {
         id: 'type',
         label: 'Asset Type',
         title: 'By Investment Type',
@@ -128,6 +146,7 @@ const DIMENSIONS: ReadonlyArray<{
 const FILTER_BADGE_LABELS: ReadonlyArray<{ key: keyof InteractiveFilters; label: string }> = [
     { key: 'sector', label: 'Sector' },
     { key: 'country', label: 'Geography' },
+    { key: 'stockKey', label: 'Holding' },
     { key: 'investmentType', label: 'Asset Type' },
     { key: 'accountType', label: 'Account Type' },
     { key: 'accountName', label: 'Account' }
@@ -384,10 +403,12 @@ export default function AnalysisPage() {
             sector: item.sector,
             country: item.country,
             sectorAllocations: item.sectorAllocations,
-            countryAllocations: item.countryAllocations
+            countryAllocations: item.countryAllocations,
+            topHoldings: item.topHoldings
         }));
 
         const lookThrough = calculateLookThrough(lookThroughConstituents);
+        const holdingsLookThrough = calculatePortfolioHoldingsLookThrough(lookThroughConstituents);
         const mapToObj = (map: Map<string, number>) => Array.from(map.entries()).map(([name, value]) => ({ name, value }));
 
         return {
@@ -398,11 +419,12 @@ export default function AnalysisPage() {
             allocationByCountry: lookThrough.byCountry,
             sectorLookThrough: lookThrough.sectorDetails,
             countryLookThrough: lookThrough.countryDetails,
+            holdingsLookThrough,
             totalValue: lookThrough.totalValue
         };
     }, [globalConstituents]);
 
-    // On-demand X-Ray breakdowns (only resolved when user selects a Sector or Country)
+    // On-demand X-Ray breakdowns (only resolved when user selects a Sector, Country, or Underlying Stock)
     const activeSectorBreakdown = useMemo(() => {
         if (!interactiveFilters.sector) return null;
         return chartAllocations.sectorLookThrough.find(s => s.name === interactiveFilters.sector) || null;
@@ -413,17 +435,23 @@ export default function AnalysisPage() {
         return chartAllocations.countryLookThrough.find(c => c.name === interactiveFilters.country) || null;
     }, [interactiveFilters.country, chartAllocations.countryLookThrough]);
 
+    const selectedStock = useMemo<PortfolioHoldingStock | null>(() => {
+        if (!interactiveFilters.stockKey) return null;
+        return chartAllocations.holdingsLookThrough.holdings.find(h => h.key === interactiveFilters.stockKey) || null;
+    }, [interactiveFilters.stockKey, chartAllocations.holdingsLookThrough.holdings]);
+
     // --- Layer 2: Interactive Filter Processing (For Table) ---
     const finalConstituents = useMemo(() => {
         return globalConstituents
             .filter((item: any) => {
                 if (interactiveFilters.investmentType && item.type !== interactiveFilters.investmentType) return false;
-                if (interactiveFilters.sector || interactiveFilters.country) {
+                if (interactiveFilters.sector || interactiveFilters.country || interactiveFilters.stockKey) {
                     const targetValue = item.valueTarget ?? (item.value * (item.conversionRate || 1));
                     if (item.quantity < QUANTITY_EPSILON || targetValue < VALUE_EPSILON) return false;
                     const lookThroughItem = { ...item, value: targetValue };
                     if (interactiveFilters.sector && !constituentHasSectorExposure(lookThroughItem, interactiveFilters.sector)) return false;
                     if (interactiveFilters.country && !constituentHasCountryExposure(lookThroughItem, interactiveFilters.country)) return false;
+                    if (interactiveFilters.stockKey && !constituentHoldsUnderlyingStock(lookThroughItem, selectedStock)) return false;
                 }
 
                 let matchesInteractiveAccount = true;
@@ -529,7 +557,7 @@ export default function AnalysisPage() {
                 };
             })
             .filter(Boolean);
-    }, [globalConstituents, interactiveFilters]);
+    }, [globalConstituents, interactiveFilters, selectedStock]);
 
     if (!summary) {
         if (fetchError) {
@@ -559,6 +587,7 @@ export default function AnalysisPage() {
     const dimensionDataMap: Record<ActiveDimension, { name: string; value: number }[]> = {
         sector: chartAllocations.allocationBySector,
         country: chartAllocations.allocationByCountry,
+        holdings: [],
         type: chartAllocations.allocationByType,
         accountType: chartAllocations.allocationByAccountType,
         account: chartAllocations.allocationByAccount
@@ -626,18 +655,24 @@ export default function AnalysisPage() {
 
                 {activeFilterBadges.length > 0 && (
                     <div className={styles.filterBadges}>
-                        {activeFilterBadges.map(({ key, label }) => (
-                            <span key={key} className={styles.badge}>
-                                <span className={styles.badgeLabel}>{label}: {interactiveFilters[key]}</span>
-                                <button
-                                    type="button"
-                                    aria-label={`Remove ${label} filter`}
-                                    onClick={() => setInteractiveFilters(prev => ({ ...prev, [key]: null }))}
-                                >
-                                    &times;
-                                </button>
-                            </span>
-                        ))}
+                        {activeFilterBadges.map(({ key, label }) => {
+                            const displayValue =
+                                key === 'stockKey' && selectedStock
+                                    ? `${selectedStock.name}${selectedStock.ticker ? ` (${selectedStock.ticker})` : ''}`
+                                    : interactiveFilters[key];
+                            return (
+                                <span key={key} className={styles.badge}>
+                                    <span className={styles.badgeLabel}>{label}: {displayValue}</span>
+                                    <button
+                                        type="button"
+                                        aria-label={`Remove ${label} filter`}
+                                        onClick={() => setInteractiveFilters(prev => ({ ...prev, [key]: null }))}
+                                    >
+                                        &times;
+                                    </button>
+                                </span>
+                            );
+                        })}
                         <button
                             type="button"
                             onClick={() => setInteractiveFilters(EMPTY_INTERACTIVE_FILTERS)}
@@ -670,6 +705,15 @@ export default function AnalysisPage() {
                                 selectedName={interactiveFilters.country}
                                 isPreConverted={true}
                             />
+                        ) : activeDimension === 'holdings' ? (
+                            <PortfolioHoldingsXRay
+                                result={chartAllocations.holdingsLookThrough}
+                                selectedStockKey={interactiveFilters.stockKey}
+                                onSelectStock={(stock, e) =>
+                                    handleDimensionSelect('stockKey', stock ? stock.key : null, e)
+                                }
+                                format={format}
+                            />
                         ) : (
                             <AllocationChart
                                 key={activeDimension}
@@ -697,6 +741,16 @@ export default function AnalysisPage() {
                                 ...prev,
                                 [activeDimension === 'country' ? 'country' : 'sector']: null
                             }))
+                        }
+                        format={format}
+                    />
+                )}
+
+                {activeDimension === 'holdings' && selectedStock && (
+                    <StockContributorsBreakdownCard
+                        stock={selectedStock}
+                        onClose={() =>
+                            setInteractiveFilters(prev => ({ ...prev, stockKey: null }))
                         }
                         format={format}
                     />

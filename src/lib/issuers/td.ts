@@ -4,11 +4,14 @@ import {
     emitIssuerDiagnostic,
     type IssuerRequestOptions,
 } from './http.ts';
-import type {
-    AllocationWeightEntry,
-    EtfIssuerAdapter,
-    IssuerAllocationResult,
-    IssuerLookupContext,
+import { mergeAndCapHoldings } from './holdings.ts';
+import {
+    MAX_UNDERLYING_HOLDINGS,
+    type AllocationWeightEntry,
+    type EtfIssuerAdapter,
+    type IssuerAllocationResult,
+    type IssuerLookupContext,
+    type UnderlyingHoldingEntry,
 } from './types.ts';
 
 type RequesterFn = (url: string, opts?: IssuerRequestOptions) => Promise<Response>;
@@ -335,13 +338,151 @@ function extractSectionPairs(
     return { entries, asOfDate };
 }
 
+const HOLDINGS_STOP_HEADINGS = new Set([
+    'fund geography',
+    'sector mix',
+    'asset mix',
+    'portfolio characteristics',
+    'credit quality',
+    'term to maturity',
+    'maturity breakdown',
+    'distributions',
+    'performance',
+    'historical performance',
+    'fund details',
+    'fund facts',
+    'risk rating',
+    'documents',
+    'related funds',
+    'disclaimer',
+    'important information',
+    'legal',
+]);
+
+const HOLDINGS_COLUMN_HEADERS = new Set([
+    'holding name',
+    'holding',
+    'security',
+    'security name',
+    'name',
+    'percentage of holdings',
+    'percentage of holding',
+    '% of holdings',
+    '% of net assets',
+    'asset weight',
+    'weight',
+    'weight (%)',
+    '%',
+    'show more',
+    'show all',
+    'show less',
+    'view all',
+]);
+
+function isIgnoredHoldingName(name: string): boolean {
+    const lower = name.trim().toLowerCase();
+    if (!lower || IGNORED_LABELS.has(lower)) return true;
+    if (
+        /^(?:usd|cad|eur|gbp|jpy|chf|aud|foreign)\s+currency$/i.test(lower) ||
+        /\b(fx forward|currency forward|forward contract|cash\s*(?:&|and)?\s*equivalents?)\b/i.test(
+            lower
+        )
+    ) {
+        return true;
+    }
+    return false;
+}
+
+function extractTdHoldingsEntries(
+    lines: string[],
+    html: string
+): { entries: Array<{ label: string; pct: number }>; asOfDate?: string } {
+    const attrEntries = extractDataAttributeJson(html, [
+        'data-holdings',
+        'data-top-holdings',
+        'data-full-holdings',
+    ]);
+    if (attrEntries.length > 0) {
+        return { entries: attrEntries };
+    }
+
+    let startIdx = lines.findIndex((line) =>
+        /^full list of holdings(?:\s*\(\d+\))?$/i.test(line)
+    );
+    if (startIdx < 0) {
+        startIdx = lines.findIndex((line) =>
+            /^top\s+(?:ten|10)\s+holdings(?:\s*\(\d+\))?$/i.test(line)
+        );
+    }
+    if (startIdx < 0) {
+        return { entries: [] };
+    }
+
+    const entries: Array<{ label: string; pct: number }> = [];
+    let asOfDate: string | undefined;
+
+    for (let i = startIdx + 1; i < Math.min(lines.length, startIdx + 2500); i++) {
+        const line = lines[i];
+        const lower = line.toLowerCase();
+        const headingBase = lower.replace(/\s*\(\d+\)\s*$/, '').trim();
+
+        if (HOLDINGS_STOP_HEADINGS.has(headingBase) || HOLDINGS_STOP_HEADINGS.has(lower)) {
+            break;
+        }
+
+        const asOfMatch = line.match(/^as of\s+(.+)$/i);
+        if (asOfMatch) {
+            asOfDate = asOfMatch[1].trim();
+            continue;
+        }
+
+        if (HOLDINGS_COLUMN_HEADERS.has(lower) || /^\(\d+\)$/.test(lower)) {
+            continue;
+        }
+
+        // Inline format: "Apple Inc - Common 13.73%"
+        const inlineMatch = line.match(/^(.+?)\s+(-?\d+(?:\.\d+)?)\s*%$/);
+        if (inlineMatch) {
+            const label = inlineMatch[1].trim();
+            const pct = Number(inlineMatch[2]);
+            if (label && !/^\d+$/.test(label) && Number.isFinite(pct) && pct > 0 && pct <= 100) {
+                entries.push({ label, pct });
+                continue;
+            }
+        }
+
+        // Multi-line table cells: "Apple Inc - Common" on line i, "13.73%" on line i + 1
+        if (i + 1 < lines.length && !/^\d+$/.test(line) && !/\d%$/.test(line)) {
+            const nextLine = lines[i + 1];
+            const pctMatch = nextLine.match(/^(-?\d+(?:\.\d+)?)\s*%$/);
+            if (pctMatch) {
+                const pct = Number(pctMatch[1]);
+                if (Number.isFinite(pct) && pct > 0 && pct <= 100) {
+                    entries.push({ label: line, pct });
+                    i++;
+                    continue;
+                }
+            }
+        }
+
+        if (entries.length > 0 && line.length > 140) {
+            // Reached narrative disclaimer / footnote below full holdings table
+            break;
+        }
+    }
+
+    return { entries, asOfDate };
+}
+
 /**
- * Parses TD ETF FundCard HTML extracting Fund Geography and Sector Mix allocations
+ * Parses TD ETF FundCard HTML extracting Fund Geography, Sector Mix, and Holdings tables
  * from either structured JSON `data-*` attributes or SSR text tables.
  */
 export function parseTdFundCardHtml(html: string): {
     countryAllocations: AllocationWeightEntry[];
     sectorAllocations: AllocationWeightEntry[];
+    topHoldings: UnderlyingHoldingEntry[];
+    rawHoldingsCount: number;
     asOfDate?: string;
 } {
     const lines = htmlToLines(html);
@@ -392,11 +533,28 @@ export function parseTdFundCardHtml(html: string): {
           })
         : [];
 
-    const asOfDate = textGeo.asOfDate ?? textSector.asOfDate;
+    const parsedHoldings = extractTdHoldingsEntries(lines, html);
+    const holdingAssetClass = isPredominantlyFixedIncome ? 'BOND' : 'EQUITY';
+    const rawHoldings: UnderlyingHoldingEntry[] = [];
+    for (const item of parsedHoldings.entries) {
+        if (!Number.isFinite(item.pct) || item.pct <= 0) continue;
+        if (isIgnoredHoldingName(item.label)) continue;
+        rawHoldings.push({
+            name: item.label.trim(),
+            weight: item.pct / 100,
+            assetClass: holdingAssetClass,
+            source: 'td',
+        });
+    }
+    const topHoldings = mergeAndCapHoldings(rawHoldings, MAX_UNDERLYING_HOLDINGS);
+
+    const asOfDate = textGeo.asOfDate ?? textSector.asOfDate ?? parsedHoldings.asOfDate;
 
     return {
         countryAllocations,
         sectorAllocations,
+        topHoldings,
+        rawHoldingsCount: rawHoldings.length,
         asOfDate,
     };
 }
@@ -556,7 +714,9 @@ export const tdAdapter: EtfIssuerAdapter = {
             countryAllocations: parsed.countryAllocations,
             sectorAllocations:
                 parsed.sectorAllocations.length > 0 ? parsed.sectorAllocations : undefined,
-            holdingsCount: parsed.countryAllocations.length,
+            topHoldings: parsed.topHoldings.length > 0 ? parsed.topHoldings : undefined,
+            holdingsCount:
+                parsed.rawHoldingsCount > 0 ? parsed.rawHoldingsCount : parsed.countryAllocations.length,
             asOfDate: parsed.asOfDate,
         };
     },

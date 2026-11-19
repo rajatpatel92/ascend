@@ -8,11 +8,14 @@ import {
     emitIssuerDiagnostic,
     type IssuerRequestOptions,
 } from './http.ts';
-import type {
-    AllocationWeightEntry,
-    EtfIssuerAdapter,
-    IssuerAllocationResult,
-    IssuerLookupContext,
+import { mergeAndCapHoldings } from './holdings.ts';
+import {
+    MAX_UNDERLYING_HOLDINGS,
+    type AllocationWeightEntry,
+    type EtfIssuerAdapter,
+    type IssuerAllocationResult,
+    type IssuerLookupContext,
+    type UnderlyingHoldingEntry,
 } from './types.ts';
 
 type VanguardRegion = 'ca' | 'us';
@@ -614,10 +617,12 @@ export async function aggregateCaBorHoldings(
     items: CaBorHoldingItem[],
     options: {
         resolveUnderlying?: (ticker: string) => Promise<IssuerAllocationResult | null>;
+        maxTopHoldings?: number;
     } = {}
 ): Promise<{
     countryAllocations: AllocationWeightEntry[];
     sectorAllocations: AllocationWeightEntry[];
+    topHoldings: UnderlyingHoldingEntry[];
     asOfDate?: string;
     holdingsCount: number;
 }> {
@@ -642,11 +647,13 @@ export async function aggregateCaBorHoldings(
 
     const useMarketValue = totalMv > 0;
     if (!useMarketValue && totalPct <= 0) {
-        return { countryAllocations: [], sectorAllocations: [], holdingsCount: 0 };
+        return { countryAllocations: [], sectorAllocations: [], topHoldings: [], holdingsCount: 0 };
     }
 
     const countryTotals = new Map<string, number>();
     const sectorTotals = new Map<string, number>();
+    const rawEquityHoldings: UnderlyingHoldingEntry[] = [];
+    const rawBondHoldings: UnderlyingHoldingEntry[] = [];
     let totalPositivePortfolioWeight = 0;
     let countryAllocatedSum = 0;
     let sectorAllocatedSum = 0;
@@ -674,7 +681,8 @@ export async function aggregateCaBorHoldings(
             /\b(cash|money market)\b/i.test(desc);
         if (isCash) continue;
 
-        if (secType.startsWith('FI.')) {
+        const isBond = secType.startsWith('FI.');
+        if (isBond) {
             fixedIncomeWeight += rawWeight;
         }
 
@@ -697,6 +705,18 @@ export async function aggregateCaBorHoldings(
                         sectorAllocatedSum += weighted;
                     }
                 }
+                for (const h of subResult.topHoldings ?? []) {
+                    const weightedHolding: UnderlyingHoldingEntry = {
+                        ...h,
+                        weight: rawWeight * h.weight,
+                        source: h.source ?? 'vanguard',
+                    };
+                    if (h.assetClass === 'BOND') {
+                        rawBondHoldings.push(weightedHolding);
+                    } else {
+                        rawEquityHoldings.push(weightedHolding);
+                    }
+                }
                 continue;
             }
         }
@@ -710,11 +730,40 @@ export async function aggregateCaBorHoldings(
         }
 
         const rawSector = typeof item.gicsSectorDescription === 'string' ? item.gicsSectorDescription.trim() : '';
+        let normalizedSector: string | undefined;
         if (rawSector && !IGNORED_BUCKET_LABELS.has(rawSector.toLowerCase())) {
             const sector = normalizeSectorName(rawSector);
             if (sector !== 'Other / Unclassified') {
                 sectorTotals.set(sector, (sectorTotals.get(sector) ?? 0) + rawWeight);
                 sectorAllocatedSum += rawWeight;
+                normalizedSector = sector;
+            }
+        }
+
+        const issuerName = typeof item.issuerName === 'string' ? item.issuerName.trim() : '';
+        const ticker = typeof item.ticker === 'string' ? item.ticker.trim() : '';
+        const trimmedDesc = desc.trim();
+        const hasClassHint = /\b(?:cl|class|ser|series)\s+[a-z0-9]/i.test(trimmedDesc);
+        const displayName = isBond || hasClassHint
+            ? trimmedDesc || issuerName || ticker
+            : issuerName || trimmedDesc || ticker;
+        const isin = typeof item.isin === 'string' ? item.isin.trim().toUpperCase() : undefined;
+
+        if (!isUnderlyingFund && displayName) {
+            const holdingEntry: UnderlyingHoldingEntry = {
+                name: displayName,
+                ticker: ticker || undefined,
+                isin: isin || undefined,
+                sector: !isBond ? normalizedSector : undefined,
+                country: country ?? undefined,
+                assetClass: isBond ? 'BOND' : 'EQUITY',
+                weight: rawWeight,
+                source: 'vanguard',
+            };
+            if (isBond) {
+                rawBondHoldings.push(holdingEntry);
+            } else {
+                rawEquityHoldings.push(holdingEntry);
             }
         }
     }
@@ -754,9 +803,23 @@ export async function aggregateCaBorHoldings(
                   .map((e) => ({ [e.sector]: e.weight }))
             : [];
 
+    const selectedRawHoldings = isPredominantlyFixedIncome ? rawBondHoldings : rawEquityHoldings;
+    const capLimit = options.maxTopHoldings ?? MAX_UNDERLYING_HOLDINGS;
+    const topHoldings =
+        totalPositivePortfolioWeight > 0
+            ? mergeAndCapHoldings(
+                  selectedRawHoldings.map((h) => ({
+                      ...h,
+                      weight: h.weight / totalPositivePortfolioWeight,
+                  })),
+                  capLimit
+              )
+            : [];
+
     return {
         countryAllocations,
         sectorAllocations,
+        topHoldings,
         asOfDate,
         holdingsCount: items.length,
     };
@@ -766,6 +829,10 @@ interface UsAdditionalHoldingItem {
     securityType?: unknown;
     securityMainType?: unknown;
     securityLongDescription?: unknown;
+    issuerName?: unknown;
+    gicsSectorDescription?: unknown;
+    sector?: unknown;
+    bloombergIsoCountry?: unknown;
     marketValuePercentage?: unknown;
     isin?: unknown;
     ticker?: unknown;
@@ -773,11 +840,12 @@ interface UsAdditionalHoldingItem {
 
 export function aggregateVanguardUsAdditionalFundData(payload: unknown): {
     countryAllocations: AllocationWeightEntry[];
+    topHoldings: UnderlyingHoldingEntry[];
     holdingsCount: number;
     asOfDate?: string;
 } {
     if (!payload || typeof payload !== 'object') {
-        return { countryAllocations: [], holdingsCount: 0 };
+        return { countryAllocations: [], topHoldings: [], holdingsCount: 0 };
     }
 
     const details = (payload as {
@@ -790,7 +858,7 @@ export function aggregateVanguardUsAdditionalFundData(payload: unknown): {
     }).holdingDetails;
 
     if (!details || typeof details !== 'object') {
-        return { countryAllocations: [], holdingsCount: 0 };
+        return { countryAllocations: [], topHoldings: [], holdingsCount: 0 };
     }
 
     const asOfDate =
@@ -809,8 +877,11 @@ export function aggregateVanguardUsAdditionalFundData(payload: unknown): {
         : [];
 
     const countryTotals = new Map<string, number>();
+    const rawEquityHoldings: UnderlyingHoldingEntry[] = [];
+    const rawBondHoldings: UnderlyingHoldingEntry[] = [];
     let totalPositivePortfolioWeight = 0;
     let countryAllocatedSum = 0;
+    let fixedIncomeWeight = 0;
     let holdingsCount = 0;
 
     for (const item of [...equityList, ...fiList]) {
@@ -826,11 +897,53 @@ export function aggregateVanguardUsAdditionalFundData(payload: unknown): {
 
         if (secType.startsWith('MM.') || secType === 'CRNY') continue;
 
+        const isBond = secType.startsWith('FI.');
+        if (isBond) {
+            fixedIncomeWeight += pct;
+        }
+
         const isinPrefix = typeof item.isin === 'string' ? item.isin.trim().slice(0, 2) : null;
-        const country = resolveIso2CountryName(isinPrefix);
+        const country =
+            resolveIso2CountryName(typeof item.bloombergIsoCountry === 'string' ? item.bloombergIsoCountry : null) ??
+            resolveIso2CountryName(isinPrefix);
         if (country) {
             countryTotals.set(country, (countryTotals.get(country) ?? 0) + pct);
             countryAllocatedSum += pct;
+        }
+
+        const issuerName = typeof item.issuerName === 'string' ? item.issuerName.trim() : '';
+        const desc =
+            typeof item.securityLongDescription === 'string' ? item.securityLongDescription.trim() : '';
+        const ticker = typeof item.ticker === 'string' ? item.ticker.trim() : '';
+        const hasClassHint = /\b(?:cl|class|ser|series)\s+[a-z0-9]/i.test(desc);
+        const displayName = isBond || hasClassHint ? desc || issuerName || ticker : issuerName || desc || ticker;
+
+        if (displayName) {
+            const rawSector =
+                typeof item.gicsSectorDescription === 'string'
+                    ? item.gicsSectorDescription.trim()
+                    : typeof item.sector === 'string'
+                      ? item.sector.trim()
+                      : '';
+            const normalizedSector =
+                !isBond && rawSector && !IGNORED_BUCKET_LABELS.has(rawSector.toLowerCase())
+                    ? normalizeSectorName(rawSector)
+                    : undefined;
+            const entry: UnderlyingHoldingEntry = {
+                name: displayName,
+                ticker: ticker || undefined,
+                isin: typeof item.isin === 'string' ? item.isin.trim().toUpperCase() || undefined : undefined,
+                country: country ?? undefined,
+                sector: normalizedSector && normalizedSector !== 'Other / Unclassified' ? normalizedSector : undefined,
+                assetClass: isBond ? 'BOND' : 'EQUITY',
+                weight: pct,
+                source: 'vanguard',
+            };
+            if (isBond) {
+                rawBondHoldings.push(entry);
+            } else {
+                rawEquityHoldings.push(entry);
+            }
         }
     }
 
@@ -860,13 +973,39 @@ export function aggregateVanguardUsAdditionalFundData(payload: unknown): {
                   .map((e) => ({ [e.country]: e.weight }))
             : [];
 
-    return { countryAllocations, holdingsCount, asOfDate };
+    const isPredominantlyFixedIncome =
+        totalPositivePortfolioWeight > 0 && fixedIncomeWeight / totalPositivePortfolioWeight > 0.5;
+    const holdingDenominator =
+        totalPositivePortfolioWeight >= 98 ? totalPositivePortfolioWeight : 100;
+    const selectedRawHoldings = isPredominantlyFixedIncome ? rawBondHoldings : rawEquityHoldings;
+    const topHoldings = mergeAndCapHoldings(
+        selectedRawHoldings.map((h) => ({ ...h, weight: h.weight / holdingDenominator })),
+        MAX_UNDERLYING_HOLDINGS
+    );
+
+    return { countryAllocations, topHoldings, holdingsCount, asOfDate };
 }
 
 export function aggregateVanguardUsVmfHoldings(
-    entities: Array<{ isin?: unknown; marketValue?: unknown; percentWeight?: unknown }>
+    entities: Array<{
+        isin?: unknown;
+        ticker?: unknown;
+        symbol?: unknown;
+        issuerName?: unknown;
+        longName?: unknown;
+        shortName?: unknown;
+        name?: unknown;
+        securityLongDescription?: unknown;
+        sectorName?: unknown;
+        gicsSectorDescription?: unknown;
+        countryName?: unknown;
+        countryCode?: unknown;
+        marketValue?: unknown;
+        percentWeight?: unknown;
+    }>
 ): {
     countryAllocations: AllocationWeightEntry[];
+    topHoldings: UnderlyingHoldingEntry[];
     holdingsCount: number;
 } {
     let totalMv = 0;
@@ -881,10 +1020,11 @@ export function aggregateVanguardUsVmfHoldings(
 
     const useMv = totalMv > 0;
     if (!useMv && totalPct <= 0) {
-        return { countryAllocations: [], holdingsCount: 0 };
+        return { countryAllocations: [], topHoldings: [], holdingsCount: 0 };
     }
 
     const countryTotals = new Map<string, number>();
+    const rawHoldings: UnderlyingHoldingEntry[] = [];
     let totalPositivePortfolioWeight = 0;
     let countryAllocatedSum = 0;
     let holdingsCount = 0;
@@ -900,10 +1040,53 @@ export function aggregateVanguardUsVmfHoldings(
         totalPositivePortfolioWeight += rawWeight;
 
         const isinPrefix = typeof item.isin === 'string' ? item.isin.trim().slice(0, 2) : null;
-        const country = resolveIso2CountryName(isinPrefix);
+        const country =
+            resolveCountryFromMarketEntry(item.countryCode, item.countryName) ??
+            resolveIso2CountryName(isinPrefix);
         if (country) {
             countryTotals.set(country, (countryTotals.get(country) ?? 0) + rawWeight);
             countryAllocatedSum += rawWeight;
+        }
+
+        const rawTicker =
+            typeof item.ticker === 'string'
+                ? item.ticker.trim()
+                : typeof item.symbol === 'string'
+                  ? item.symbol.trim()
+                  : '';
+        const rawName = [
+            item.longName,
+            item.shortName,
+            item.issuerName,
+            item.name,
+            item.securityLongDescription,
+        ]
+            .find((v) => typeof v === 'string' && v.trim()) as string | undefined;
+        const displayName = rawName?.trim() || rawTicker;
+        if (displayName) {
+            const rawSector =
+                typeof item.sectorName === 'string'
+                    ? item.sectorName.trim()
+                    : typeof item.gicsSectorDescription === 'string'
+                      ? item.gicsSectorDescription.trim()
+                      : '';
+            const normalizedSector =
+                rawSector && !IGNORED_BUCKET_LABELS.has(rawSector.toLowerCase())
+                    ? normalizeSectorName(rawSector)
+                    : undefined;
+            rawHoldings.push({
+                name: displayName,
+                ticker: rawTicker || undefined,
+                isin: typeof item.isin === 'string' ? item.isin.trim().toUpperCase() || undefined : undefined,
+                country: country ?? undefined,
+                sector:
+                    normalizedSector && normalizedSector !== 'Other / Unclassified'
+                        ? normalizedSector
+                        : undefined,
+                assetClass: 'EQUITY',
+                weight: rawWeight,
+                source: 'vanguard',
+            });
         }
     }
 
@@ -923,7 +1106,15 @@ export function aggregateVanguardUsVmfHoldings(
                   .map((e) => ({ [e.country]: e.weight }))
             : [];
 
-    return { countryAllocations, holdingsCount };
+    const topHoldings =
+        totalPositivePortfolioWeight > 0
+            ? mergeAndCapHoldings(
+                  rawHoldings.map((h) => ({ ...h, weight: h.weight / totalPositivePortfolioWeight })),
+                  MAX_UNDERLYING_HOLDINGS
+              )
+            : [];
+
+    return { countryAllocations, topHoldings, holdingsCount };
 }
 
 async function fetchVanguardCaAllocations(
@@ -960,23 +1151,27 @@ async function fetchVanguardCaAllocations(
     }
 
     const fundData = await fetchCaFundGraphQl(requester, portId);
-    if (fundData) {
-        const parsed = parseVanguardCaFundAggregations(fundData);
-        if (parsed.countryAllocations.length > 0) {
-            return {
-                providerId: 'vanguard',
-                productId: portId,
-                countryAllocations: parsed.countryAllocations,
-                sectorAllocations:
-                    parsed.sectorAllocations.length > 0 ? parsed.sectorAllocations : undefined,
-                holdingsCount: parsed.countryAllocations.length,
-                asOfDate: parsed.asOfDate,
-            };
-        }
+    const parsedSummary = fundData ? parseVanguardCaFundAggregations(fundData) : null;
+    const hasSummaryCountries = Boolean(parsedSummary && parsedSummary.countryAllocations.length > 0);
+
+    // Fetch BOR holdings both as country fallback AND to extract individual stock Top 250 holdings.
+    // Fail soft when FundAllocations already succeeded so country/sector sync never breaks.
+    const borItems = await fetchCaBorHoldings(requester, portId).catch(() => []);
+
+    if (hasSummaryCountries && parsedSummary && borItems.length === 0) {
+        return {
+            providerId: 'vanguard',
+            productId: portId,
+            countryAllocations: parsedSummary.countryAllocations,
+            sectorAllocations:
+                parsedSummary.sectorAllocations.length > 0
+                    ? parsedSummary.sectorAllocations
+                    : undefined,
+            holdingsCount: parsedSummary.countryAllocations.length,
+            asOfDate: parsedSummary.asOfDate,
+        };
     }
 
-    // Fallback to BOR holdings table if marketAllocation was empty
-    const borItems = await fetchCaBorHoldings(requester, portId);
     if (borItems.length === 0) {
         warnDiagnostic(
             ctx,
@@ -998,10 +1193,21 @@ async function fetchVanguardCaAllocations(
             if (existing) return existing;
 
             const promise = (async (): Promise<IssuerAllocationResult | null> => {
-                const subFund = await fetchCaFundGraphQl(requester, subPortId);
-                if (!subFund) return null;
-                const parsedSub = parseVanguardCaFundAggregations(subFund);
-                if (parsedSub.countryAllocations.length === 0) return null;
+                const subFund = await fetchCaFundGraphQl(requester, subPortId).catch(() => null);
+                const parsedSub = subFund ? parseVanguardCaFundAggregations(subFund) : null;
+                if (!parsedSub || parsedSub.countryAllocations.length === 0) return null;
+
+                let subTopHoldings: UnderlyingHoldingEntry[] = [];
+                // For equity sub-ETFs inside an equity/balanced FOF (e.g. VGRO -> VUN/VCN/VIU/VEE),
+                // fetch their BOR holdings one hop deeper so FOFs expose stock-level look-through.
+                if (!parsedSub.isFixedIncome || parsedSummary?.isFixedIncome) {
+                    const subBor = await fetchCaBorHoldings(requester, subPortId).catch(() => []);
+                    if (subBor.length > 0) {
+                        const subAgg = await aggregateCaBorHoldings(subBor, { maxTopHoldings: 500 });
+                        subTopHoldings = subAgg.topHoldings;
+                    }
+                }
+
                 return {
                     providerId: 'vanguard',
                     productId: subPortId,
@@ -1010,6 +1216,7 @@ async function fetchVanguardCaAllocations(
                         parsedSub.sectorAllocations.length > 0
                             ? parsedSub.sectorAllocations
                             : undefined,
+                    topHoldings: subTopHoldings.length > 0 ? subTopHoldings : undefined,
                     holdingsCount: parsedSub.countryAllocations.length,
                 };
             })();
@@ -1017,6 +1224,25 @@ async function fetchVanguardCaAllocations(
             return promise;
         },
     });
+
+    if (hasSummaryCountries && parsedSummary) {
+        return {
+            providerId: 'vanguard',
+            productId: portId,
+            countryAllocations: parsedSummary.countryAllocations,
+            sectorAllocations:
+                parsedSummary.sectorAllocations.length > 0
+                    ? parsedSummary.sectorAllocations
+                    : undefined,
+            topHoldings:
+                borAggregated.topHoldings.length > 0 ? borAggregated.topHoldings : undefined,
+            holdingsCount:
+                borAggregated.holdingsCount > 0
+                    ? borAggregated.holdingsCount
+                    : parsedSummary.countryAllocations.length,
+            asOfDate: parsedSummary.asOfDate ?? borAggregated.asOfDate,
+        };
+    }
 
     if (borAggregated.countryAllocations.length === 0) {
         return null;
@@ -1030,6 +1256,8 @@ async function fetchVanguardCaAllocations(
             borAggregated.sectorAllocations.length > 0
                 ? borAggregated.sectorAllocations
                 : undefined,
+        topHoldings:
+            borAggregated.topHoldings.length > 0 ? borAggregated.topHoldings : undefined,
         holdingsCount: borAggregated.holdingsCount,
         asOfDate: borAggregated.asOfDate,
     };
@@ -1053,6 +1281,8 @@ async function fetchVanguardUsAllocations(
                     providerId: 'vanguard',
                     productId: ticker,
                     countryAllocations: aggregated.countryAllocations,
+                    topHoldings:
+                        aggregated.topHoldings.length > 0 ? aggregated.topHoldings : undefined,
                     holdingsCount: aggregated.holdingsCount,
                     asOfDate: aggregated.asOfDate,
                 };
@@ -1114,6 +1344,8 @@ async function fetchVanguardUsAllocations(
         providerId: 'vanguard',
         productId: ticker,
         countryAllocations: vmfAggregated.countryAllocations,
+        topHoldings:
+            vmfAggregated.topHoldings.length > 0 ? vmfAggregated.topHoldings : undefined,
         holdingsCount: vmfAggregated.holdingsCount,
         asOfDate,
     };

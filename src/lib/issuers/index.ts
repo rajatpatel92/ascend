@@ -5,11 +5,14 @@ import { tdAdapter } from './td.ts';
 import type { EtfIssuerAdapter, IssuerAllocationResult, IssuerLookupContext } from './types.ts';
 import { vanguardAdapter } from './vanguard.ts';
 
-export type {
-    AllocationWeightEntry,
-    EtfIssuerAdapter,
-    IssuerAllocationResult,
-    IssuerLookupContext,
+export {
+    MAX_UNDERLYING_HOLDINGS,
+    type AllocationWeightEntry,
+    type EtfIssuerAdapter,
+    type IssuerAllocationResult,
+    type IssuerLookupContext,
+    type UnderlyingHoldingAssetClass,
+    type UnderlyingHoldingEntry,
 } from './types.ts';
 export { bmoAdapter } from './bmo.ts';
 export { isharesAdapter } from './ishares.ts';
