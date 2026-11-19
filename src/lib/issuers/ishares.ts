@@ -1,11 +1,14 @@
 import { normalizeCountryName, normalizeSectorName } from '../look-through.ts';
 import {
+    emitIssuerDiagnostic,
     fetchViaNodeHttp,
     formatErrorDetails,
     getHostCircuitStatus,
     isNetworkUnreachableError,
+    markHostPrefersNodeHttp,
     recordHostFailure,
     recordHostSuccess,
+    shouldPreferNodeHttpForHost,
 } from './http.ts';
 import type {
     AllocationWeightEntry,
@@ -83,8 +86,7 @@ function buildRequestHeaders(
 }
 
 function warnDiagnostic(ctx: IssuerLookupContext, msg: string): void {
-    console.warn(msg);
-    ctx.onDiagnostic?.(msg);
+    emitIssuerDiagnostic(ctx, msg);
 }
 
 const REGION_CONFIGS: Record<IsharesRegion, RegionConfig> = {
@@ -592,6 +594,31 @@ export function selectBestAutocompleteCandidate(
     return { productId: best.productId, label: best.label };
 }
 
+const NON_ISHARES_TICKER_EXCLUSIONS = new Set([
+    'VT',
+    'VTI',
+    'VOO',
+    'VXUS',
+    'VEA',
+    'VWO',
+    'BND',
+    'BNDX',
+    'VGT',
+    'VTV',
+    'VUG',
+    'VIG',
+    'VYM',
+    'VEQT',
+    'VGRO',
+    'VBAL',
+    'VCNS',
+    'VFV',
+    'VUN',
+    'VCN',
+    'TEC',
+    'TEQT',
+]);
+
 export const isharesAdapter: EtfIssuerAdapter = {
     id: 'ishares',
 
@@ -616,6 +643,10 @@ export const isharesAdapter: EtfIssuerAdapter = {
             );
         }
 
+        if (regionInfo.searchTerms.some((t) => NON_ISHARES_TICKER_EXCLUSIONS.has(t) || /^Z[A-Z0-9.-]*$/.test(t))) {
+            return false;
+        }
+
         return true;
     },
 
@@ -632,6 +663,7 @@ export const isharesAdapter: EtfIssuerAdapter = {
         const nodeFallbackImpl = ctx.nodeHttpFn ?? fetchViaNodeHttp;
         const isMockedGlobalFetch = Boolean((globalThis.fetch as unknown as { mock?: unknown })?.mock);
         const canUseNodeFallback = Boolean(ctx.nodeHttpFn) || (!ctx.fetchFn && !isMockedGlobalFetch);
+        const useSharedNodeHttpHostCache = !ctx.fetchFn && !ctx.nodeHttpFn && !isMockedGlobalFetch;
         let preferNodeHttp = false;
 
         const sendRequest = async (url: string, headers: Record<string, string>): Promise<Response> => {
@@ -646,7 +678,7 @@ export const isharesAdapter: EtfIssuerAdapter = {
 
             const connectTimeoutMs = Math.min(timeoutMs, 5_000);
 
-            if (preferNodeHttp && canUseNodeFallback) {
+            if ((preferNodeHttp || (useSharedNodeHttpHostCache && shouldPreferNodeHttpForHost(host))) && canUseNodeFallback) {
                 try {
                     const res = await nodeFallbackImpl(url, { headers, timeoutMs, connectTimeoutMs, family: 4 });
                     recordHostSuccess(host);
@@ -688,6 +720,9 @@ export const isharesAdapter: EtfIssuerAdapter = {
                         family: 4,
                     });
                     preferNodeHttp = true;
+                    if (useSharedNodeHttpHostCache) {
+                        markHostPrefersNodeHttp(host);
+                    }
                     recordHostSuccess(host);
                     return fallbackRes;
                 } catch (nodeErr) {

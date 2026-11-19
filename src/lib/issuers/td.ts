@@ -1,5 +1,9 @@
 import { normalizeCountryName, normalizeSectorName } from '../look-through.ts';
-import { createIssuerRequester, type IssuerRequestOptions } from './http.ts';
+import {
+    createIssuerRequester,
+    emitIssuerDiagnostic,
+    type IssuerRequestOptions,
+} from './http.ts';
 import type {
     AllocationWeightEntry,
     EtfIssuerAdapter,
@@ -117,8 +121,7 @@ const SECTION_STOP_HEADINGS = new Set([
 let cachedTdCatalogueMap: Map<string, string> | null = null;
 
 function warnDiagnostic(ctx: IssuerLookupContext, msg: string): void {
-    console.warn(msg);
-    ctx.onDiagnostic?.(msg);
+    emitIssuerDiagnostic(ctx, msg);
 }
 
 function roundWeight(weight: number): number {

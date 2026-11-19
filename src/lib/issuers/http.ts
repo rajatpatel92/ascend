@@ -156,6 +156,47 @@ function getHostCircuitMap(): Map<string, HostCircuitEntry> {
     return g.__ascendIssuerHostCircuit;
 }
 
+function getNodeHttpHostMap(): Map<string, number> {
+    const g = globalThis as unknown as { __ascendIssuerNodeHttpHosts?: Map<string, number> };
+    if (!(g.__ascendIssuerNodeHttpHosts instanceof Map)) {
+        g.__ascendIssuerNodeHttpHosts = new Map();
+    }
+    return g.__ascendIssuerNodeHttpHosts;
+}
+
+export function shouldPreferNodeHttpForHost(hostname: string, nowMs = Date.now()): boolean {
+    const map = getNodeHttpHostMap();
+    const key = hostname.trim().toLowerCase();
+    const until = map.get(key);
+    if (!until) return false;
+    if (nowMs >= until) {
+        map.delete(key);
+        return false;
+    }
+    return true;
+}
+
+export function markHostPrefersNodeHttp(
+    hostname: string,
+    ttlMs = DEFAULT_HOST_CIRCUIT_COOLDOWN_MS,
+    nowMs = Date.now()
+): void {
+    const key = hostname.trim().toLowerCase();
+    if (!key) return;
+    getNodeHttpHostMap().set(key, nowMs + Math.max(0, ttlMs));
+}
+
+export function emitIssuerDiagnostic(
+    ctx: { onDiagnostic?: (message: string) => void },
+    message: string
+): void {
+    if (ctx.onDiagnostic) {
+        ctx.onDiagnostic(message);
+    } else {
+        console.warn(message);
+    }
+}
+
 /**
  * Checks whether an error chain represents a TCP/DNS/network connectivity failure
  * (e.g. Akamai ASN packet drop causing UND_ERR_CONNECT_TIMEOUT) rather than an HTTP response.
@@ -245,6 +286,7 @@ export function recordHostSuccess(hostname: string): void {
 
 export function resetHostCircuitBreakersForTests(): void {
     getHostCircuitMap().clear();
+    getNodeHttpHostMap().clear();
 }
 
 import type { IssuerLookupContext } from './types.ts';
@@ -466,6 +508,7 @@ export function createIssuerRequester(
     const nodeFallbackImpl = ctx.nodeHttpFn ?? fetchViaNodeHttp;
     const isMockedGlobalFetch = Boolean((globalThis.fetch as unknown as { mock?: unknown })?.mock);
     const canUseNodeFallback = Boolean(ctx.nodeHttpFn) || (!ctx.fetchFn && !isMockedGlobalFetch);
+    const useSharedNodeHttpHostCache = !ctx.fetchFn && !ctx.nodeHttpFn && !isMockedGlobalFetch;
     let preferNodeHttp = false;
 
     return async (url: string, opts: IssuerRequestOptions = {}): Promise<Response> => {
@@ -483,7 +526,7 @@ export function createIssuerRequester(
 
         const connectTimeoutMs = Math.min(timeoutMs, 5_000);
 
-        if (preferNodeHttp && canUseNodeFallback) {
+        if ((preferNodeHttp || (useSharedNodeHttpHostCache && shouldPreferNodeHttpForHost(host))) && canUseNodeFallback) {
             try {
                 const res = await nodeFallbackImpl(url, {
                     method,
@@ -523,8 +566,7 @@ export function createIssuerRequester(
                 throw fetchErr;
             }
             const msg = `[IssuerAdapter:${adapterId}] fetch error for ${ctx.symbol} (${fetchDetails}); retrying via IPv4 node:https`;
-            console.warn(msg);
-            ctx.onDiagnostic?.(msg);
+            emitIssuerDiagnostic(ctx, msg);
             try {
                 const fallbackRes = await nodeFallbackImpl(url, {
                     method,
@@ -535,6 +577,9 @@ export function createIssuerRequester(
                     family: 4,
                 });
                 preferNodeHttp = true;
+                if (useSharedNodeHttpHostCache) {
+                    markHostPrefersNodeHttp(host);
+                }
                 recordHostSuccess(host);
                 return fallbackRes;
             } catch (nodeErr) {

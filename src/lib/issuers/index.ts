@@ -1,5 +1,5 @@
 import { bmoAdapter } from './bmo.ts';
-import { formatErrorDetails } from './http.ts';
+import { emitIssuerDiagnostic, formatErrorDetails } from './http.ts';
 import { isharesAdapter } from './ishares.ts';
 import { tdAdapter } from './td.ts';
 import type { EtfIssuerAdapter, IssuerAllocationResult, IssuerLookupContext } from './types.ts';
@@ -42,8 +42,7 @@ async function executeAdapterChain(
         } catch (error) {
             const msg = formatErrorDetails(error);
             const diag = `[IssuerAdapter:${adapter.id}] Failed to resolve ${ctx.symbol}: ${msg}`;
-            console.warn(diag);
-            ctx.onDiagnostic?.(diag);
+            emitIssuerDiagnostic(ctx, diag);
         }
     }
 

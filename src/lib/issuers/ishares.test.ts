@@ -226,6 +226,14 @@ describe('iShares direct-issuer adapter', () => {
                 isharesAdapter.canHandle({ symbol: 'XIC.TO', quoteType: 'ETF' }),
                 true
             );
+            assert.strictEqual(
+                isharesAdapter.canHandle({ symbol: 'VT', quoteType: 'ETF' }),
+                false
+            );
+            assert.strictEqual(
+                isharesAdapter.canHandle({ symbol: 'ZEA.TO', quoteType: 'ETF' }),
+                false
+            );
         });
     });
 

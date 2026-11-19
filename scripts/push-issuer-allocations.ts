@@ -135,9 +135,12 @@ export async function runPushIssuerAllocations(
         });
 
         if (result && result.countryAllocations.length > 0) {
+            const sectorSummary = result.sectorAllocations?.length
+                ? `, ${result.sectorAllocations.length} sectors`
+                : '';
             log(
                 `[IssuerPush] Resolved ${item.symbol} via ${result.providerId}: ` +
-                    `${result.countryAllocations.length} countries`
+                    `${result.countryAllocations.length} countries${sectorSummary}`
             );
             resolvedPayloads.push({
                 symbol: item.symbol,

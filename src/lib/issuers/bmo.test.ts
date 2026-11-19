@@ -120,6 +120,14 @@ describe('BMO GAM Canada direct-issuer adapter', () => {
             true
         );
         assert.strictEqual(
+            bmoAdapter.canHandle({ symbol: 'ZMMK.TO', quoteType: 'ETF', fundName: 'BMO Money Market Fund ETF Series' }),
+            false
+        );
+        assert.strictEqual(
+            bmoAdapter.canHandle({ symbol: 'ZGLD.TO', quoteType: 'ETF', fundName: 'BMO Gold Bullion ETF' }),
+            false
+        );
+        assert.strictEqual(
             bmoAdapter.canHandle({ symbol: 'BMO.TO', quoteType: 'EQUITY', fundName: 'Bank of Montreal' }),
             false
         );

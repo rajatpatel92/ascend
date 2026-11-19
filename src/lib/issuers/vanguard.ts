@@ -3,7 +3,11 @@ import {
     normalizeSectorName,
     resolveIso2CountryName,
 } from '../look-through.ts';
-import { createIssuerRequester, type IssuerRequestOptions } from './http.ts';
+import {
+    createIssuerRequester,
+    emitIssuerDiagnostic,
+    type IssuerRequestOptions,
+} from './http.ts';
 import type {
     AllocationWeightEntry,
     EtfIssuerAdapter,
@@ -177,8 +181,7 @@ const IGNORED_BUCKET_LABELS = new Set([
 let cachedCaCatalogueMap: Map<string, string> | null = null;
 
 function warnDiagnostic(ctx: IssuerLookupContext, msg: string): void {
-    console.warn(msg);
-    ctx.onDiagnostic?.(msg);
+    emitIssuerDiagnostic(ctx, msg);
 }
 
 function roundWeight(weight: number): number {

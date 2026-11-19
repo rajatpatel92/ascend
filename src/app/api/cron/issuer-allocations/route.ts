@@ -82,11 +82,17 @@ export async function GET(request: Request) {
     const { allSymbols } = await collectSyncSymbols();
     const candidateSymbols = allSymbols.filter((s) => !s.endsWith('=X') && !s.startsWith('^'));
 
-    const [investments, cachedRows] = await Promise.all([
+    const [investments, benchmarks, cachedRows] = await Promise.all([
         candidateSymbols.length > 0
             ? prisma.investment.findMany({
                   where: { symbol: { in: candidateSymbols } },
                   select: { symbol: true, name: true, type: true, currencyCode: true },
+              })
+            : Promise.resolve([]),
+        candidateSymbols.length > 0
+            ? prisma.benchmark.findMany({
+                  where: { symbol: { in: candidateSymbols } },
+                  select: { symbol: true, name: true },
               })
             : Promise.resolve([]),
         candidateSymbols.length > 0
@@ -104,11 +110,13 @@ export async function GET(request: Request) {
     ]);
 
     const invMap = new Map(investments.map((i) => [i.symbol, i]));
+    const benchmarkMap = new Map(benchmarks.map((b) => [b.symbol, b]));
     const cacheMap = new Map(cachedRows.map((c) => [c.symbol, c]));
 
     const items = candidateSymbols
         .map((symbol) => {
             const inv = invMap.get(symbol);
+            const benchmark = benchmarkMap.get(symbol);
             const cache = cacheMap.get(symbol);
             const countryCount = Array.isArray(cache?.countryAllocations)
                 ? cache.countryAllocations.length
@@ -118,7 +126,7 @@ export async function GET(request: Request) {
                 : 0;
             const hasCountryAllocations = countryCount > 0;
             const investmentType = inv?.type ?? null;
-            const name = inv?.name ?? null;
+            const name = inv?.name ?? benchmark?.name ?? null;
             const currency = cache?.currency ?? inv?.currencyCode ?? null;
             const isFundCandidate =
                 Boolean(investmentType && /\b(etf|fund|mutual)\b/i.test(investmentType)) ||

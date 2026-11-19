@@ -2,7 +2,11 @@ import {
     normalizeSectorName,
     resolveIso2CountryName,
 } from '../look-through.ts';
-import { createIssuerRequester, type IssuerRequestOptions } from './http.ts';
+import {
+    createIssuerRequester,
+    emitIssuerDiagnostic,
+    type IssuerRequestOptions,
+} from './http.ts';
 import { parseXlsxFirstSheet } from './xlsx.ts';
 import type {
     AllocationWeightEntry,
@@ -122,8 +126,7 @@ interface InternalResolvedBmo {
 }
 
 function warnDiagnostic(ctx: IssuerLookupContext, msg: string): void {
-    console.warn(msg);
-    ctx.onDiagnostic?.(msg);
+    emitIssuerDiagnostic(ctx, msg);
 }
 
 function roundWeight(weight: number): number {
@@ -613,6 +616,9 @@ export async function fetchBmoAllocationsWithDate(
     };
 }
 
+const NON_GEOGRAPHIC_BMO_TICKERS = new Set(['ZGLD', 'ZMMK']);
+const NON_GEOGRAPHIC_BMO_NAME_PATTERN = /\b(bullion|physical\s+(?:gold|silver)|money\s+market)\b/i;
+
 export const bmoAdapter: EtfIssuerAdapter = {
     id: 'bmo',
 
@@ -627,11 +633,18 @@ export const bmoAdapter: EtfIssuerAdapter = {
             }
         }
 
+        if (tickerVariants.some((t) => NON_GEOGRAPHIC_BMO_TICKERS.has(t))) {
+            return false;
+        }
+
         const name = ctx.fundName?.trim();
         if (name) {
+            if (NON_GEOGRAPHIC_BMO_NAME_PATTERN.test(name)) {
+                return false;
+            }
             return (
                 /\bbmo\b/i.test(name) &&
-                /\b(etf|fund|trust|index|portfolio|bond|equity|yield|income|balanced|growth|conservative|bullion|gold)\b/i.test(
+                /\b(etf|fund|trust|index|portfolio|bond|equity|yield|income|balanced|growth|conservative)\b/i.test(
                     name
                 )
             );
