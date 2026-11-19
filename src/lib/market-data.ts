@@ -569,14 +569,14 @@ export class MarketDataService {
                                         : '');
                                 console.log(msg);
                                 onDiagnostic?.(msg);
-                            } else if (nameVal && /\b(ishares|blackrock)\b/i.test(nameVal)) {
+                            } else if (nameVal && /\b(ishares|blackrock|vanguard|bmo|td)\b/i.test(nameVal)) {
                                 const msg =
                                     `[MarketData] No issuer allocations resolved for ${symbol} ` +
                                     `(name="${nameVal}", quoteType="${quoteType ?? ''}")`;
                                 console.warn(msg);
                                 onDiagnostic?.(msg);
                             }
-                        } else if (nameVal && /\b(ishares|blackrock)\b/i.test(nameVal)) {
+                        } else if (nameVal && /\b(ishares|blackrock|vanguard|bmo|td)\b/i.test(nameVal)) {
                             const msg =
                                 `[MarketData] Skipped issuer allocations for ${symbol}: ` +
                                 `isFundLike=false (name="${nameVal}", quoteType="${quoteType ?? ''}", profileCountry="${profile.country ?? ''}")`;

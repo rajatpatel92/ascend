@@ -122,6 +122,8 @@ function mergeSetCookiesIntoHeaderMap(
 }
 
 export interface NodeHttpsFetchOptions {
+    method?: 'GET' | 'POST';
+    body?: string;
     headers?: Record<string, string>;
     timeoutMs?: number;
     connectTimeoutMs?: number;
@@ -245,8 +247,10 @@ export function resetHostCircuitBreakersForTests(): void {
     getHostCircuitMap().clear();
 }
 
+import type { IssuerLookupContext } from './types.ts';
+
 /**
- * Fallback GET helper built on `node:https` / `node:http` that bypasses `undici` and Next.js
+ * Fallback GET/POST helper built on `node:https` / `node:http` that bypasses `undici` and Next.js
  * `fetch` wrappers and defaults to IPv4 (`family: 4`) to avoid broken IPv6 Docker bridge routing.
  */
 export async function fetchViaNodeHttp(
@@ -258,6 +262,8 @@ export async function fetchViaNodeHttp(
     const family = options.family ?? 4;
     const accumulatedSetCookies: string[] = [];
     let currentUrl = initialUrl;
+    let method: 'GET' | 'POST' = options.method ?? 'GET';
+    let requestBody: string | undefined = method === 'POST' ? options.body : undefined;
     const requestHeaders: Record<string, string> = {
         ...options.headers,
         'Accept-Encoding': 'gzip, deflate, br',
@@ -267,6 +273,15 @@ export async function fetchViaNodeHttp(
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
         const parsed = new URL(currentUrl);
         const transport = parsed.protocol === 'http:' ? http : https;
+        const hopHeaders: Record<string, string> = { ...requestHeaders };
+        if (requestBody !== undefined) {
+            const hasContentLength = Object.keys(hopHeaders).some(
+                (k) => k.toLowerCase() === 'content-length'
+            );
+            if (!hasContentLength) {
+                hopHeaders['Content-Length'] = String(Buffer.byteLength(requestBody, 'utf8'));
+            }
+        }
 
         const hopResult = await new Promise<{
             statusCode: number;
@@ -296,8 +311,8 @@ export async function fetchViaNodeHttp(
             const req = transport.request(
                 parsed,
                 {
-                    method: 'GET',
-                    headers: requestHeaders,
+                    method,
+                    headers: hopHeaders,
                     agent: false,
                     family: family === 0 ? undefined : family,
                     timeout: timeoutMs,
@@ -362,7 +377,11 @@ export async function fetchViaNodeHttp(
                 );
             });
             req.on('error', finishError);
-            req.end();
+            if (requestBody !== undefined) {
+                req.end(requestBody);
+            } else {
+                req.end();
+            }
         });
 
         const rawSetCookie = hopResult.headers['set-cookie'];
@@ -385,6 +404,10 @@ export async function fetchViaNodeHttp(
             } else {
                 delete requestHeaders.Cookie;
                 delete requestHeaders.cookie;
+            }
+            if (hopResult.statusCode !== 307 && hopResult.statusCode !== 308) {
+                method = 'GET';
+                requestBody = undefined;
             }
             currentUrl = nextUrl.toString();
             continue;
@@ -420,3 +443,109 @@ export async function fetchViaNodeHttp(
 
     throw new Error(`Exceeded maximum redirects (${MAX_REDIRECTS}) for ${initialUrl}`);
 }
+
+export interface IssuerRequestOptions {
+    method?: 'GET' | 'POST';
+    body?: string;
+    headers?: Record<string, string>;
+}
+
+/**
+ * Creates a per-lookup requester with per-host circuit breakers and automatic
+ * IPv4 `node:https` fallback when Next/undici fetch fails due to transport/IPv6 issues.
+ */
+export function createIssuerRequester(
+    adapterId: string,
+    ctx: IssuerLookupContext,
+    defaultTimeoutMs = 8_000
+): ((url: string, opts?: IssuerRequestOptions) => Promise<Response>) | null {
+    const fetchImpl = ctx.fetchFn ?? globalThis.fetch;
+    if (typeof fetchImpl !== 'function') return null;
+
+    const timeoutMs = ctx.timeoutMs ?? defaultTimeoutMs;
+    const nodeFallbackImpl = ctx.nodeHttpFn ?? fetchViaNodeHttp;
+    const isMockedGlobalFetch = Boolean((globalThis.fetch as unknown as { mock?: unknown })?.mock);
+    const canUseNodeFallback = Boolean(ctx.nodeHttpFn) || (!ctx.fetchFn && !isMockedGlobalFetch);
+    let preferNodeHttp = false;
+
+    return async (url: string, opts: IssuerRequestOptions = {}): Promise<Response> => {
+        const method = opts.method ?? 'GET';
+        const body = opts.body;
+        const headers = opts.headers ?? {};
+        const host = new URL(url).hostname;
+        const circuit = getHostCircuitStatus(host);
+        if (circuit.open) {
+            const remainingSec = Math.max(1, Math.ceil(circuit.remainingMs / 1000));
+            throw new Error(
+                `Host ${host} skipped (${remainingSec}s cooldown active after earlier failure: ${circuit.reason ?? 'unreachable'})`
+            );
+        }
+
+        const connectTimeoutMs = Math.min(timeoutMs, 5_000);
+
+        if (preferNodeHttp && canUseNodeFallback) {
+            try {
+                const res = await nodeFallbackImpl(url, {
+                    method,
+                    body,
+                    headers,
+                    timeoutMs,
+                    connectTimeoutMs,
+                    family: 4,
+                });
+                recordHostSuccess(host);
+                return res;
+            } catch (nodeErr) {
+                const nodeDetails = formatErrorDetails(nodeErr);
+                if (isNetworkUnreachableError(nodeErr)) {
+                    recordHostFailure(host, nodeDetails);
+                }
+                throw nodeErr;
+            }
+        }
+
+        try {
+            const res = await fetchImpl(url, {
+                method,
+                body,
+                cache: 'no-store',
+                headers,
+                signal: AbortSignal.timeout(timeoutMs),
+            });
+            recordHostSuccess(host);
+            return res;
+        } catch (fetchErr) {
+            const fetchDetails = formatErrorDetails(fetchErr);
+            if (!canUseNodeFallback) {
+                if (isNetworkUnreachableError(fetchErr)) {
+                    recordHostFailure(host, fetchDetails);
+                }
+                throw fetchErr;
+            }
+            const msg = `[IssuerAdapter:${adapterId}] fetch error for ${ctx.symbol} (${fetchDetails}); retrying via IPv4 node:https`;
+            console.warn(msg);
+            ctx.onDiagnostic?.(msg);
+            try {
+                const fallbackRes = await nodeFallbackImpl(url, {
+                    method,
+                    body,
+                    headers,
+                    timeoutMs,
+                    connectTimeoutMs,
+                    family: 4,
+                });
+                preferNodeHttp = true;
+                recordHostSuccess(host);
+                return fallbackRes;
+            } catch (nodeErr) {
+                const nodeDetails = formatErrorDetails(nodeErr);
+                const combinedSummary = `fetch failed (${fetchDetails}); node:https fallback failed (${nodeDetails})`;
+                if (isNetworkUnreachableError(fetchErr) || isNetworkUnreachableError(nodeErr)) {
+                    recordHostFailure(host, combinedSummary);
+                }
+                throw new Error(combinedSummary, { cause: nodeErr });
+            }
+        }
+    };
+}
+

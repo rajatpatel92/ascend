@@ -1,6 +1,9 @@
+import { bmoAdapter } from './bmo.ts';
 import { formatErrorDetails } from './http.ts';
 import { isharesAdapter } from './ishares.ts';
+import { tdAdapter } from './td.ts';
 import type { EtfIssuerAdapter, IssuerAllocationResult, IssuerLookupContext } from './types.ts';
+import { vanguardAdapter } from './vanguard.ts';
 
 export type {
     AllocationWeightEntry,
@@ -8,10 +11,16 @@ export type {
     IssuerAllocationResult,
     IssuerLookupContext,
 } from './types.ts';
+export { bmoAdapter } from './bmo.ts';
 export { isharesAdapter } from './ishares.ts';
+export { tdAdapter } from './td.ts';
+export { vanguardAdapter } from './vanguard.ts';
 
-const REGISTERED_ISSUER_ADAPTERS: EtfIssuerAdapter[] = [
+export const REGISTERED_ISSUER_ADAPTERS: EtfIssuerAdapter[] = [
     isharesAdapter,
+    vanguardAdapter,
+    bmoAdapter,
+    tdAdapter,
 ];
 
 const inFlightLookups = new Map<string, Promise<IssuerAllocationResult | null>>();

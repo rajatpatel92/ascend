@@ -4,6 +4,7 @@ import {
     calculateLookThrough,
     normalizeSectorName,
     normalizeCountryName,
+    resolveIso2CountryName,
     constituentHasSectorExposure,
     constituentHasCountryExposure
 } from './look-through.ts';
@@ -23,6 +24,15 @@ describe('look-through utility', () => {
             assert.strictEqual(normalizeSectorName('utilities'), 'Utilities');
         });
 
+        test('normalizes TD and ICB sector labels into canonical GICS sectors', () => {
+            assert.strictEqual(normalizeSectorName('Industrial Goods'), 'Industrials');
+            assert.strictEqual(normalizeSectorName('Industrial Services'), 'Industrials');
+            assert.strictEqual(normalizeSectorName('Consumer Services'), 'Consumer Cyclical');
+            assert.strictEqual(normalizeSectorName('Consumer Goods'), 'Consumer Defensive');
+            assert.strictEqual(normalizeSectorName('Telecommunications'), 'Communication Services');
+            assert.strictEqual(normalizeSectorName('Oil & Gas'), 'Energy');
+        });
+
         test('handles empty or whitespace strings', () => {
             assert.strictEqual(normalizeSectorName(''), 'Other / Unclassified');
             assert.strictEqual(normalizeSectorName('   '), 'Other / Unclassified');
@@ -36,7 +46,7 @@ describe('look-through utility', () => {
         });
     });
 
-    describe('normalizeCountryName', () => {
+    describe('normalizeCountryName & resolveIso2CountryName', () => {
         test('normalizes country abbreviations and variations', () => {
             assert.strictEqual(normalizeCountryName('us'), 'United States');
             assert.strictEqual(normalizeCountryName('USA'), 'United States');
@@ -58,6 +68,23 @@ describe('look-through utility', () => {
             assert.strictEqual(normalizeCountryName('ie'), 'Ireland');
             assert.strictEqual(normalizeCountryName('sg'), 'Singapore');
             assert.strictEqual(normalizeCountryName('uae'), 'United Arab Emirates');
+            assert.strictEqual(normalizeCountryName('no'), 'Norway');
+            assert.strictEqual(normalizeCountryName('fi'), 'Finland');
+            assert.strictEqual(normalizeCountryName('il'), 'Israel');
+            assert.strictEqual(normalizeCountryName('nz'), 'New Zealand');
+        });
+
+        test('resolves sovereign ISO2 codes strictly and rejects offshore/supranational codes', () => {
+            assert.strictEqual(resolveIso2CountryName('US'), 'United States');
+            assert.strictEqual(resolveIso2CountryName('ca'), 'Canada');
+            assert.strictEqual(resolveIso2CountryName('tw'), 'Taiwan');
+            assert.strictEqual(resolveIso2CountryName('KY'), null);
+            assert.strictEqual(resolveIso2CountryName('BM'), null);
+            assert.strictEqual(resolveIso2CountryName('XS'), null);
+            assert.strictEqual(resolveIso2CountryName('EU'), null);
+            assert.strictEqual(resolveIso2CountryName('ZZ'), null);
+            assert.strictEqual(resolveIso2CountryName('USA'), null);
+            assert.strictEqual(resolveIso2CountryName(null), null);
         });
 
         test('handles empty or null country', () => {

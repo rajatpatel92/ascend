@@ -9,6 +9,8 @@ export interface IssuerLookupContext {
     nodeHttpFn?: (
         url: string,
         options: {
+            method?: 'GET' | 'POST';
+            body?: string;
             headers?: Record<string, string>;
             timeoutMs?: number;
             connectTimeoutMs?: number;
