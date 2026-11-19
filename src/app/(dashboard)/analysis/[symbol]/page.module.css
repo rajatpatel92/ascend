@@ -554,6 +554,10 @@
     align-items: stretch;
 }
 
+.splitGrid > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+}
+
 .detailCard {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
@@ -604,7 +608,7 @@
 }
 
 .allocListScrollable {
-    max-height: 360px;
+    max-height: 390px;
     overflow-y: auto;
     padding-right: 0.35rem;
 }
@@ -762,8 +766,8 @@
 }
 
 .holdingsSearch {
-    flex: 1 1 240px;
-    max-width: 360px;
+    flex: 1 1 200px;
+    min-width: 0;
     padding: 0.45rem 0.85rem;
     border-radius: 0.55rem;
     border: 1px solid var(--card-border);
@@ -790,9 +794,22 @@
 }
 
 .holdingsScrollable {
-    max-height: 440px;
+    max-height: 340px;
     overflow-y: auto;
     padding-right: 0.35rem;
+}
+
+.holdingsScrollable::-webkit-scrollbar {
+    width: 6px;
+}
+
+.holdingsScrollable::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.holdingsScrollable::-webkit-scrollbar-thumb {
+    background: var(--card-border);
+    border-radius: 9999px;
 }
 
 .holdingsRank {
@@ -824,9 +841,12 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
+    flex: 0 3 auto;
 }
 
 .holdingsFooter {
+    margin-top: auto;
     display: flex;
     justify-content: space-between;
     align-items: center;
