@@ -6,7 +6,15 @@ export interface IssuerLookupContext {
     quoteType?: string | null;
     currency?: string | null;
     fetchFn?: typeof fetch;
-    nodeHttpFn?: (url: string, options: { headers?: Record<string, string>; timeoutMs?: number; family?: 0 | 4 | 6 }) => Promise<Response>;
+    nodeHttpFn?: (
+        url: string,
+        options: {
+            headers?: Record<string, string>;
+            timeoutMs?: number;
+            connectTimeoutMs?: number;
+            family?: 0 | 4 | 6;
+        }
+    ) => Promise<Response>;
     timeoutMs?: number;
     onDiagnostic?: (message: string) => void;
 }

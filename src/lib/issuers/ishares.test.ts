@@ -1,9 +1,15 @@
 import http from 'node:http';
 import { gzipSync } from 'node:zlib';
-import { describe, test } from 'node:test';
+import { beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert';
 import { calculateLookThrough } from '../look-through.ts';
-import { fetchViaNodeHttp, formatErrorDetails } from './http.ts';
+import {
+    fetchViaNodeHttp,
+    formatErrorDetails,
+    getHostCircuitStatus,
+    isNetworkUnreachableError,
+    resetHostCircuitBreakersForTests,
+} from './http.ts';
 import {
     aggregateIsharesHoldings,
     extractHoldingsTables,
@@ -23,6 +29,10 @@ function mockResponse(body: string, status = 200): Response {
 }
 
 describe('iShares direct-issuer adapter', () => {
+    beforeEach(() => {
+        resetHostCircuitBreakersForTests();
+    });
+
     describe('parseCsvRows & extractHoldingsTables', () => {
         test('parses multi-table BlackRock Canada fund-of-funds CSV and selects Aggregate Underlying Holdings', () => {
             const multiTableCsv = [
@@ -676,6 +686,74 @@ describe('iShares direct-issuer adapter', () => {
                     server.close((err) => (err ? reject(err) : resolve()))
                 );
             }
+        });
+
+        test('opens per-host circuit breaker on connect timeout and fails fast for remaining symbols on same host', async () => {
+            let networkAttemptCount = 0;
+
+            const timeoutFetch: typeof fetch = async (input) => {
+                networkAttemptCount++;
+                const urlStr = typeof input === 'string' ? input : input.toString();
+                if (urlStr.includes('www.ishares.com')) {
+                    return mockResponse('<html>Access Denied</html>', 403);
+                }
+                const err = Object.assign(new Error('Connect Timeout Error'), {
+                    code: 'UND_ERR_CONNECT_TIMEOUT',
+                });
+                throw new TypeError('fetch failed', { cause: err });
+            };
+
+            const diag1: string[] = [];
+            const firstRes = await resolveIssuerAllocations({
+                symbol: 'XEQT.TO',
+                quoteType: 'ETF',
+                fundName: 'iShares Core Equity ETF Portfolio',
+                fetchFn: timeoutFetch,
+                onDiagnostic: (msg) => diag1.push(msg),
+            });
+            assert.strictEqual(firstRes, null);
+            assert.strictEqual(networkAttemptCount, 1);
+            assert.strictEqual(getHostCircuitStatus('www.blackrock.com').open, true);
+
+            // Second BlackRock Canada ETF must fail fast with 0 additional network attempts
+            const diag2: string[] = [];
+            const secondRes = await resolveIssuerAllocations({
+                symbol: 'XQQ.TO',
+                quoteType: 'ETF',
+                fundName: 'iShares NASDAQ 100 Index ETF (CAD-Hedged)',
+                fetchFn: timeoutFetch,
+                onDiagnostic: (msg) => diag2.push(msg),
+            });
+            assert.strictEqual(secondRes, null);
+            assert.strictEqual(networkAttemptCount, 1);
+            assert.ok(diag2.some((m) => m.includes('Host www.blackrock.com skipped')));
+
+            // Different host (www.ishares.com for US ETF) is unaffected by blackrock.com circuit
+            assert.strictEqual(getHostCircuitStatus('www.ishares.com').open, false);
+            const usRes = await resolveIssuerAllocations({
+                symbol: 'IVV',
+                quoteType: 'ETF',
+                fundName: 'iShares Core S&P 500 ETF',
+                fetchFn: timeoutFetch,
+            });
+            assert.strictEqual(usRes, null);
+            assert.strictEqual(networkAttemptCount, 2);
+            // HTTP 403 is not a network unreachable failure, so www.ishares.com circuit remains closed
+            assert.strictEqual(getHostCircuitStatus('www.ishares.com').open, false);
+        });
+
+        test('isNetworkUnreachableError distinguishes transport failures from application errors', () => {
+            const connectTimeout = new TypeError('fetch failed', {
+                cause: Object.assign(new Error('Connect Timeout Error'), {
+                    code: 'UND_ERR_CONNECT_TIMEOUT',
+                }),
+            });
+            assert.strictEqual(isNetworkUnreachableError(connectTimeout), true);
+            assert.strictEqual(
+                isNetworkUnreachableError(Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' })),
+                true
+            );
+            assert.strictEqual(isNetworkUnreachableError(new Error('Autocomplete returned invalid JSON')), false);
         });
     });
 });

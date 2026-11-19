@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ascend-issuer-push-secret
+type: Opaque
+stringData:
+  # Reachable from home k8s over NetBird / WireGuard (e.g., https://ascend.internal or http://100.x.x.x:3000)
+  ASCEND_URL: "http://ascend.example.internal"
+  # Must match CRON_SECRET configured on your OCI Ascend deployment
+  CRON_SECRET: "replace-with-your-cron-secret"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ascend-issuer-allocations-push
+spec:
+  # Run daily at 06:15 UTC (adjust as desired)
+  schedule: "15 6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: issuer-push
+              # Reuses the published Ascend Docker image; replace <your-dockerhub-user>
+              image: <your-dockerhub-user>/ascend:latest
+              imagePullPolicy: Always
+              command:
+                - node
+                - --experimental-strip-types
+                - scripts/push-issuer-allocations.ts
+              envFrom:
+                - secretRef:
+                    name: ascend-issuer-push-secret
+              env:
+                - name: ISSUER_TIMEOUT_MS
+                  value: "20000"
+                # Optional: set to "true" to only fetch ETFs that currently have 0 country entries
+                - name: ISSUER_ONLY_MISSING
+                  value: "false"

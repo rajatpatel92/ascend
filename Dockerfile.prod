@@ -13,6 +13,9 @@ COPY --chown=nextjs:nodejs public ./public
 COPY --chown=nextjs:nodejs .next/standalone ./
 COPY --chown=nextjs:nodejs .next/static ./.next/static
 COPY --chown=nextjs:nodejs prisma ./prisma
+COPY --chown=nextjs:nodejs scripts ./scripts
+COPY --chown=nextjs:nodejs src/lib/look-through.ts ./src/lib/look-through.ts
+COPY --chown=nextjs:nodejs src/lib/issuers ./src/lib/issuers
 
 USER nextjs
 

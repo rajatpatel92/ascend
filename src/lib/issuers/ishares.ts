@@ -1,5 +1,12 @@
 import { normalizeCountryName, normalizeSectorName } from '../look-through.ts';
-import { fetchViaNodeHttp, formatErrorDetails } from './http.ts';
+import {
+    fetchViaNodeHttp,
+    formatErrorDetails,
+    getHostCircuitStatus,
+    isNetworkUnreachableError,
+    recordHostFailure,
+    recordHostSuccess,
+} from './http.ts';
 import type {
     AllocationWeightEntry,
     EtfIssuerAdapter,
@@ -31,7 +38,7 @@ export interface ParsedIsharesHoldingRow {
     weightPercent?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 25_000;
+const DEFAULT_TIMEOUT_MS = 8_000;
 
 const DEFAULT_REQUEST_HEADERS: Record<string, string> = {
     Accept: 'application/json, text/csv, text/plain, */*',
@@ -628,34 +635,68 @@ export const isharesAdapter: EtfIssuerAdapter = {
         let preferNodeHttp = false;
 
         const sendRequest = async (url: string, headers: Record<string, string>): Promise<Response> => {
+            const host = new URL(url).hostname;
+            const circuit = getHostCircuitStatus(host);
+            if (circuit.open) {
+                const remainingSec = Math.max(1, Math.ceil(circuit.remainingMs / 1000));
+                throw new Error(
+                    `Host ${host} skipped (${remainingSec}s cooldown active after earlier failure: ${circuit.reason ?? 'unreachable'})`
+                );
+            }
+
+            const connectTimeoutMs = Math.min(timeoutMs, 5_000);
+
             if (preferNodeHttp && canUseNodeFallback) {
-                return nodeFallbackImpl(url, { headers, timeoutMs, family: 4 });
+                try {
+                    const res = await nodeFallbackImpl(url, { headers, timeoutMs, connectTimeoutMs, family: 4 });
+                    recordHostSuccess(host);
+                    return res;
+                } catch (nodeErr) {
+                    const nodeDetails = formatErrorDetails(nodeErr);
+                    if (isNetworkUnreachableError(nodeErr)) {
+                        recordHostFailure(host, nodeDetails);
+                    }
+                    throw nodeErr;
+                }
             }
 
             try {
-                return await fetchImpl(url, {
+                const res = await fetchImpl(url, {
                     cache: 'no-store',
                     headers,
                     signal: AbortSignal.timeout(timeoutMs),
                 });
+                recordHostSuccess(host);
+                return res;
             } catch (fetchErr) {
+                const fetchDetails = formatErrorDetails(fetchErr);
                 if (!canUseNodeFallback) {
+                    if (isNetworkUnreachableError(fetchErr)) {
+                        recordHostFailure(host, fetchDetails);
+                    }
                     throw fetchErr;
                 }
-                const fetchDetails = formatErrorDetails(fetchErr);
                 warnDiagnostic(
                     ctx,
                     `[IssuerAdapter:ishares] fetch error for ${ctx.symbol} (${fetchDetails}); retrying via IPv4 node:https`
                 );
                 try {
-                    const fallbackRes = await nodeFallbackImpl(url, { headers, timeoutMs, family: 4 });
+                    const fallbackRes = await nodeFallbackImpl(url, {
+                        headers,
+                        timeoutMs,
+                        connectTimeoutMs,
+                        family: 4,
+                    });
                     preferNodeHttp = true;
+                    recordHostSuccess(host);
                     return fallbackRes;
                 } catch (nodeErr) {
-                    throw new Error(
-                        `fetch failed (${fetchDetails}); node:https fallback failed (${formatErrorDetails(nodeErr)})`,
-                        { cause: nodeErr }
-                    );
+                    const nodeDetails = formatErrorDetails(nodeErr);
+                    const combinedSummary = `fetch failed (${fetchDetails}); node:https fallback failed (${nodeDetails})`;
+                    if (isNetworkUnreachableError(fetchErr) || isNetworkUnreachableError(nodeErr)) {
+                        recordHostFailure(host, combinedSummary);
+                    }
+                    throw new Error(combinedSummary, { cause: nodeErr });
                 }
             }
         };

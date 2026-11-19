@@ -124,7 +124,125 @@ function mergeSetCookiesIntoHeaderMap(
 export interface NodeHttpsFetchOptions {
     headers?: Record<string, string>;
     timeoutMs?: number;
+    connectTimeoutMs?: number;
     family?: 0 | 4 | 6;
+}
+
+const UNREACHABLE_ERROR_CODES = new Set([
+    'UND_ERR_CONNECT_TIMEOUT',
+    'ETIMEDOUT',
+    'ENETUNREACH',
+    'EHOSTUNREACH',
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'EAI_AGAIN',
+    'UND_ERR_SOCKET',
+]);
+
+export const DEFAULT_HOST_CIRCUIT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+
+interface HostCircuitEntry {
+    openUntilMs: number;
+    reason: string;
+}
+
+function getHostCircuitMap(): Map<string, HostCircuitEntry> {
+    const g = globalThis as unknown as { __ascendIssuerHostCircuit?: Map<string, HostCircuitEntry> };
+    if (!(g.__ascendIssuerHostCircuit instanceof Map)) {
+        g.__ascendIssuerHostCircuit = new Map();
+    }
+    return g.__ascendIssuerHostCircuit;
+}
+
+/**
+ * Checks whether an error chain represents a TCP/DNS/network connectivity failure
+ * (e.g. Akamai ASN packet drop causing UND_ERR_CONNECT_TIMEOUT) rather than an HTTP response.
+ */
+export function isNetworkUnreachableError(error: unknown, maxDepth = 4): boolean {
+    const visited = new Set<unknown>();
+    const inspect = (err: unknown, depth: number): boolean => {
+        if (!err || typeof err !== 'object' || visited.has(err)) return false;
+        visited.add(err);
+
+        const rec = err as {
+            code?: unknown;
+            name?: unknown;
+            message?: unknown;
+            cause?: unknown;
+            errors?: unknown[];
+        };
+
+        if (typeof rec.code === 'string' && UNREACHABLE_ERROR_CODES.has(rec.code)) {
+            return true;
+        }
+        if (rec.name === 'TimeoutError') {
+            return true;
+        }
+        if (
+            typeof rec.message === 'string' &&
+            /\b(connect timeout|connect timed out|request timed out|enetunreach|ehostunreach|econnrefused|etimedout)\b/i.test(
+                rec.message
+            )
+        ) {
+            return true;
+        }
+
+        if (depth < maxDepth) {
+            if (Array.isArray(rec.errors) && rec.errors.some((sub) => inspect(sub, depth + 1))) {
+                return true;
+            }
+            if (rec.cause && inspect(rec.cause, depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    return inspect(error, 0);
+}
+
+export function getHostCircuitStatus(
+    hostname: string,
+    nowMs = Date.now()
+): { open: boolean; remainingMs: number; reason?: string } {
+    const map = getHostCircuitMap();
+    const key = hostname.trim().toLowerCase();
+    const entry = map.get(key);
+    if (!entry) return { open: false, remainingMs: 0 };
+    if (nowMs >= entry.openUntilMs) {
+        map.delete(key);
+        return { open: false, remainingMs: 0 };
+    }
+    return {
+        open: true,
+        remainingMs: entry.openUntilMs - nowMs,
+        reason: entry.reason,
+    };
+}
+
+export function recordHostFailure(
+    hostname: string,
+    reason: string,
+    cooldownMs = DEFAULT_HOST_CIRCUIT_COOLDOWN_MS,
+    nowMs = Date.now()
+): void {
+    const key = hostname.trim().toLowerCase();
+    if (!key) return;
+    getHostCircuitMap().set(key, {
+        openUntilMs: nowMs + Math.max(0, cooldownMs),
+        reason,
+    });
+}
+
+export function recordHostSuccess(hostname: string): void {
+    const key = hostname.trim().toLowerCase();
+    if (!key) return;
+    getHostCircuitMap().delete(key);
+}
+
+export function resetHostCircuitBreakersForTests(): void {
+    getHostCircuitMap().clear();
 }
 
 /**
@@ -135,7 +253,8 @@ export async function fetchViaNodeHttp(
     initialUrl: string,
     options: NodeHttpsFetchOptions = {}
 ): Promise<Response> {
-    const timeoutMs = options.timeoutMs ?? 25_000;
+    const timeoutMs = options.timeoutMs ?? 8_000;
+    const connectTimeoutMs = Math.min(timeoutMs, options.connectTimeoutMs ?? 5_000);
     const family = options.family ?? 4;
     const accumulatedSetCookies: string[] = [];
     let currentUrl = initialUrl;
@@ -156,10 +275,15 @@ export async function fetchViaNodeHttp(
         }>((resolve, reject) => {
             let settled = false;
             let deadlineTimer: NodeJS.Timeout | undefined;
+            let connectTimer: NodeJS.Timeout | undefined;
             const cleanup = () => {
                 if (deadlineTimer !== undefined) {
                     clearTimeout(deadlineTimer);
                     deadlineTimer = undefined;
+                }
+                if (connectTimer !== undefined) {
+                    clearTimeout(connectTimer);
+                    connectTimer = undefined;
                 }
             };
             const finishError = (err: unknown) => {
@@ -197,11 +321,45 @@ export async function fetchViaNodeHttp(
                 }
             );
 
+            // # Reason: Fail fast during TCP SYN drop (e.g. Akamai OCI ASN blackhole) rather than
+            // waiting for the full request timeout.
+            req.on('socket', (socket) => {
+                if (!socket.connecting) return;
+                connectTimer = setTimeout(() => {
+                    const err = Object.assign(
+                        new Error(`node:https connect timed out after ${connectTimeoutMs}ms (${parsed.hostname})`),
+                        {
+                            code: 'ETIMEDOUT',
+                            syscall: 'connect',
+                            hostname: parsed.hostname,
+                        }
+                    );
+                    req.destroy(err);
+                }, connectTimeoutMs);
+                const clearConnectTimer = () => {
+                    if (connectTimer !== undefined) {
+                        clearTimeout(connectTimer);
+                        connectTimer = undefined;
+                    }
+                };
+                socket.once('connect', clearConnectTimer);
+                socket.once('error', clearConnectTimer);
+                socket.once('close', clearConnectTimer);
+            });
+
             deadlineTimer = setTimeout(() => {
-                req.destroy(new Error(`node:https request timed out after ${timeoutMs}ms`));
+                req.destroy(
+                    Object.assign(new Error(`node:https request timed out after ${timeoutMs}ms`), {
+                        code: 'ETIMEDOUT',
+                    })
+                );
             }, timeoutMs);
             req.on('timeout', () => {
-                req.destroy(new Error(`node:https request timed out after ${timeoutMs}ms`));
+                req.destroy(
+                    Object.assign(new Error(`node:https request timed out after ${timeoutMs}ms`), {
+                        code: 'ETIMEDOUT',
+                    })
+                );
             });
             req.on('error', finishError);
             req.end();
