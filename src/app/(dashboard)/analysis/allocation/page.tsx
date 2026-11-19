@@ -7,7 +7,6 @@ import { useCurrency } from '@/context/CurrencyContext';
 import ConstituentsGrid from '@/components/ConstituentsGrid';
 import AllocationChart from '@/components/AllocationChart';
 import WorldAllocationMap from '@/components/WorldAllocationMap';
-import SectorBreakdownCard from '@/components/SectorBreakdownCard';
 import AnalysisSkeleton from '@/components/AnalysisSkeleton';
 import ReportFilters, { FilterOptions } from '@/components/ReportFilters';
 import usePersistentState from '@/hooks/usePersistentState';
@@ -21,12 +20,13 @@ import {
     SectorBreakdown,
     CountryBreakdown
 } from '@/lib/look-through';
-import PortfolioHoldingsXRay, { StockContributorsBreakdownCard } from '@/components/PortfolioHoldingsXRay';
+import PortfolioHoldingsXRay from '@/components/PortfolioHoldingsXRay';
 import {
     calculatePortfolioHoldingsLookThrough,
     constituentHoldsUnderlyingStock,
     PortfolioHoldingStock
 } from '@/lib/holdings-look-through';
+import { buildHoldingsScope } from '@/lib/allocation-scope';
 import { PieChart, Globe, Layers, Landmark, Wallet, Building2 } from 'lucide-react';
 
 interface SyncStatusInfo {
@@ -569,6 +569,28 @@ export default function AnalysisPage() {
             .filter(Boolean);
     }, [globalConstituents, interactiveFilters, selectedStock]);
 
+    const holdingsScope = useMemo(
+        () =>
+            buildHoldingsScope({
+                activeDimension,
+                filters: interactiveFilters,
+                filteredConstituents: finalConstituents,
+                totalPortfolioValue: chartAllocations.totalValue,
+                activeSectorBreakdown,
+                activeCountryBreakdown,
+                selectedStock
+            }),
+        [
+            activeDimension,
+            interactiveFilters,
+            finalConstituents,
+            chartAllocations.totalValue,
+            activeSectorBreakdown,
+            activeCountryBreakdown,
+            selectedStock
+        ]
+    );
+
     if (!summary) {
         if (fetchError) {
             return (
@@ -605,13 +627,6 @@ export default function AnalysisPage() {
 
     const currentDimConfig = DIMENSIONS.find(d => d.id === activeDimension) ?? DIMENSIONS[0];
     const activeFilterBadges = FILTER_BADGE_LABELS.filter(b => Boolean(interactiveFilters[b.key]));
-
-    const showXrayPanel =
-        (activeDimension === 'sector' && activeSectorBreakdown) ||
-        (activeDimension === 'country' && activeCountryBreakdown);
-
-    const activeXrayBreakdown = activeDimension === 'country' ? activeCountryBreakdown : activeSectorBreakdown;
-    const activeXrayLabel = activeDimension === 'country' ? 'Country' : 'Sector';
 
     const dimensionTabs = (
         <div
@@ -741,34 +756,13 @@ export default function AnalysisPage() {
                     </div>
                 </div>
 
-                {/* On-Demand Portfolio X-Ray Drill-Down Panel */}
-                {showXrayPanel && activeXrayBreakdown && (
-                    <SectorBreakdownCard
-                        breakdown={activeXrayBreakdown}
-                        dimensionLabel={activeXrayLabel}
-                        onClose={() =>
-                            setInteractiveFilters(prev => ({
-                                ...prev,
-                                [activeDimension === 'country' ? 'country' : 'sector']: null
-                            }))
-                        }
-                        format={format}
-                    />
-                )}
-
-                {activeDimension === 'holdings' && selectedStock && (
-                    <StockContributorsBreakdownCard
-                        stock={selectedStock}
-                        onClose={() =>
-                            setInteractiveFilters(prev => ({ ...prev, stockKey: null }))
-                        }
-                        format={format}
-                    />
-                )}
-
-                {/* Constituents Grid (Using Final Filtered Data) */}
+                {/* Unified Constituents & Portfolio X-Ray / Scope Grid */}
                 <div className={styles.gridContainer}>
-                    <ConstituentsGrid data={finalConstituents} />
+                    <ConstituentsGrid
+                        data={finalConstituents}
+                        scope={holdingsScope}
+                        onClearScope={() => setInteractiveFilters(EMPTY_INTERACTIVE_FILTERS)}
+                    />
                 </div>
             </div>
         </div>
