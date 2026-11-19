@@ -6,6 +6,7 @@ import styles from './page.module.css';
 import { useCurrency } from '@/context/CurrencyContext';
 import ConstituentsGrid from '@/components/ConstituentsGrid';
 import AllocationChart from '@/components/AllocationChart';
+import WorldAllocationMap from '@/components/WorldAllocationMap';
 import SectorBreakdownCard from '@/components/SectorBreakdownCard';
 import AnalysisSkeleton from '@/components/AnalysisSkeleton';
 import ReportFilters, { FilterOptions } from '@/components/ReportFilters';
@@ -71,6 +72,7 @@ const DIMENSIONS: ReadonlyArray<{
     title: string;
     subtitle: string;
     badgeText?: string;
+    itemLabel: { singular: string; plural: string };
     filterKey: keyof InteractiveFilters;
     icon: React.ComponentType<{ size?: number; 'aria-hidden'?: boolean }>;
 }> = [
@@ -80,6 +82,7 @@ const DIMENSIONS: ReadonlyArray<{
         title: 'By Sector',
         subtitle: 'Look-through sector exposure combining direct holdings and underlying ETF weights.',
         badgeText: 'Look-Through X-Ray',
+        itemLabel: { singular: 'Sector', plural: 'Sectors' },
         filterKey: 'sector',
         icon: PieChart
     },
@@ -89,6 +92,7 @@ const DIMENSIONS: ReadonlyArray<{
         title: 'By Geography',
         subtitle: 'Country exposure combining direct holdings and underlying ETF geographic weights.',
         badgeText: 'Look-Through X-Ray',
+        itemLabel: { singular: 'Country', plural: 'Countries' },
         filterKey: 'country',
         icon: Globe
     },
@@ -97,6 +101,7 @@ const DIMENSIONS: ReadonlyArray<{
         label: 'Asset Type',
         title: 'By Investment Type',
         subtitle: 'Distribution across asset classes such as ETFs, equities, cash, and crypto.',
+        itemLabel: { singular: 'Asset Type', plural: 'Asset Types' },
         filterKey: 'investmentType',
         icon: Layers
     },
@@ -105,6 +110,7 @@ const DIMENSIONS: ReadonlyArray<{
         label: 'Account Type',
         title: 'By Account Type',
         subtitle: 'Allocation grouped by tax-advantaged and taxable account categories.',
+        itemLabel: { singular: 'Account Type', plural: 'Account Types' },
         filterKey: 'accountType',
         icon: Landmark
     },
@@ -113,6 +119,7 @@ const DIMENSIONS: ReadonlyArray<{
         label: 'Account',
         title: 'By Account & Platform',
         subtitle: 'Portfolio distribution across your individual brokerage accounts.',
+        itemLabel: { singular: 'Account', plural: 'Accounts' },
         filterKey: 'accountName',
         icon: Wallet
     }
@@ -652,17 +659,31 @@ export default function AnalysisPage() {
                         aria-labelledby={`allocation-tab-${activeDimension}`}
                         className={styles.tabpanel}
                     >
-                        <AllocationChart
-                            key={activeDimension}
-                            title={currentDimConfig.title}
-                            subtitle={currentDimConfig.subtitle}
-                            badgeText={currentDimConfig.badgeText}
-                            embedded={true}
-                            data={dimensionDataMap[activeDimension]}
-                            onSelect={(value, e) => handleDimensionSelect(currentDimConfig.filterKey, value, e)}
-                            selectedName={interactiveFilters[currentDimConfig.filterKey]}
-                            isPreConverted={true}
-                        />
+                        {activeDimension === 'country' ? (
+                            <WorldAllocationMap
+                                title={currentDimConfig.title}
+                                subtitle={currentDimConfig.subtitle}
+                                badgeText={currentDimConfig.badgeText}
+                                embedded={true}
+                                data={dimensionDataMap.country}
+                                onSelect={(value, e) => handleDimensionSelect('country', value, e)}
+                                selectedName={interactiveFilters.country}
+                                isPreConverted={true}
+                            />
+                        ) : (
+                            <AllocationChart
+                                key={activeDimension}
+                                title={currentDimConfig.title}
+                                subtitle={currentDimConfig.subtitle}
+                                badgeText={currentDimConfig.badgeText}
+                                itemLabel={currentDimConfig.itemLabel}
+                                embedded={true}
+                                data={dimensionDataMap[activeDimension]}
+                                onSelect={(value, e) => handleDimensionSelect(currentDimConfig.filterKey, value, e)}
+                                selectedName={interactiveFilters[currentDimConfig.filterKey]}
+                                isPreConverted={true}
+                            />
+                        )}
                     </div>
                 </div>
 

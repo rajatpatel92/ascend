@@ -225,7 +225,7 @@ function AnalysisContent() {
         )
         .sort((a, b) => b.value - a.value) || [];
 
-    const rawCountryAllocations = data.stats.countryAllocations
+    const countryAllocations = data.stats.countryAllocations
         ?.flatMap(obj =>
             obj && typeof obj === 'object'
                 ? Object.entries(obj).map(([key, value]) => ({
@@ -237,19 +237,7 @@ function AnalysisContent() {
         .filter(item => Number.isFinite(item.value) && item.value > 0)
         .sort((a, b) => b.value - a.value) || [];
 
-    const MAX_VISIBLE_COUNTRIES = 8;
-    const countryAllocations =
-        rawCountryAllocations.length > MAX_VISIBLE_COUNTRIES
-            ? [
-                  ...rawCountryAllocations.slice(0, MAX_VISIBLE_COUNTRIES),
-                  {
-                      name: `Other Regions (${rawCountryAllocations.length - MAX_VISIBLE_COUNTRIES})`,
-                      value: rawCountryAllocations
-                          .slice(MAX_VISIBLE_COUNTRIES)
-                          .reduce((sum, entry) => sum + entry.value, 0),
-                  },
-              ]
-            : rawCountryAllocations;
+    const holdingValueConverted = convert(data.stats.currentValue || 0, data.currency);
 
     const totalAllocValue = data.allocation.accounts.reduce((sum, acc) => sum + acc.value, 0);
     const accountAllocations = data.allocation.accounts
@@ -697,7 +685,7 @@ function AnalysisContent() {
                                     ))}
                                 </div>
 
-                                <ul className={styles.allocList}>
+                                <ul className={`${styles.allocList} ${sectorAllocations.length > 8 ? styles.allocListScrollable : ''}`}>
                                     {sectorAllocations.map((item, idx) => {
                                         const color = ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length];
                                         return (
@@ -708,6 +696,11 @@ function AnalysisContent() {
                                                         <span className={styles.allocName}>{item.name}</span>
                                                     </div>
                                                     <div className={styles.allocStats}>
+                                                        {holdingValueConverted > 0 && (
+                                                            <span className={styles.allocVal}>
+                                                                {format(holdingValueConverted * (item.value / 100))}
+                                                            </span>
+                                                        )}
                                                         <span className={styles.allocPct}>{item.value.toFixed(2)}%</span>
                                                     </div>
                                                 </div>
@@ -728,7 +721,7 @@ function AnalysisContent() {
                             <section className={styles.detailCard}>
                                 <div className={styles.detailCardHeader}>
                                     <h2 className={styles.detailCardTitle}>Geographic Exposure</h2>
-                                    <span className={styles.kpiTag}>{rawCountryAllocations.length} {rawCountryAllocations.length === 1 ? 'Country' : 'Countries'}</span>
+                                    <span className={styles.kpiTag}>{countryAllocations.length} {countryAllocations.length === 1 ? 'Country' : 'Countries'}</span>
                                 </div>
 
                                 <div className={styles.stackedBar} aria-hidden="true">
@@ -744,7 +737,7 @@ function AnalysisContent() {
                                     ))}
                                 </div>
 
-                                <ul className={styles.allocList}>
+                                <ul className={`${styles.allocList} ${countryAllocations.length > 8 ? styles.allocListScrollable : ''}`}>
                                     {countryAllocations.map((item, idx) => {
                                         const color = ALLOCATION_PALETTE[idx % ALLOCATION_PALETTE.length];
                                         return (
@@ -755,6 +748,11 @@ function AnalysisContent() {
                                                         <span className={styles.allocName}>{item.name}</span>
                                                     </div>
                                                     <div className={styles.allocStats}>
+                                                        {holdingValueConverted > 0 && (
+                                                            <span className={styles.allocVal}>
+                                                                {format(holdingValueConverted * (item.value / 100))}
+                                                            </span>
+                                                        )}
                                                         <span className={styles.allocPct}>{item.value.toFixed(2)}%</span>
                                                     </div>
                                                 </div>

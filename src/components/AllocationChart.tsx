@@ -15,6 +15,10 @@ interface AllocationChartProps {
     title: string;
     subtitle?: string;
     badgeText?: string;
+    itemLabel?: {
+        singular: string;
+        plural: string;
+    };
     embedded?: boolean;
     data: DataPoint[];
     onSelect?: (name: string | null, event?: React.MouseEvent) => void;
@@ -48,6 +52,7 @@ export default function AllocationChart(props: AllocationChartProps) {
         title,
         subtitle,
         badgeText,
+        itemLabel = { singular: 'Category', plural: 'Categories' },
         embedded = false,
         data,
         onSelect,
@@ -179,20 +184,20 @@ export default function AllocationChart(props: AllocationChartProps) {
                                 <span className={styles.centerSublabel}>
                                     {selectedEntry
                                         ? `${selectedPercent.toFixed(1)}% of Portfolio`
-                                        : `${chartData.length} ${chartData.length === 1 ? 'Category' : 'Categories'}`}
+                                        : `${chartData.length} ${chartData.length === 1 ? itemLabel.singular : itemLabel.plural}`}
                                 </span>
                             </div>
                         </div>
 
                         <p className={styles.interactionHint}>
-                            Click any slice or category row to filter holdings
+                            Click any slice or {itemLabel.singular.toLowerCase()} row to filter holdings
                             {badgeText ? ' & inspect X-Ray decomposition' : ''}.
                         </p>
                     </div>
 
                     {/* Right Pane: Ranked Breakdown List (Zero Scrollbars) */}
                     <div className={styles.breakdownPane}>
-                        <ul className={styles.breakdownList} aria-label={`${title} categories`}>
+                        <ul className={styles.breakdownList} aria-label={`${title} ${itemLabel.plural.toLowerCase()}`}>
                             {visibleItems.map((entry, index) => {
                                 const isSelected = selectedName === entry.name;
                                 const isDimmed = hasActiveSelection && !isSelected;
@@ -252,7 +257,7 @@ export default function AllocationChart(props: AllocationChartProps) {
                                     </>
                                 ) : (
                                     <>
-                                        Show all {chartData.length} categories (+{chartData.length - MAX_VISIBLE_CATEGORIES} more)
+                                        Show all {chartData.length} {itemLabel.plural.toLowerCase()} (+{chartData.length - MAX_VISIBLE_CATEGORIES} more)
                                         <ChevronDown size={15} aria-hidden="true" />
                                     </>
                                 )}

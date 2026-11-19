@@ -603,6 +603,25 @@
     gap: 0.85rem;
 }
 
+.allocListScrollable {
+    max-height: 360px;
+    overflow-y: auto;
+    padding-right: 0.35rem;
+}
+
+.allocListScrollable::-webkit-scrollbar {
+    width: 6px;
+}
+
+.allocListScrollable::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.allocListScrollable::-webkit-scrollbar-thumb {
+    background: var(--card-border);
+    border-radius: 9999px;
+}
+
 .allocRow {
     display: flex;
     flex-direction: column;
