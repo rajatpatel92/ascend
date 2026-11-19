@@ -316,80 +316,82 @@ export default function WorldAllocationMap(props: WorldAllocationMapProps) {
 
                     {/* Right Pane: Compact Searchable & Scrollable Country List */}
                     <div className={styles.listPane}>
-                        <div className={styles.searchWrap}>
-                            <Search size={14} className={styles.searchIcon} aria-hidden="true" />
-                            <input
-                                type="text"
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                placeholder={`Filter ${items.length} ${items.length === 1 ? 'country' : 'countries'}...`}
-                                aria-label="Filter countries"
-                                className={styles.searchInput}
-                            />
-                            {searchQuery && (
-                                <button
-                                    type="button"
-                                    className={styles.clearSearchBtn}
-                                    aria-label="Clear country search"
-                                    onClick={() => setSearchQuery('')}
-                                >
-                                    <X size={13} aria-hidden="true" />
-                                </button>
+                        <div className={styles.listInner}>
+                            <div className={styles.searchWrap}>
+                                <Search size={14} className={styles.searchIcon} aria-hidden="true" />
+                                <input
+                                    type="text"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    placeholder={`Filter ${items.length} ${items.length === 1 ? 'country' : 'countries'}...`}
+                                    aria-label="Filter countries"
+                                    className={styles.searchInput}
+                                />
+                                {searchQuery && (
+                                    <button
+                                        type="button"
+                                        className={styles.clearSearchBtn}
+                                        aria-label="Clear country search"
+                                        onClick={() => setSearchQuery('')}
+                                    >
+                                        <X size={13} aria-hidden="true" />
+                                    </button>
+                                )}
+                            </div>
+
+                            {filteredItems.length === 0 ? (
+                                <div className={styles.noMatch}>No matching countries for &ldquo;{searchQuery}&rdquo;.</div>
+                            ) : (
+                                <ul className={styles.countryList} aria-label={`${title} countries`}>
+                                    {filteredItems.map((item) => {
+                                        const isSelected = Boolean(
+                                            selectedCanonical && item.canonicalName === selectedCanonical
+                                        );
+                                        const isDimmed = hasActiveSelection && !isSelected;
+                                        const color = computeChoroplethShade(item.value, maxValue, isDark);
+
+                                        return (
+                                            <li key={item.name}>
+                                                <button
+                                                    type="button"
+                                                    aria-pressed={isSelected}
+                                                    className={`${styles.countryRow} ${
+                                                        isSelected ? styles.rowSelected : ''
+                                                    } ${isDimmed ? styles.rowDimmed : ''}`}
+                                                    onClick={(e) => handleSelectCountry(item.name, e)}
+                                                >
+                                                    <span className={styles.rowIdentity}>
+                                                        <span
+                                                            className={styles.swatch}
+                                                            style={{ backgroundColor: color }}
+                                                            aria-hidden="true"
+                                                        />
+                                                        <span className={styles.countryName}>{item.name}</span>
+                                                    </span>
+
+                                                    <span className={styles.barTrack} aria-hidden="true">
+                                                        <span
+                                                            className={styles.barFill}
+                                                            style={{
+                                                                width: `${Math.max(item.percent, 1.5)}%`,
+                                                                backgroundColor: color,
+                                                            }}
+                                                        />
+                                                    </span>
+
+                                                    <span className={styles.rowMetrics}>
+                                                        <span className={styles.rowValue}>{format(item.value)}</span>
+                                                        <span className={styles.rowPercent}>
+                                                            {item.percent.toFixed(1)}%
+                                                        </span>
+                                                    </span>
+                                                </button>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
                             )}
                         </div>
-
-                        {filteredItems.length === 0 ? (
-                            <div className={styles.noMatch}>No matching countries for &ldquo;{searchQuery}&rdquo;.</div>
-                        ) : (
-                            <ul className={styles.countryList} aria-label={`${title} countries`}>
-                                {filteredItems.map((item) => {
-                                    const isSelected = Boolean(
-                                        selectedCanonical && item.canonicalName === selectedCanonical
-                                    );
-                                    const isDimmed = hasActiveSelection && !isSelected;
-                                    const color = computeChoroplethShade(item.value, maxValue, isDark);
-
-                                    return (
-                                        <li key={item.name}>
-                                            <button
-                                                type="button"
-                                                aria-pressed={isSelected}
-                                                className={`${styles.countryRow} ${
-                                                    isSelected ? styles.rowSelected : ''
-                                                } ${isDimmed ? styles.rowDimmed : ''}`}
-                                                onClick={(e) => handleSelectCountry(item.name, e)}
-                                            >
-                                                <span className={styles.rowIdentity}>
-                                                    <span
-                                                        className={styles.swatch}
-                                                        style={{ backgroundColor: color }}
-                                                        aria-hidden="true"
-                                                    />
-                                                    <span className={styles.countryName}>{item.name}</span>
-                                                </span>
-
-                                                <span className={styles.barTrack} aria-hidden="true">
-                                                    <span
-                                                        className={styles.barFill}
-                                                        style={{
-                                                            width: `${Math.max(item.percent, 1.5)}%`,
-                                                            backgroundColor: color,
-                                                        }}
-                                                    />
-                                                </span>
-
-                                                <span className={styles.rowMetrics}>
-                                                    <span className={styles.rowValue}>{format(item.value)}</span>
-                                                    <span className={styles.rowPercent}>
-                                                        {item.percent.toFixed(1)}%
-                                                    </span>
-                                                </span>
-                                            </button>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        )}
                     </div>
                 </div>
             )}

@@ -278,18 +278,28 @@
     color: var(--text-primary);
 }
 
-/* Right Pane: Searchable & Bounded Scrollable Country List */
+/* Right Pane: Searchable & Scrollable Country List matched to mapCard height */
 .listPane {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+}
+
+.listInner {
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
     gap: 0.625rem;
     min-width: 0;
+    min-height: 0;
 }
 
 .searchWrap {
     position: relative;
     display: flex;
     align-items: center;
+    flex-shrink: 0;
 }
 
 .searchIcon {
@@ -346,7 +356,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    max-height: 325px;
+    flex: 1 1 0;
+    min-height: 0;
     overflow-y: auto;
     min-width: 0;
 }
@@ -481,7 +492,13 @@
         gap: 1.25rem;
     }
 
+    .listInner {
+        position: static;
+        inset: auto;
+    }
+
     .countryList {
+        flex: 0 1 auto;
         max-height: 275px;
     }
 }
