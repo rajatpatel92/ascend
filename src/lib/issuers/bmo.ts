@@ -599,7 +599,7 @@ async function resolveBmoRecursive(
         }
 
         const aggregated = await aggregateBmoHoldings(parsed.holdings, {
-            maxTopHoldings: depth === 0 ? MAX_UNDERLYING_HOLDINGS : 500,
+            maxTopHoldings: MAX_UNDERLYING_HOLDINGS,
             resolveUnderlying:
                 depth < MAX_FOF_DEPTH
                     ? (subTicker) =>

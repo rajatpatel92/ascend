@@ -1,6 +1,11 @@
 import { pathToFileURL } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import { resolveIssuerAllocations } from '../src/lib/issuers/index.ts';
 import type { IssuerAllocationResult } from '../src/lib/issuers/types.ts';
+
+const MAX_HOLDINGS_PER_BATCH = 2_000;
+const MAX_FUNDS_PER_BATCH = 50;
+const GZIP_THRESHOLD_BYTES = 512 * 1024;
 
 export interface DiscoveredSymbol {
     symbol: string;
@@ -74,6 +79,50 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): PushJob
         timeoutMs: Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 20_000,
         symbolsOverride,
     };
+}
+
+function compactPayloadForWire(record: PushAllocationRecord): PushAllocationRecord {
+    if (!record.topHoldings || record.topHoldings.length === 0) {
+        return record;
+    }
+    return {
+        ...record,
+        topHoldings: record.topHoldings.map((h) => {
+            if (h.source === record.providerId) {
+                const rest = { ...h };
+                delete rest.source;
+                return rest;
+            }
+            return h;
+        }),
+    };
+}
+
+function buildPushBatches(records: PushAllocationRecord[]): PushAllocationRecord[][] {
+    const batches: PushAllocationRecord[][] = [];
+    let currentBatch: PushAllocationRecord[] = [];
+    let currentHoldings = 0;
+
+    for (const record of records) {
+        const count = record.topHoldings?.length ?? 0;
+        if (
+            currentBatch.length > 0 &&
+            (currentBatch.length >= MAX_FUNDS_PER_BATCH ||
+                currentHoldings + count > MAX_HOLDINGS_PER_BATCH)
+        ) {
+            batches.push(currentBatch);
+            currentBatch = [];
+            currentHoldings = 0;
+        }
+        currentBatch.push(record);
+        currentHoldings += count;
+    }
+
+    if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+    }
+
+    return batches;
 }
 
 export async function runPushIssuerAllocations(
@@ -171,33 +220,81 @@ export async function runPushIssuerAllocations(
         return { discovered: targets.length, resolved: resolvedPayloads.length, pushed: 0 };
     }
 
-    const postRes = await fetchImpl(endpointBase, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-            allocations: resolvedPayloads,
+    const wirePayloads = resolvedPayloads.map(compactPayloadForWire);
+    const batches = buildPushBatches(wirePayloads);
+
+    let updatedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+    const serverResults: Array<{
+        symbol?: string;
+        status?: string;
+        countries?: number;
+        topHoldings?: number;
+        reason?: string;
+    }> = [];
+
+    for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        const jsonPayload = JSON.stringify({
+            allocations: batch,
             overwriteSectors: Boolean(config.overwriteSectors),
-        }),
-    });
+        });
+        const rawBytes = Buffer.byteLength(jsonPayload, 'utf8');
+        const useGzip = rawBytes > GZIP_THRESHOLD_BYTES;
+        const compressed = useGzip ? gzipSync(Buffer.from(jsonPayload, 'utf8')) : null;
+        const batchHoldingsCount = batch.reduce(
+            (sum, p) => sum + (p.topHoldings?.length ?? 0),
+            0
+        );
 
-    if (!postRes.ok) {
-        const body = await postRes.text().catch(() => '');
-        throw new Error(`Failed to push allocations to Ascend (HTTP ${postRes.status}): ${body}`);
+        if (batches.length > 1 || useGzip) {
+            const sizeInfo = compressed
+                ? `gzip ${(compressed.byteLength / 1024).toFixed(0)}KB (raw ${(rawBytes / 1024).toFixed(0)}KB)`
+                : `${(rawBytes / 1024).toFixed(0)}KB`;
+            log(
+                `[IssuerPush] Pushing batch ${i + 1}/${batches.length} (${batch.length} fund(s), ${batchHoldingsCount} holdings, ${sizeInfo})...`
+            );
+        }
+
+        const postHeaders = useGzip
+            ? { ...authHeaders, 'Content-Encoding': 'gzip' }
+            : authHeaders;
+        const postBody: BodyInit = compressed ? new Uint8Array(compressed) : jsonPayload;
+
+        const postRes = await fetchImpl(endpointBase, {
+            method: 'POST',
+            headers: postHeaders,
+            body: postBody,
+        });
+
+        if (!postRes.ok) {
+            const body = await postRes.text().catch(() => '');
+            throw new Error(
+                `Failed to push allocations batch ${i + 1}/${batches.length} to Ascend (HTTP ${postRes.status}): ${body}`
+            );
+        }
+
+        const postBodyJson = (await postRes.json()) as {
+            updated?: number;
+            skipped?: number;
+            failed?: number;
+            results?: Array<{
+                symbol?: string;
+                status?: string;
+                countries?: number;
+                topHoldings?: number;
+                reason?: string;
+            }>;
+        };
+
+        updatedCount += postBodyJson.updated ?? 0;
+        skippedCount += postBodyJson.skipped ?? 0;
+        failedCount += postBodyJson.failed ?? 0;
+        if (Array.isArray(postBodyJson.results)) {
+            serverResults.push(...postBodyJson.results);
+        }
     }
-
-    const postBody = (await postRes.json()) as {
-        updated?: number;
-        skipped?: number;
-        failed?: number;
-        results?: Array<{
-            symbol?: string;
-            status?: string;
-            countries?: number;
-            topHoldings?: number;
-            reason?: string;
-        }>;
-    };
-    const updatedCount = postBody.updated ?? 0;
 
     const clientFundsWithHoldings = resolvedPayloads.filter(
         (p) => (p.topHoldings?.length ?? 0) > 0
@@ -207,7 +304,6 @@ export async function runPushIssuerAllocations(
         0
     );
 
-    const serverResults = Array.isArray(postBody.results) ? postBody.results : [];
     const resultsIncludeTopHoldingsField = serverResults.some(
         (r) => typeof r?.topHoldings === 'number'
     );
@@ -217,7 +313,7 @@ export async function runPushIssuerAllocations(
     );
 
     log(
-        `[IssuerPush] Push complete: updated=${updatedCount}, skipped=${postBody.skipped ?? 0}, failed=${postBody.failed ?? 0}, serverHoldingsSaved=${serverHoldingsSaved}`
+        `[IssuerPush] Push complete: updated=${updatedCount}, skipped=${skippedCount}, failed=${failedCount}, serverHoldingsSaved=${serverHoldingsSaved}`
     );
 
     if (

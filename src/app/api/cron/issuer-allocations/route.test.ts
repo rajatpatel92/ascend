@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { register } from 'node:module';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 register(
     'data:text/javascript,' +
@@ -431,5 +432,154 @@ test('/api/cron/issuer-allocations endpoint & push script', async (t) => {
         assert.ok(logs.some((m) => m.includes('omits hasTopHoldings')));
         assert.ok(logs.some((m) => m.includes('serverHoldingsSaved=0')));
         assert.ok(logs.some((m) => m.includes('server acknowledged 0 topHoldings')));
+    });
+
+    await t.test('POST accepts Content-Encoding: gzip payloads and rejects malformed gzip body', async () => {
+        process.env.CRON_SECRET = 'top-secret';
+        (globalThis as any).__mockIssuerCronPrisma.marketDataCache.findMany = async () => [
+            { symbol: 'XEQT.TO', sectorAllocations: [] },
+        ];
+
+        const compressedPayload = gzipSync(
+            Buffer.from(
+                JSON.stringify({
+                    allocations: [
+                        {
+                            symbol: 'XEQT.TO',
+                            providerId: 'ishares',
+                            countryAllocations: [{ 'United States': 0.5 }, { Canada: 0.5 }],
+                            topHoldings: [
+                                { name: 'NVIDIA CORP', ticker: 'NVDA', weight: 0.04, assetClass: 'EQUITY' },
+                                { name: 'APPLE INC', ticker: 'AAPL', weight: 0.03, assetClass: 'EQUITY' },
+                            ],
+                        },
+                    ],
+                }),
+                'utf8'
+            )
+        );
+
+        const gzipRes = await POST(
+            new Request('http://localhost/api/cron/issuer-allocations', {
+                method: 'POST',
+                headers: {
+                    Authorization: 'Bearer top-secret',
+                    'Content-Type': 'application/json',
+                    'Content-Encoding': 'gzip',
+                },
+                body: new Uint8Array(compressedPayload),
+            })
+        );
+        assert.strictEqual(gzipRes.status, 200);
+        const gzipBody = await gzipRes.json();
+        assert.strictEqual(gzipBody.updated, 1);
+        assert.strictEqual(gzipBody.results[0].topHoldings, 2);
+        assert.strictEqual(updatedCalls[0].data.topHoldings[0].source, 'ishares');
+
+        const badGzipRes = await POST(
+            new Request('http://localhost/api/cron/issuer-allocations', {
+                method: 'POST',
+                headers: {
+                    Authorization: 'Bearer top-secret',
+                    'Content-Type': 'application/json',
+                    'Content-Encoding': 'gzip',
+                },
+                body: new Uint8Array([1, 2, 3, 4]),
+            })
+        );
+        assert.strictEqual(badGzipRes.status, 400);
+    });
+
+    await t.test('runPushIssuerAllocations strips redundant source, chunks multi-fund payloads, gzips >512KB batches, and aggregates batch counts', async () => {
+        const postCalls: Array<{ isGzip: boolean; body: any }> = [];
+        const mockFetch: typeof fetch = async (input, init) => {
+            const method = init?.method || 'GET';
+            if (method === 'GET') {
+                return new Response(
+                    JSON.stringify({
+                        symbols: [
+                            { symbol: 'XEQT.TO', name: 'iShares Core Equity ETF', isFundCandidate: true, hasTopHoldings: true },
+                            { symbol: 'VGRO.TO', name: 'Vanguard Growth ETF', isFundCandidate: true, hasTopHoldings: true },
+                        ],
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } }
+                );
+            }
+
+            const hdrs = new Headers(init?.headers);
+            const isGzip = (hdrs.get('content-encoding') || '').toLowerCase().includes('gzip');
+            const rawStr = isGzip
+                ? gunzipSync(Buffer.from(init?.body as Uint8Array)).toString('utf8')
+                : String(init?.body);
+            const parsed = JSON.parse(rawStr);
+            postCalls.push({ isGzip, body: parsed });
+
+            return new Response(
+                JSON.stringify({
+                    success: true,
+                    updated: parsed.allocations.length,
+                    skipped: 0,
+                    failed: 0,
+                    results: parsed.allocations.map((a: any) => ({
+                        symbol: a.symbol,
+                        status: 'updated',
+                        topHoldings: a.topHoldings?.length ?? 0,
+                    })),
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } }
+            );
+        };
+
+        const makeHoldings = (count: number, providerId: string) =>
+            Array.from({ length: count }, (_, idx) => ({
+                name: `LONG SECURITY HOLDING NAME NUMBER ${idx + 1} CORP`,
+                ticker: `T${idx + 1}`,
+                isin: `US${String(idx + 1).padStart(10, '0')}`,
+                sector: 'Technology',
+                country: 'United States',
+                assetClass: 'EQUITY' as const,
+                weight: 0.0001,
+                source: providerId,
+            }));
+
+        const config = loadConfigFromEnv({
+            ASCEND_URL: 'https://ascend.internal',
+            CRON_SECRET: 'netbird-secret',
+        });
+
+        const logs: string[] = [];
+        const summary = await runPushIssuerAllocations(config, {
+            fetchFn: mockFetch,
+            resolveFn: async (ctx) => {
+                if (ctx.symbol === 'XEQT.TO') {
+                    return {
+                        providerId: 'ishares',
+                        countryAllocations: [{ 'United States': 0.5 }, { Canada: 0.5 }],
+                        topHoldings: makeHoldings(4_000, 'ishares'),
+                        holdingsCount: 4_000,
+                    };
+                }
+                return {
+                    providerId: 'vanguard',
+                    countryAllocations: [{ 'United States': 0.6 }, { Canada: 0.4 }],
+                    topHoldings: makeHoldings(1_500, 'vanguard'),
+                    holdingsCount: 1_500,
+                };
+            },
+            logFn: (msg) => logs.push(msg),
+        });
+
+        assert.deepStrictEqual(summary, { discovered: 2, resolved: 2, pushed: 2 });
+        assert.strictEqual(postCalls.length, 2);
+        // Batch 1: XEQT.TO (4000 holdings -> >512KB JSON -> gzipped)
+        assert.strictEqual(postCalls[0].isGzip, true);
+        assert.strictEqual(postCalls[0].body.allocations.length, 1);
+        assert.strictEqual(postCalls[0].body.allocations[0].symbol, 'XEQT.TO');
+        assert.strictEqual(postCalls[0].body.allocations[0].topHoldings[0].source, undefined);
+        // Batch 2: VGRO.TO (1500 holdings -> <512KB JSON -> plain JSON)
+        assert.strictEqual(postCalls[1].isGzip, false);
+        assert.strictEqual(postCalls[1].body.allocations.length, 1);
+        assert.strictEqual(postCalls[1].body.allocations[0].symbol, 'VGRO.TO');
+        assert.ok(logs.some((m) => m.includes('serverHoldingsSaved=5500')));
     });
 });

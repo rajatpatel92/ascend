@@ -647,7 +647,7 @@ export class MarketDataService {
                             ? []
                             : (cached?.countryAllocations as any[] | undefined);
 
-                    // # Reason: Direct-issuer Top-250 holdings take precedence over Yahoo's partial Top 10;
+                    // # Reason: Direct-issuer underlying holdings take precedence over Yahoo's partial Top 10;
                     // never overwrite previously cached direct-issuer holdings with Yahoo Top 10 if a scrape fails.
                     let resolvedTopHoldings: UnderlyingHoldingEntry[] | undefined;
                     if (issuerTopHoldings.length > 0) {

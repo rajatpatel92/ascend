@@ -104,7 +104,7 @@ export default function PortfolioHoldingsXRay({
                         </span>
                     </div>
                     <p className={styles.subtitle}>
-                        Cumulative dollar and percentage exposure to individual stocks across direct equities and ETF Top 250 look-through weights (dual-class shares kept separate).
+                        Cumulative dollar and percentage exposure to individual stocks across direct equities and full ETF look-through weights (dual-class shares kept separate).
                     </p>
                 </div>
 
@@ -162,7 +162,7 @@ export default function PortfolioHoldingsXRay({
                             <div
                                 className={styles.segResidual}
                                 style={{ width: `${residualPct}%` }}
-                                title={`Beyond Top 250 / Pending ETF Sync: ${format(summary.unattributedFundValue)} (${residualPct.toFixed(1)}%)`}
+                                title={`Uncovered / Cash & Residual (fund cash, bond sleeves in balanced ETFs, or partial-disclosure funds): ${format(summary.unattributedFundValue)} (${residualPct.toFixed(1)}%)`}
                             />
                         )}
                     </div>
@@ -204,10 +204,13 @@ export default function PortfolioHoldingsXRay({
                         )}
 
                         {summary.unattributedFundValue >= 0.01 && (
-                            <div className={styles.legendItem}>
+                            <div
+                                className={styles.legendItem}
+                                title="Includes fund cash drag, bond sleeves inside balanced FOFs, and funds that only disclose top holdings (e.g. TD Top 10)"
+                            >
                                 <span className={styles.legendLabel}>
                                     <span className={styles.dot} style={{ background: '#94a3b8' }} aria-hidden="true" />
-                                    Beyond Top 250 / Unattributed
+                                    Uncovered / Cash &amp; Residual
                                 </span>
                                 <div className={styles.legendValue}>
                                     {format(summary.unattributedFundValue)}

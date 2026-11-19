@@ -71,6 +71,21 @@ interface User {
 }
 
 const ALLOCATION_PALETTE = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#06b6d4', '#ec4899'];
+const SYMBOL_CACHE_HOLDINGS_PREVIEW_LIMIT = 250;
+
+function capSymbolAnalysisForClientCache(analysis: AnalysisData): AnalysisData {
+    const holdings = analysis?.stats?.topHoldings;
+    if (!Array.isArray(holdings) || holdings.length <= SYMBOL_CACHE_HOLDINGS_PREVIEW_LIMIT) {
+        return analysis;
+    }
+    return {
+        ...analysis,
+        stats: {
+            ...analysis.stats,
+            topHoldings: holdings.slice(0, SYMBOL_CACHE_HOLDINGS_PREVIEW_LIMIT),
+        },
+    };
+}
 
 function AnalysisContent() {
     const { symbol } = useParams();
@@ -177,7 +192,7 @@ function AnalysisContent() {
                 loadedSymbolRef.current = symbolStr;
                 setData(newData);
                 setRefreshError(null);
-                ClientCache.set(cacheKey, newData);
+                ClientCache.set(cacheKey, capSymbolAnalysisForClientCache(newData));
             } catch (err) {
                 if (err instanceof DOMException && err.name === 'AbortError') return;
                 console.error('Failed to fetch analysis', err);
@@ -316,7 +331,7 @@ function AnalysisContent() {
                 suppressSelfSyncRef.current = false;
             }
             const cacheKey = ClientCache.generateKey('analysis', { symbol: symbolStr || data.symbol });
-            ClientCache.set(cacheKey, newData);
+            ClientCache.set(cacheKey, capSymbolAnalysisForClientCache(newData));
         } catch (error) {
             console.error('Refresh failed', error);
             setRefreshError('Network error while refreshing quote.');
@@ -956,7 +971,7 @@ function AnalysisContent() {
                                         </>
                                     ) : (
                                         <div className={styles.emptyState}>
-                                            No underlying stock holdings cached yet. Run <strong>Refresh Quote</strong> above or your issuer allocations push job to populate Top 250 look-through holdings.
+                                            No underlying stock holdings cached yet. Run <strong>Refresh Quote</strong> above or your issuer allocations push job to populate underlying look-through holdings.
                                         </div>
                                     )}
                                 </section>

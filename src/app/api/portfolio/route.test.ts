@@ -873,4 +873,46 @@ test('GET /api/portfolio', async (t) => {
             subT.mock.timers.reset();
         }
     });
+
+    await t.test('omits constituent topHoldings by default and includes them when includeHoldings=true', async () => {
+        mockGlobals.__mockPrisma.activityType.findMany = async () => [{ name: 'BUY', behavior: 'ADD' }];
+        mockGlobals.__mockPrisma.activity.findMany = async () => [
+            {
+                id: 'etf-1',
+                type: 'BUY',
+                date: new Date('2026-01-10T00:00:00Z'),
+                quantity: 10,
+                price: 50,
+                fee: 0,
+                currency: 'USD',
+                investment: { symbol: 'XEQT.TO', name: 'iShares Core Equity ETF', type: 'ETF', currencyCode: 'USD' },
+                platform: { name: 'WealthSimple' },
+                account: { id: 'acc-1', name: 'Rajat', type: 'TFSA' }
+            }
+        ];
+        mockGlobals.__mockMarketDataService.getPrice = async () => ({
+            price: 55,
+            currency: 'USD',
+            regularMarketChange: 0,
+            regularMarketChangePercent: 0,
+            countryAllocations: [{ 'United States': 0.5 }, { Canada: 0.5 }],
+            sectorAllocations: [{ Technology: 0.25 }],
+            topHoldings: [
+                { name: 'NVIDIA CORP', ticker: 'NVDA', weight: 0.05, assetClass: 'EQUITY', source: 'ishares' }
+            ]
+        });
+
+        const defaultRes = await GET(new Request('http://localhost/api/portfolio?currency=USD') as Parameters<typeof GET>[0]);
+        assert.strictEqual(defaultRes.status, 200);
+        const defaultData = await defaultRes.json();
+        assert.strictEqual(defaultData.constituents[0].topHoldings, undefined);
+
+        const withHoldingsRes = await GET(
+            new Request('http://localhost/api/portfolio?currency=USD&includeHoldings=true') as Parameters<typeof GET>[0]
+        );
+        assert.strictEqual(withHoldingsRes.status, 200);
+        const withHoldingsData = await withHoldingsRes.json();
+        assert.strictEqual(withHoldingsData.constituents[0].topHoldings.length, 1);
+        assert.strictEqual(withHoldingsData.constituents[0].topHoldings[0].ticker, 'NVDA');
+    });
 });

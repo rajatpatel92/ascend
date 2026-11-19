@@ -1,3 +1,4 @@
+import { gunzipSync } from 'node:zlib';
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { isValidApiKey, isValidCronSecret } from '@/lib/api-auth';
@@ -179,7 +180,14 @@ export async function POST(request: Request) {
 
     let rawBody: unknown;
     try {
-        rawBody = await request.json();
+        const contentEncoding = (request.headers.get('content-encoding') || '').toLowerCase();
+        if (contentEncoding.includes('gzip')) {
+            const compressed = Buffer.from(await request.arrayBuffer());
+            const uncompressed = gunzipSync(compressed).toString('utf8');
+            rawBody = JSON.parse(uncompressed);
+        } else {
+            rawBody = await request.json();
+        }
     } catch {
         return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
     }

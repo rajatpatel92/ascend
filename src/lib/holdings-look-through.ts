@@ -146,8 +146,8 @@ export function calculatePortfolioHoldingsLookThrough(
             );
 
             let trackedEquityValueInFund = 0;
-            // # Reason: Direct-issuer holdings represent Top 250 positions out of potentially thousands;
-            // we keep exact fund weights (c.value * h.weight) without renormalizing to 100%, placing the rest in unattributedFundValue.
+            // # Reason: Direct-issuer holdings represent full disclosed fund positions (up to MAX_UNDERLYING_HOLDINGS);
+            // we keep exact fund weights (c.value * h.weight) without renormalizing to 100%, placing any residual/cash/bond sleeves outside tracked equities.
             const maxEquityScale = Math.max(0, 1 - bondWeightSum);
             const rawEquityWeightSum = equityRows.reduce((sum, h) => sum + h.weight, 0);
             const equityClampFactor =

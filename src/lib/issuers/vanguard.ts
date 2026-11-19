@@ -576,7 +576,7 @@ async function fetchCaBorHoldings(
     const allItems: CaBorHoldingItem[] = [];
     let lastItemKey: string | null = null;
 
-    for (let page = 0; page < 8; page++) {
+    for (let page = 0; page < 12; page++) {
         const res = await requester(VANGUARD_CA_GRAPHQL_URL, {
             method: 'POST',
             headers: VANGUARD_CA_HEADERS,
@@ -1161,7 +1161,7 @@ async function fetchVanguardCaAllocations(
     const parsedSummary = fundData ? parseVanguardCaFundAggregations(fundData) : null;
     const hasSummaryCountries = Boolean(parsedSummary && parsedSummary.countryAllocations.length > 0);
 
-    // Fetch BOR holdings both as country fallback AND to extract individual stock Top 250 holdings.
+    // Fetch BOR holdings both as country fallback AND to extract full underlying stock holdings.
     // Fail soft when FundAllocations already succeeded so country/sector sync never breaks.
     const borItems = await fetchCaBorHoldings(requester, portId).catch(() => []);
 
@@ -1234,7 +1234,7 @@ async function fetchVanguardCaAllocations(
                     const subBor = await fetchCaBorHoldings(requester, subPortId).catch(() => []);
                     if (subBor.length > 0) {
                         const subAgg = await aggregateCaBorHoldings(subBor, {
-                            maxTopHoldings: 500,
+                            maxTopHoldings: MAX_UNDERLYING_HOLDINGS,
                             resolveUnderlying: resolveUsFallback,
                         });
                         subTopHoldings = subAgg.topHoldings;

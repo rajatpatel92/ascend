@@ -21,7 +21,7 @@ export interface IssuerLookupContext {
     onDiagnostic?: (message: string) => void;
 }
 
-export const MAX_UNDERLYING_HOLDINGS = 250;
+export const MAX_UNDERLYING_HOLDINGS = 15_000;
 
 export type UnderlyingHoldingAssetClass = 'EQUITY' | 'BOND';
 

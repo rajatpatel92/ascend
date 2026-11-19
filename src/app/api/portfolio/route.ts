@@ -30,6 +30,7 @@ export async function GET(request: NextRequest) {
         const targetCurrency = searchParams.get('currency') || 'USD';
         const investmentTypes = (searchParams.get('investmentTypes') || '').split(',').map(s => s.trim()).filter(Boolean);
         const accountTypes = (searchParams.get('accountTypes') || '').split(',').map(s => s.trim()).filter(Boolean);
+        const includeHoldings = searchParams.get('includeHoldings') === 'true';
 
         // 1. Fetch all activities and activity types
         const [allActivities, activityTypes] = await Promise.all([
@@ -481,7 +482,7 @@ export async function GET(request: NextRequest) {
                         country: marketData?.country || null,
                         sectorAllocations: marketData?.sectorAllocations || null,
                         countryAllocations: marketData?.countryAllocations || null,
-                        topHoldings: marketData?.topHoldings || null,
+                        topHoldings: includeHoldings ? (marketData?.topHoldings || null) : undefined,
                         dayChange: {
                             absolute: dayChange,
                             percent: regularMarketChangePercent

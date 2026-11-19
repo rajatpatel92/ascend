@@ -428,7 +428,7 @@ export function clusterBySecurityIdentity(identities: ParsedSecurityIdentity[]):
 
 /**
  * Merges duplicate security rows within a fund (preserving dual-class shares),
- * sorts descending by weight, filters dust, and caps at `limit` (default Top 250).
+ * sorts descending by weight, filters dust, and caps at `limit` (default MAX_UNDERLYING_HOLDINGS).
  */
 export function mergeAndCapHoldings(
     entries: UnderlyingHoldingEntry[],
@@ -593,7 +593,7 @@ export function sanitizeStoredHoldings(
 }
 
 /**
- * Extracts Yahoo Finance `quoteSummary.topHoldings.holdings` as a fallback list (capped at Top 250).
+ * Extracts Yahoo Finance `quoteSummary.topHoldings.holdings` as a fallback list (capped at MAX_UNDERLYING_HOLDINGS).
  */
 export function extractYahooTopHoldings(rawYahooHoldings: unknown): UnderlyingHoldingEntry[] {
     if (!Array.isArray(rawYahooHoldings) || rawYahooHoldings.length === 0) return [];

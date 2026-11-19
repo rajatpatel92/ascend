@@ -108,7 +108,7 @@ const DIMENSIONS: ReadonlyArray<{
         id: 'holdings',
         label: 'Holdings',
         title: 'By Underlying Holdings',
-        subtitle: 'Cumulative individual stock exposure combining direct equities and Top 250 ETF look-through weights.',
+        subtitle: 'Cumulative individual stock exposure combining direct equities and full ETF look-through weights.',
         badgeText: 'Look-Through X-Ray',
         itemLabel: { singular: 'Holding', plural: 'Holdings' },
         filterKey: 'stockKey',
@@ -190,10 +190,13 @@ export default function AnalysisPage() {
                     setFetchError(null);
                 }
 
-                const res = await fetch(`/api/portfolio?currency=${encodeURIComponent(currency)}`, {
-                    signal: controller.signal,
-                    cache: 'no-store',
-                });
+                const res = await fetch(
+                    `/api/portfolio?currency=${encodeURIComponent(currency)}&includeHoldings=true`,
+                    {
+                        signal: controller.signal,
+                        cache: 'no-store',
+                    }
+                );
                 const data = await res.json().catch(() => ({}));
                 if (controller.signal.aborted) return;
                 if (!res.ok || !data || typeof data !== 'object' || 'error' in data || !Array.isArray(data.constituents)) {
@@ -208,7 +211,14 @@ export default function AnalysisPage() {
                 loadedCurrencyRef.current = currency;
                 setSummaryState({ currency, data });
                 setFetchError(null);
-                ClientCache.set(cacheKey, data);
+                // # Reason: Full ETF look-through can include ~35k+ holdings across funds (~5MB JSON),
+                // exceeding browser localStorage quota; cache summary without topHoldings for fast shell hydration.
+                ClientCache.set(cacheKey, {
+                    ...data,
+                    constituents: data.constituents.map((c: any) =>
+                        c && typeof c === 'object' ? { ...c, topHoldings: undefined } : c
+                    ),
+                });
 
                 if (data.syncStatus) {
                     ensureMarketSyncConvergence({

@@ -53,17 +53,22 @@ test('issuer holdings normalization & deduplication', async (t) => {
         assert.strictEqual(brkB.weight, 0.03);
     });
 
-    await t.test('caps merged holdings at Top 250 sorted descending by weight', () => {
+    await t.test('retains >250 merged holdings under MAX_UNDERLYING_HOLDINGS and respects explicit limit', () => {
         const rows = Array.from({ length: 320 }, (_, idx) => ({
             name: `Company ${idx + 1} Inc`,
             ticker: `CMP${idx + 1}`,
             weight: (320 - idx) / 100000,
         }));
 
-        const capped = mergeAndCapHoldings(rows);
-        assert.strictEqual(capped.length, 250);
-        assert.strictEqual(capped[0].ticker, 'CMP1');
-        assert.strictEqual(capped[249].ticker, 'CMP250');
+        const full = mergeAndCapHoldings(rows);
+        assert.strictEqual(full.length, 320);
+        assert.strictEqual(full[0].ticker, 'CMP1');
+        assert.strictEqual(full[319].ticker, 'CMP320');
+
+        const explicitCapped = mergeAndCapHoldings(rows, 250);
+        assert.strictEqual(explicitCapped.length, 250);
+        assert.strictEqual(explicitCapped[0].ticker, 'CMP1');
+        assert.strictEqual(explicitCapped[249].ticker, 'CMP250');
     });
 
     await t.test('extractYahooTopHoldings normalizes fractions and handles missing tickers gracefully', () => {
@@ -81,7 +86,7 @@ test('issuer holdings normalization & deduplication', async (t) => {
         assert.strictEqual(extracted[1].weight, 0.055);
     });
 
-    await t.test('sanitizeStoredHoldings filters malformed entries and enforces 250 cap', () => {
+    await t.test('sanitizeStoredHoldings filters malformed entries, preserves >250 items by default, and enforces explicit cap', () => {
         const raw = [
             { name: 'Apple Inc - Common', ticker: 'aapl', weight: 0.12, source: 'td' },
             { name: '', weight: 0.1 },
@@ -93,9 +98,12 @@ test('issuer holdings normalization & deduplication', async (t) => {
         ];
 
         const sanitized = sanitizeStoredHoldings(raw);
-        assert.strictEqual(sanitized.length, 250);
+        assert.strictEqual(sanitized.length, 261);
         assert.strictEqual(sanitized[0].name, 'Apple Inc');
         assert.strictEqual(sanitized[0].ticker, 'AAPL');
         assert.strictEqual(sanitized[0].weight, 0.12);
+
+        const limited = sanitizeStoredHoldings(raw, 250);
+        assert.strictEqual(limited.length, 250);
     });
 });
